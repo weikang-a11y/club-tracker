@@ -13,14 +13,19 @@ from sqlalchemy.pool import NullPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
-# Use Supabase on Render, fallback to local SQLite for development
+import os
+from sqlalchemy import create_engine
+
+# Use Supabase PostgreSQL on Render, fallback to local SQLite
 database_url = os.environ.get('DATABASE_URL')
 if database_url:
-    # Supabase requires SSL — force it if missing
+    # Force psycopg dialect (version 3)
+    if 'postgresql' in database_url and 'psycopg2' in database_url:
+        database_url = database_url.replace('postgresql+psycopg2', 'postgresql+psycopg')
     if 'sslmode' not in database_url:
         database_url += '?sslmode=require'
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}  # prevents pooling issues
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}  # prevent pooling issues
 else:
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///club.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
