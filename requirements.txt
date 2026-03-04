@@ -4,4 +4,4 @@ flask-login==0.6.3
 flask-wtf==1.2.1
 werkzeug==3.0.3
 gunicorn==22.0.0
-psycopg[binary]==3.2.3
+psycopg==3.2.1
