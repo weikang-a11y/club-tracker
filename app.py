@@ -8,11 +8,21 @@ from wtforms.validators import DataRequired, Length, NumberRange
 from datetime import datetime, timedelta, date
 from sqlalchemy.orm import joinedload
 import os
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
 # Use Supabase on Render, fallback to local SQLite for development
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///club.db')
+database_url = os.environ.get('DATABASE_URL')
+if database_url:
+    # Supabase requires SSL — force it if missing
+    if 'sslmode' not in database_url:
+        database_url += '?sslmode=require'
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}  # prevents pooling issues
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///club.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
