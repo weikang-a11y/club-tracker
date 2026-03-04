@@ -13,8 +13,12 @@ from sqlalchemy.pool import NullPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
+# Use DATABASE_URL on Render (Supabase), fallback to local SQLite
 database_url = os.environ.get('DATABASE_URL')
 if database_url:
+    # Replace psycopg2 with psycopg if needed
+    database_url = database_url.replace('postgresql+psycopg2', 'postgresql+psycopg')
+    # Add SSL if missing
     if 'sslmode' not in database_url:
         database_url += '?sslmode=require'
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
