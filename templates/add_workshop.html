@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Add Workshop{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <h2 class="mb-4">Add New Workshop</h2>
+
+    <form method="POST">
+        {{ form.hidden_tag() }}
+
+        <div class="mb-3">
+            {{ form.name.label(class="form-label") }}
+            {{ form.name(class="form-control") }}
+        </div>
+
+        <div class="mb-3">
+            {{ form.workshop_date.label(class="form-label") }}
+            {{ form.workshop_date(class="form-control") }}
+        </div>
+
+        <div class="mb-3">
+            {{ form.slot.label(class="form-label") }}
+            {{ form.slot(class="form-select") }}
+        </div>
+
+        <div class="mb-3">
+            {{ form.activity_type.label(class="form-label") }}
+            {{ form.activity_type(class="form-select") }}
+        </div>
+
+        <div class="mb-3">
+            {{ form.officer_id.label(class="form-label") }}
+            {{ form.officer_id(class="form-select") }}
+        </div>
+
+        <button type="submit" class="btn btn-success">Create Workshop</button>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary ms-2">Cancel</a>
+    </form>
+</div>
+{% endblock %}

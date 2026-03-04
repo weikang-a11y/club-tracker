@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Attendance Reports{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <h2>Attendance Reports - Officer {{ current_user.username }}</h2>
+
+    <!-- Per-Member Summary -->
+    {% if reports_data %}
+        <h4>Members' Attendance Summary</h4>
+        {% for data in reports_data %}
+            <div class="card mb-3">
+                <div class="card-header">
+                    <strong>Member: {{ data.member }}</strong>
+                </div>
+                <div class="card-body">
+                    <p>Signed up: <strong>{{ data.signups_count }}</strong></p>
+                    <p>Attended: <strong>{{ data.attended_count }}</strong></p>
+                    <p>Attendance rate: <strong>{{ data.attendance_rate }}%</strong></p>
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p class="text-muted">No workshops or sign-ups yet.</p>
+    {% endif %}
+
+    <a href="{{ url_for('dashboard') }}" class="btn btn-secondary mt-3">Back to Dashboard</a>
+</div>
+{% endblock %}

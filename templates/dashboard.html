@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2 class="mb-4">Welcome, {{ user.username }}!</h2>
+    <p class="lead mb-4">
+        Role: <strong>{{ 'Officer' if user.role == 'officer' else 'Member' }}</strong>
+    </p>
+
+    <!-- Action buttons -->
+    <div class="mb-4">
+        {% if user.role == 'officer' %}
+            <a href="{{ url_for('add_commitment') }}" class="btn btn-success me-2">Add New Commitment</a>
+            <a href="{{ url_for('reports') }}" class="btn btn-primary me-2">View Attendance Reports</a>
+        {% endif %}
+
+        {% if user.role == 'member' %}
+            <a href="{{ url_for('add_workshop') }}" class="btn btn-info me-2">Add New Workshop</a>
+        {% endif %}
+
+        <a href="{{ url_for('logout') }}" class="btn btn-outline-danger float-end">Logout</a>
+    </div>
+
+    <!-- Progress Summary (Member only) -->
+    {% if user.role == 'member' and progress_summary %}
+        <div class="card mb-4 border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">My Commitments Progress</h5>
+            </div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col-md-4 mb-3">
+                        <div class="progress mb-2">
+                            <div class="progress-bar bg-success" role="progressbar" 
+                                 style="width: {{ (progress_summary.roleplay.split('/')[0] | int / progress_summary.roleplay.split('/')[1] | int * 100) if progress_summary.roleplay.split('/')[1] | int > 0 else 0 }}%">
+                                {{ progress_summary.roleplay }}
+                            </div>
+                        </div>
+                        <p>Roleplay</p>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="progress mb-2">
+                            <div class="progress-bar bg-info" role="progressbar" 
+                                 style="width: {{ (progress_summary.written.split('/')[0] | int / progress_summary.written.split('/')[1] | int * 100) if progress_summary.written.split('/')[1] | int > 0 else 0 }}%">
+                                {{ progress_summary.written }}
+                            </div>
+                        </div>
+                        <p>Written Presentation</p>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="progress mb-2">
+                            <div class="progress-bar bg-warning" role="progressbar" 
+                                 style="width: {{ (progress_summary.exam.split('/')[0] | int / progress_summary.exam.split('/')[1] | int * 100) if progress_summary.exam.split('/')[1] | int > 0 else 0 }}%">
+                                {{ progress_summary.exam }}
+                            </div>
+                        </div>
+                        <p>Exam</p>
+                    </div>
+                </div>
+                <p class="mt-3 text-center"><strong>Deadline:</strong> {{ progress_summary.deadline }}</p>
+            </div>
+        </div>
+    {% endif %}
+
+    <!-- Attendance Summary (Member only) -->
+    {% if user.role == 'member' and attendance_summary %}
+        <div class="card mb-4 border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">My Attendance Summary</h5>
+            </div>
+            <div class="card-body">
+                <p>Signed up for workshops: <strong>{{ attendance_summary.signed }}</strong></p>
+                <p>Attended: <strong>{{ attendance_summary.attended }}</strong></p>
+                <p>Attendance rate: <strong>{{ attendance_summary.rate }}%</strong></p>
+            </div>
+        </div>
+    {% endif %}
+
+    <!-- Officer: Members' Commitment Progress -->
+    {% if user.role == 'officer' and commitments %}
+        <h4 class="mt-5 mb-3">Members' Commitment Progress</h4>
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead>
+                    <tr>
+                        <th>Member</th>
+                        <th>Roleplay Remaining</th>
+                        <th>Written Remaining</th>
+                        <th>Exam Remaining</th>
+                        <th>Deadline</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in commitments %}
+                    <tr>
+                        <td>{{ c.member_name }}</td>
+                        <td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td>
+                        <td>{{ c.remaining_written }} / {{ c.required_written }}</td>
+                        <td>{{ c.remaining_exam }} / {{ c.required_exam }}</td>
+                        <td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% endif %}
+
+    <!-- Workshops -->
+    <h4 class="mt-5 mb-3">Workshops</h4>
+
+    {% if workshops %}
+        <div class="table-responsive">
+            <table class="table table-hover table-bordered">
+                <thead class="table-light">
+                    <tr>
+                        <th>Name</th>
+                        <th>Date & Time</th>
+                        <th>Assigned Officer</th>
+                        <th>Signed Up</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ws in workshops %}
+                    {% set is_conflict = false %}
+                    {% set is_signed = ws in my_signups if user.role == 'member' else false %}
+
+                    {% if user.role == 'member' and not is_signed %}
+                        {% for s_start, s_end in signed_times %}
+                            {% if ws.time < s_end and s_start < ws.end_time %}
+                                {% set is_conflict = true %}
+                            {% endif %}
+                        {% endfor %}
+                    {% endif %}
+
+                    <tr {% if is_conflict %}class="table-secondary text-muted"{% endif %}>
+                        <td>{{ ws.name }}</td>
+                        <td>{{ ws.time | friendly_slot }}</td>
+                        <td>
+                            {% if ws.officer %}
+                                {{ ws.officer.username }}
+                            {% else %}
+                                Unknown (ID: {{ ws.officer_id or 'None' }})
+                            {% endif %}
+                        </td>
+                        <td>{{ ws.signups | length }}</td>
+                        <td>
+                            {% if user.role == 'member' %}
+                                {% if is_signed %}
+                                    <span class="badge bg-success">Signed Up</span>
+                                {% elif is_conflict %}
+                                    <span class="badge bg-secondary">Time Conflict</span>
+                                {% else %}
+                                    <form method="POST" action="{{ url_for('signup_workshop', workshop_id=ws.id) }}" style="display:inline;">
+                                        <button type="submit" class="btn btn-sm btn-outline-primary">Sign Up</button>
+                                    </form>
+                                {% endif %}
+                            {% endif %}
+
+                            {% if user.role == 'officer' and ws.officer_id == user.id %}
+                                <a href="{{ url_for('workshop_attendance', workshop_id=ws.id) }}"
+                                   class="btn btn-sm btn-info ms-2">Take Attendance</a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <p class="text-muted">No workshops yet.</p>
+    {% endif %}
+
+    <!-- Member: My Signed-up Workshops -->
+    {% if user.role == 'member' and my_signups %}
+        <h4 class="mt-5 mb-3">My Signed-up Workshops</h4>
+        <ul class="list-group">
+            {% for ws in my_signups %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>{{ ws.name }}</strong><br>
+                        <small>
+                            {{ ws.time | friendly_slot }} 
+                            (Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %})
+                        </small>
+                    </div>
+                    <form method="POST" action="{{ url_for('cancel_signup', workshop_id=ws.id) }}" 
+                          style="display:inline;" 
+                          onsubmit="return confirm('Are you sure you want to cancel this sign-up?');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">Cancel Sign-up</button>
+                    </form>
+                </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+
+    <!-- Officer: Members' Sign-ups -->
+    {% if user.role == 'officer' and mentees_workshops %}
+        <h4 class="mt-5 mb-3">My Members' Workshop Sign-ups</h4>
+        {% for member_name, ws_list in mentees_workshops.items() %}
+            <div class="card mb-3">
+                <div class="card-header bg-light">
+                    Member: <strong>{{ member_name }}</strong>
+                </div>
+                <div class="card-body">
+                    {% if ws_list %}
+                        <ul class="list-group list-group-flush">
+                            {% for ws in ws_list %}
+                                <li class="list-group-item">
+                                    {{ ws.name }} — {{ ws.time | friendly_slot }}
+                                    (Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %})
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="text-muted mb-0">No sign-ups yet.</p>
+                    {% endif %}
+                </div>
+            </div>
+        {% endfor %}
+    {% endif %}
+</div>
+{% endblock %}

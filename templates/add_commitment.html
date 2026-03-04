@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Add Commitment{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <h2 class="mb-4">Add New Commitment</h2>
+    <p class="text-muted mb-4">Assign required activities for a member (officers only).</p>
+
+    <form method="POST" class="mt-4">
+        {{ form.hidden_tag() }}
+
+        <div class="mb-3">
+            {{ form.member_name.label(class="form-label") }}
+            {{ form.member_name(class="form-control", placeholder="Enter member username (e.g. Member1)") }}
+        </div>
+
+        <div class="row">
+            <div class="col-md-4 mb-3">
+                {{ form.required_roleplay.label(class="form-label") }}
+                {{ form.required_roleplay(class="form-control") }}
+            </div>
+            <div class="col-md-4 mb-3">
+                {{ form.required_written.label(class="form-label") }}
+                {{ form.required_written(class="form-control") }}
+            </div>
+            <div class="col-md-4 mb-3">
+                {{ form.required_exam.label(class="form-label") }}
+                {{ form.required_exam(class="form-control") }}
+            </div>
+        </div>
+
+        <div class="mb-3">
+            {{ form.deadline.label(class="form-label") }}
+            {{ form.deadline(class="form-control") }}
+            <small class="form-text text-muted">Overall deadline for all activities (YYYY-MM-DD)</small>
+        </div>
+
+        <div class="mt-4">
+            <button type="submit" class="btn btn-success">Save Commitment</button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary ms-2">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
