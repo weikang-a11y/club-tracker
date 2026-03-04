@@ -24,15 +24,6 @@ TIME_SLOTS = [
 ]
 
 ACTIVITY_TYPES = ['Roleplay', 'Written Presentation', 'Exam']
-
-import os
-
-with app.app_context():
-    db_path = 'club.db'
-    if os.path.exists(db_path):
-        os.remove(db_path)
-        print("Deleted old club.db for fresh start on Render")
-    db.create_all()
     
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
