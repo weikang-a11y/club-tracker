@@ -63,6 +63,14 @@ workshop_signups = db.Table('workshop_signups',
     db.Column('attended', db.Boolean, default=False, nullable=False)
 )
 
+class GeneralAttendance(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    officer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    member_name = db.Column(db.String(100), nullable=False)
+    manual_count = db.Column(db.Integer, default=0)  # manual +1 increments
+
+    officer = db.relationship('User', backref='general_attendances')
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -112,22 +120,43 @@ app.jinja_env.filters['friendly_slot'] = friendly_slot
 @app.route('/')
 @login_required
 def dashboard():
-    print(f"[DASHBOARD] User: {current_user.username} | Role: {current_user.role} | ID: {current_user.id}")
-
     commitments = []
     progress_summary = None
     attendance_summary = None
+    assigned_workshops = []
+    workshop_attendance_data = []
     workshops = []
-    my_signups = []
-    mentees_workshops = {}
-    signed_times = []
 
     if current_user.role == 'officer':
         commitments = Commitment.query.filter_by(user_id=current_user.id).all()
-        workshops = Workshop.query.filter_by(officer_id=current_user.id)\
-                                  .options(joinedload(Workshop.officer))\
-                                  .order_by(Workshop.time).all()
-    elif current_user.role == 'member':
+        assigned_workshops = Workshop.query.filter_by(officer_id=current_user.id)\
+                                            .options(joinedload(Workshop.officer))\
+                                            .order_by(Workshop.time).all()
+        workshops = assigned_workshops
+
+        # Officer: per-member workshop attendance summary
+        member_names = {c.member_name for c in commitments}
+        for member_name in member_names:
+            member = User.query.filter_by(username=member_name).first()
+            if member:
+                actual_attended = db.session.query(workshop_signups).filter_by(
+                    user_id=member.id,
+                    attended=True
+                ).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
+
+                ga = GeneralAttendance.query.filter_by(officer_id=current_user.id, member_name=member_name).first()
+                manual_count = ga.manual_count if ga else 0
+
+                total_attended = actual_attended + manual_count
+
+                workshop_attendance_data.append({
+                    'member_name': member_name,
+                    'total_attended': total_attended,
+                    'manual_count': manual_count,
+                    'actual_attended': actual_attended
+                })
+
+    else:  # member
         commitments = Commitment.query.filter_by(member_name=current_user.username).all()
         workshops = Workshop.query.options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
 
@@ -140,26 +169,32 @@ def dashboard():
                 'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A'
             }
 
-        # Attendance summary for member
-        db.session.expire_all()
-        total_signed = len(current_user.workshops.all())
-        attended_count = db.session.query(workshop_signups).filter_by(
-            user_id=current_user.id,
-            attended=True
-        ).count()
-        attendance_rate = (attended_count / total_signed * 100) if total_signed > 0 else 0.0
-        attendance_summary = {
-            'signed': total_signed,
-            'attended': attended_count,
-            'rate': round(attendance_rate, 1)
-        }
+            # Find the officer who assigned this commitment
+            officer = c.user
+            officer_id = officer.id if officer else None
 
-        print(f"[MEMBER DASHBOARD] User {current_user.username} (ID {current_user.id}):")
-        print(f"  - Signed up: {total_signed}")
-        print(f"  - Attended: {attended_count}")
-        print(f"  - Rate: {attendance_rate:.1f}%")
-    else:
-        print("[DASHBOARD] Unknown role - skipping calculations")
+            # Attended only from workshops assigned to that officer
+            actual_attended = 0
+            manual_count = 0
+            if officer_id:
+                actual_attended = db.session.query(workshop_signups).filter_by(
+                    user_id=current_user.id,
+                    attended=True
+                ).join(Workshop).filter(Workshop.officer_id == officer_id).count()
+
+                ga = GeneralAttendance.query.filter_by(officer_id=officer_id, member_name=current_user.username).first()
+                manual_count = ga.manual_count if ga else 0
+
+            total_attended = actual_attended + manual_count
+
+            total_signed = len(current_user.workshops.all())
+            attendance_rate = (total_attended / 18 * 100) if 18 > 0 else 0.0  # fixed 18 to match officer table
+
+            attendance_summary = {
+                'signed': total_signed,
+                'attended': total_attended,
+                'rate': round(attendance_rate, 1)
+            }
 
     for ws in workshops:
         ws.end_time = ws.time + timedelta(minutes=20)
@@ -181,6 +216,8 @@ def dashboard():
         commitments=commitments,
         progress_summary=progress_summary,
         attendance_summary=attendance_summary,
+        assigned_workshops=assigned_workshops,
+        workshop_attendance_data=workshop_attendance_data,
         workshops=workshops,
         my_signups=my_signups,
         mentees_workshops=mentees_workshops,
@@ -361,6 +398,24 @@ def workshop_attendance(workshop_id):
         members_with_attendance=members_with_attendance
     )
 
+@app.route('/increment_general_attendance', methods=['POST'])
+@login_required
+def increment_general_attendance():
+    if current_user.role != 'officer':
+        flash('Only officers can update attendance.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    member_name = request.form.get('member_name')
+    ga = GeneralAttendance.query.filter_by(officer_id=current_user.id, member_name=member_name).first()
+    if ga:
+        ga.manual_count += 1
+        db.session.commit()
+        flash('General attendance incremented!', 'success')
+    else:
+        flash('Member not found.', 'danger')
+
+    return redirect(url_for('dashboard'))
+
 @app.route('/reports', methods=['GET', 'POST'])
 @login_required
 def reports():
@@ -376,29 +431,36 @@ def reports():
         attended_count = db.session.query(workshop_signups).filter_by(
             workshop_id=ws.id, attended=True
         ).count()
-        # Get attended users for this workshop
-        attended_users = db.session.query(workshop_signups.c.user_id).filter_by(
-            workshop_id=ws.id, attended=True
-        ).all()
-        attended_user_ids = {uid for (uid,) in attended_users}
-
         for member in ws.signups:
             username = member.username
             if username not in member_summary:
-                member_summary[username] = {'signups': 0, 'attended': 0}
+                member_summary[username] = {'signups': 0, 'attended': 0, 'manual': 0}
             member_summary[username]['signups'] += 1
-            if member.id in attended_user_ids:
+            if member.id in {row[0] for row in db.session.query(workshop_signups.c.user_id).filter_by(
+                workshop_id=ws.id, attended=True
+            ).all()}:
                 member_summary[username]['attended'] += 1
+
+    # Add manual +1 from GeneralAttendance to match dashboard "Workshop Attendance"
+    gas = GeneralAttendance.query.filter_by(officer_id=current_user.id).all()
+    for ga in gas:
+        username = ga.member_name
+        if username in member_summary:
+            member_summary[username]['manual'] += ga.manual_count
+        else:
+            member_summary[username] = {'signups': 0, 'attended': 0, 'manual': ga.manual_count}
 
     reports_data = []
     for username, stats in member_summary.items():
+        actual_attended = stats['attended']
+        manual = stats['manual']
+        total_attended = actual_attended + manual  # now matches "Workshop Attendance"
         signups = stats['signups']
-        attended = stats['attended']
-        rate = (attended / signups * 100) if signups > 0 else 0
+        rate = (total_attended / 18 * 100) if 18 > 0 else 0  # fixed 18
         reports_data.append({
             'member': username,
             'signups_count': signups,
-            'attended_count': attended,
+            'attended_count': total_attended,  # matches dashboard
             'attendance_rate': round(rate, 1)
         })
 
