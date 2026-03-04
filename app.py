@@ -7,6 +7,7 @@ from wtforms import StringField, PasswordField, DateField, SelectField, IntegerF
 from wtforms.validators import DataRequired, Length, NumberRange
 from datetime import datetime, timedelta, date
 from sqlalchemy.orm import joinedload
+import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
@@ -24,21 +25,6 @@ TIME_SLOTS = [
 ]
 
 ACTIVITY_TYPES = ['Roleplay', 'Written Presentation', 'Exam']
-
-import os
-
-# === ONE-TIME DATABASE RESET FOR RENDER ===
-# Delete old club.db so we start completely fresh
-with app.app_context():
-    db_path = 'club.db'
-    if os.path.exists(db_path):
-        try:
-            os.remove(db_path)
-            print("=== OLD club.db DELETED - STARTING COMPLETELY FRESH ===")
-        except Exception as e:
-            print(f"Failed to delete club.db: {e}")
-    db.create_all()
-# === REMOVE THIS BLOCK AFTER ONE SUCCESSFUL DEPLOY ===
     
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -503,5 +489,18 @@ def reports():
         reports_data=reports_data
     )
 
+@app.route('/force-reset-db', methods=['GET'])
+def force_reset_db():
+    import os
+    db_path = 'club.db'
+    if os.path.exists(db_path):
+        try:
+            os.remove(db_path)
+            return "OLD club.db DELETED - DATABASE RESET SUCCESSFULLY!<br><br>Refresh the homepage now.<br><br>You can remove this /force-reset-db route from app.py now."
+        except Exception as e:
+            return f"Failed to delete club.db: {str(e)}"
+    else:
+        return "No club.db found - already fresh."
+    
 if __name__ == '__main__':
     app.run(debug=True)
