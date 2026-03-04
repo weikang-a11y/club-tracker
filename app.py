@@ -405,14 +405,33 @@ def increment_general_attendance():
         flash('Only officers can update attendance.', 'danger')
         return redirect(url_for('dashboard'))
 
-    member_name = request.form.get('member_name')
-    ga = GeneralAttendance.query.filter_by(officer_id=current_user.id, member_name=member_name).first()
-    if ga:
-        ga.manual_count += 1
+    member_name_raw = request.form.get('member_name', '')
+    member_name = member_name_raw.strip().lower()  # normalize input
+
+    print(f"[INCREMENT] Officer {current_user.username} clicked +1 for raw: '{member_name_raw}' → normalized: '{member_name}'")
+
+    # Find or create the record (case-insensitive, trimmed match)
+    ga = GeneralAttendance.query.filter(
+        GeneralAttendance.officer_id == current_user.id,
+        db.func.lower(GeneralAttendance.member_name) == member_name
+    ).first()
+
+    if not ga:
+        # Create new record if no match found
+        ga = GeneralAttendance(
+            officer_id=current_user.id,
+            member_name=member_name_raw.strip(),  # save original casing
+            manual_count=0
+        )
+        db.session.add(ga)
         db.session.commit()
-        flash('General attendance incremented!', 'success')
-    else:
-        flash('Member not found.', 'danger')
+        print(f"[INCREMENT] Created new GeneralAttendance for '{member_name_raw.strip()}'")
+
+    ga.manual_count += 1
+    db.session.commit()
+
+    flash('General attendance incremented!', 'success')
+    print(f"[INCREMENT] Success: '{ga.member_name}' now {ga.manual_count}")
 
     return redirect(url_for('dashboard'))
 
