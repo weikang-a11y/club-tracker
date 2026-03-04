@@ -27,12 +27,18 @@ ACTIVITY_TYPES = ['Roleplay', 'Written Presentation', 'Exam']
 
 import os
 
+# === ONE-TIME DATABASE RESET FOR RENDER ===
+# Delete old club.db so we start completely fresh
 with app.app_context():
     db_path = 'club.db'
     if os.path.exists(db_path):
-        os.remove(db_path)
-        print("Deleted old club.db for fresh start on Render")
+        try:
+            os.remove(db_path)
+            print("=== OLD club.db DELETED - STARTING COMPLETELY FRESH ===")
+        except Exception as e:
+            print(f"Failed to delete club.db: {e}")
     db.create_all()
+# === REMOVE THIS BLOCK AFTER ONE SUCCESSFUL DEPLOY ===
     
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
