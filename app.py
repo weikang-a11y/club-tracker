@@ -11,7 +11,8 @@ import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///club.db'
+# Use Supabase on Render, fallback to local SQLite for development
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///club.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
