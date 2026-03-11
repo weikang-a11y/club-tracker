@@ -13,17 +13,25 @@ from sqlalchemy.pool import NullPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
-# Force ONLY Railway Postgres - crash if DATABASE_URL is missing (for debugging)
+# NO FALLBACK TO SQLITE - force Postgres or crash early
 database_url = os.environ.get('DATABASE_URL')
-if database_url:
-    print("[DB] Using DATABASE_URL:", database_url[:50] + "...")  # debug
-    if 'sslmode' not in database_url:
-        database_url += '?sslmode=require'
-    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-else:
-    print("[DB] No DATABASE_URL - app will crash if Postgres needed")
-    raise RuntimeError("DATABASE_URL is missing - check Railway Variables tab")
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
+if not database_url:
+    raise RuntimeError("DATABASE_URL is missing in environment variables - check Railway Variables tab and Postgres service status")
+
+# Force correct dialect for psycopg v3 (no psycopg2)
+if database_url.startswith('postgres://'):
+    database_url = database_url.replace('postgres://', 'postgresql+psycopg://', 1)
+elif database_url.startswith('postgresql://'):
+    database_url = database_url.replace('postgresql://', 'postgresql+psycopg://', 1)
+
+# Ensure SSL (required by Railway Postgres)
+if 'sslmode' not in database_url:
+    database_url += '?sslmode=require'
+
+print("[DB] Using DATABASE_URL:", database_url[:50] + "...")  # debug
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}  # avoid pooling crashes
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
