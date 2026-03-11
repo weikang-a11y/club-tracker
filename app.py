@@ -13,22 +13,12 @@ from sqlalchemy.pool import NullPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
-# Force psycopg v3 dialect immediately
-database_url = os.environ.get('DATABASE_URL')
-if database_url:
-    # Supabase uses postgres:// or postgresql:// — force psycopg dialect
-    if database_url.startswith('postgres://'):
-        database_url = database_url.replace('postgres://', 'postgresql+psycopg://', 1)
-    if database_url.startswith('postgresql://'):
-        database_url = database_url.replace('postgresql://', 'postgresql+psycopg://', 1)
-    # Add SSL if missing (required by Supabase)
-    if 'sslmode' not in database_url:
-        database_url += '?sslmode=require'
-    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-    # Disable pooling (common Render crash cause)
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
-else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///club.db'
+# Force ONLY Railway Postgres - crash if DATABASE_URL is missing (for debugging)
+database_url = os.environ['DATABASE_URL']  # will raise KeyError if missing
+if 'sslmode' not in database_url:
+    database_url += '?sslmode=require'
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
