@@ -14,10 +14,15 @@ from sqlalchemy.pool import NullPool
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
 # Force ONLY Railway Postgres - crash if DATABASE_URL is missing (for debugging)
-database_url = os.environ['DATABASE_URL']  # will raise KeyError if missing
-if 'sslmode' not in database_url:
-    database_url += '?sslmode=require'
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+database_url = os.environ.get('DATABASE_URL')
+if database_url:
+    print("[DB] Using DATABASE_URL:", database_url[:50] + "...")  # debug
+    if 'sslmode' not in database_url:
+        database_url += '?sslmode=require'
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+else:
+    print("[DB] No DATABASE_URL - app will crash if Postgres needed")
+    raise RuntimeError("DATABASE_URL is missing - check Railway Variables tab")
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
