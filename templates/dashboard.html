@@ -1,285 +1,458 @@
 {% extends "base.html" %}
 
 {% block title %}Dashboard{% endblock %}
-
-{% block content %}
-<div class="container mt-4">
-    <h2 class="mb-4">Welcome, {{ user.username }}!</h2>
-    <p class="lead mb-4">
-        Role: <strong>{{ 'Officer' if user.role == 'officer' else 'Member' }}</strong>
-    </p>
-
-    <!-- Action buttons -->
-    <div class="mb-4">
+{% block page_title %}{{ 'Officer dashboard' if user.role == 'officer' else 'Member dashboard' }}{% endblock %}
+{% block page_subtitle %}
+    {% if user.role == 'officer' %}
+        Review member progress, host workshops, and keep attendance current.
+    {% else %}
+        Check what to do next, manage your workshops, and track your progress.
+    {% endif %}
+{% endblock %}
+{% block topbar_actions %}
+    <div class="action-strip">
         {% if user.role == 'officer' %}
-            <a href="{{ url_for('add_commitment') }}" class="btn btn-success me-2">Add New Commitment</a>
-            <a href="{{ url_for('reports') }}" class="btn btn-primary me-2">View Attendance Reports</a>
+            <a href="{{ url_for('add_commitment') }}" class="btn btn-brand">Assign commitment</a>
+            <a href="{{ url_for('reports') }}" class="btn btn-outline-secondary">View reports</a>
+        {% else %}
+            <a href="{{ url_for('add_workshop') }}" class="btn btn-brand">Create workshop</a>
         {% endif %}
+    </div>
+{% endblock %}
 
-        {% if user.role == 'member' %}
-            <a href="{{ url_for('add_workshop') }}" class="btn btn-info me-2">Add New Workshop</a>
-        {% endif %}
-
-        <a href="{{ url_for('logout') }}" class="btn btn-outline-danger float-end">Logout</a>
+{% block app_content %}
+{% if user.role == 'officer' %}
+    {% set due_soon = commitments | selectattr('deadline') | list | length %}
+    <div class="row g-3 mb-4">
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Members assigned</div>
+                <div class="metric-value">{{ commitments|length }}</div>
+                <div class="metric-note">Members currently tracked in your commitment list.</div>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Workshops to host</div>
+                <div class="metric-value">{{ assigned_workshops|length }}</div>
+                <div class="metric-note">Upcoming and past workshops assigned to you.</div>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Attendance records</div>
+                <div class="metric-value">{{ workshop_attendance_data|length }}</div>
+                <div class="metric-note">Members with attendance totals under your supervision.</div>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Quick actions</div>
+                <div class="metric-value fs-4">2</div>
+                <div class="metric-note">Assign commitments or submit attendance right away.</div>
+            </div>
+        </div>
     </div>
 
-    <!-- Progress Summary (Member only) – near top -->
-    {% if user.role == 'member' and progress_summary %}
-        <div class="card mb-4 border-primary">
-            <div class="card-header bg-primary text-white">
-                <h5 class="mb-0">My Commitments Progress</h5>
-            </div>
-            <div class="card-body">
-                <div class="row text-center">
-                    <div class="col-md-4 mb-3">
-                        <div class="progress mb-2">
-                            <div class="progress-bar bg-success" role="progressbar" 
-                                 style="width: {{ (progress_summary.roleplay.split('/')[0] | int / progress_summary.roleplay.split('/')[1] | int * 100) if progress_summary.roleplay.split('/')[1] | int > 0 else 0 }}%">
-                                {{ progress_summary.roleplay }}
-                            </div>
-                        </div>
-                        <p>Roleplay</p>
-                    </div>
-                    <div class="col-md-4 mb-3">
-                        <div class="progress mb-2">
-                            <div class="progress-bar bg-info" role="progressbar" 
-                                 style="width: {{ (progress_summary.written.split('/')[0] | int / progress_summary.written.split('/')[1] | int * 100) if progress_summary.written.split('/')[1] | int > 0 else 0 }}%">
-                                {{ progress_summary.written }}
-                            </div>
-                        </div>
-                        <p>Written Presentation</p>
-                    </div>
-                    <div class="col-md-4 mb-3">
-                        <div class="progress mb-2">
-                            <div class="progress-bar bg-warning" role="progressbar" 
-                                 style="width: {{ (progress_summary.exam.split('/')[0] | int / progress_summary.exam.split('/')[1] | int * 100) if progress_summary.exam.split('/')[1] | int > 0 else 0 }}%">
-                                {{ progress_summary.exam }}
-                            </div>
-                        </div>
-                        <p>Exam</p>
-                    </div>
-                </div>
-                <p class="mt-3 text-center"><strong>Deadline:</strong> {{ progress_summary.deadline }}</p>
-            </div>
-        </div>
-    {% endif %}
-
-    <!-- Officer: Members' Commitment Progress -->
-    {% if user.role == 'officer' and commitments %}
-        <h4 class="mt-5 mb-3">Members' Commitment Progress</h4>
-        <div class="table-responsive">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>Member</th>
-                        <th>Roleplay Remaining</th>
-                        <th>Written Remaining</th>
-                        <th>Exam Remaining</th>
-                        <th>Deadline</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for c in commitments %}
-                    <tr>
-                        <td>{{ c.member_name }}</td>
-                        <td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td>
-                        <td>{{ c.remaining_written }} / {{ c.required_written }}</td>
-                        <td>{{ c.remaining_exam }} / {{ c.required_exam }}</td>
-                        <td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    {% endif %}
-
-    <!-- Officer: Members' Workshop Attendance -->
-    {% if user.role == 'officer' and workshop_attendance_data %}
-        <h4 class="mt-5 mb-3">Workshop Attendance</h4>
-        <div class="table-responsive">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>Member</th>
-                        <th>Workshop Attendance</th>
-                        <th>Attendance</th>
-                        <th>Attendance Rate</th>
-                        <th>Total Workshops</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for data in workshop_attendance_data %}
-                    <tr>
-                        <td>{{ data.member_name }}</td>
-                        <td>{{ data.total_attended }}</td>
-                        <td>
-                            <form method="POST" action="{{ url_for('increment_general_attendance') }}" style="display:inline;">
-                                <input type="hidden" name="member_name" value="{{ data.member_name }}">
-                                <button type="submit" class="btn btn-sm btn-success">+1</button>
-                            </form>
-                        </td>
-                        <td>{{ (data.total_attended / 18 * 100) | round(1) }}%</td>
-                        <td>18</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    {% endif %}
-
-    <!-- Workshops -->
-    <h4 class="mt-5 mb-3">Workshops</h4>
-
-    {% if workshops %}
-        <div class="table-responsive">
-            <table class="table table-hover table-bordered">
-                <thead class="table-light">
-                    <tr>
-                        <th>Name</th>
-                        <th>Date & Time</th>
-                        <th>Assigned Officer</th>
-                        <th>Signed Up</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for ws in workshops %}
-                    {% set is_conflict = false %}
-                    {% set is_signed = ws in my_signups if user.role == 'member' else false %}
-
-                    {% if user.role == 'member' and not is_signed %}
-                        {% for s_start, s_end in signed_times %}
-                            {% if ws.time < s_end and s_start < ws.end_time %}
-                                {% set is_conflict = true %}
-                            {% endif %}
-                        {% endfor %}
-                    {% endif %}
-
-                    <tr {% if is_conflict %}class="table-secondary text-muted"{% endif %}>
-                        <td>{{ ws.name }}</td>
-                        <td>{{ ws.time | friendly_slot }}</td>
-                        <td>
-                            {% if ws.officer %}
-                                {{ ws.officer.username }}
-                            {% else %}
-                                Unknown (ID: {{ ws.officer_id or 'None' }})
-                            {% endif %}
-                        </td>
-                        <td>{{ ws.signups | length }}</td>
-                        <td>
-                            {% if user.role == 'member' %}
-                                {% if is_signed %}
-                                    <span class="badge bg-success">Signed Up</span>
-                                {% elif is_conflict %}
-                                    <span class="badge bg-secondary">Time Conflict</span>
-                                {% else %}
-                                    <form method="POST" action="{{ url_for('signup_workshop', workshop_id=ws.id) }}" style="display:inline;">
-                                        <button type="submit" class="btn btn-sm btn-outline-primary">Sign Up</button>
-                                    </form>
-                                {% endif %}
-                            {% endif %}
-
-                            {% if user.role == 'officer' and ws.officer_id == user.id %}
-                                <a href="{{ url_for('workshop_attendance', workshop_id=ws.id) }}"
-                                   class="btn btn-sm btn-info ms-2">Take Attendance</a>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    {% else %}
-        <p class="text-muted">No workshops yet.</p>
-    {% endif %}
-
-    <!-- Member: My Signed-up Workshops -->
-    {% if user.role == 'member' and my_signups %}
-        <h4 class="mt-5 mb-3">My Signed-up Workshops</h4>
-        <ul class="list-group">
-            {% for ws in my_signups %}
-                <li class="list-group-item d-flex justify-content-between align-items-center">
+    <div class="row g-4">
+        <div class="col-12 col-xl-7">
+            <div class="surface-card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-start gap-3">
                     <div>
-                        <strong>{{ ws.name }}</strong><br>
-                        <small>
-                            {{ ws.time | friendly_slot }} 
-                            (Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %})
-                        </small>
+                        <h2 class="section-title">Members needing attention</h2>
+                        <p class="section-kicker">See remaining work and deadline status at a glance.</p>
                     </div>
-                    <form method="POST" action="{{ url_for('cancel_signup', workshop_id=ws.id) }}" 
-                          style="display:inline;" 
-                          onsubmit="return confirm('Are you sure you want to cancel this sign-up?');">
-                        <button type="submit" class="btn btn-sm btn-outline-danger">Cancel Sign-up</button>
-                    </form>
-                </li>
-            {% endfor %}
-        </ul>
-    {% endif %}
-
-    <!-- Officer: Members' Sign-ups -->
-    {% if user.role == 'officer' and mentees_workshops %}
-        <h4 class="mt-5 mb-3">My Members' Workshop Sign-ups</h4>
-        {% for member_name, ws_list in mentees_workshops.items() %}
-            <div class="card mb-3">
-                <div class="card-header bg-light">
-                    Member: <strong>{{ member_name }}</strong>
+                    <span class="badge-soft primary">{{ commitments|length }} tracked</span>
                 </div>
                 <div class="card-body">
-                    {% if ws_list %}
-                        <ul class="list-group list-group-flush">
-                            {% for ws in ws_list %}
-                                <li class="list-group-item">
-                                    {{ ws.name }} — {{ ws.time | friendly_slot }}
-                                    (Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %})
+                    {% if commitments %}
+                        <div class="table-responsive">
+                            <table class="table compact-table align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Member</th>
+                                        <th>Roleplay</th>
+                                        <th>Written</th>
+                                        <th>Exam</th>
+                                        <th>Deadline</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for c in commitments %}
+                                        {% set total_remaining = c.remaining_roleplay + c.remaining_written + c.remaining_exam %}
+                                        <tr>
+                                            <td>
+                                                <div class="fw-semibold">{{ c.member_name }}</div>
+                                                <small class="text-muted">{{ total_remaining }} task{{ '' if total_remaining == 1 else 's' }} remaining</small>
+                                            </td>
+                                            <td>{{ c.required_roleplay - c.remaining_roleplay }}/{{ c.required_roleplay }}</td>
+                                            <td>{{ c.required_written - c.remaining_written }}/{{ c.required_written }}</td>
+                                            <td>{{ c.required_exam - c.remaining_exam }}/{{ c.required_exam }}</td>
+                                            <td>
+                                                {% if c.deadline %}
+                                                    <span class="badge-soft {{ 'danger' if total_remaining > 0 else 'success' }}">{{ c.deadline.strftime('%Y-%m-%d') }}</span>
+                                                {% else %}
+                                                    <span class="badge-soft neutral">No deadline</span>
+                                                {% endif %}
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="empty-state">No commitments assigned yet. Start by assigning a commitment to one of your members.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="surface-card">
+                <div class="card-header d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <h2 class="section-title">Workshop attendance</h2>
+                        <p class="section-kicker">Manual adjustments and actual attendance are combined below.</p>
+                    </div>
+                    <span class="badge-soft success">Based on 18 total workshops</span>
+                </div>
+                <div class="card-body">
+                    {% if workshop_attendance_data %}
+                        <div class="table-responsive">
+                            <table class="table compact-table align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Member</th>
+                                        <th>Attendance total</th>
+                                        <th>Rate</th>
+                                        <th>Adjustment</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for data in workshop_attendance_data %}
+                                        <tr>
+                                            <td class="fw-semibold">{{ data.member_name }}</td>
+                                            <td>{{ data.total_attended }}</td>
+                                            <td>{{ (data.total_attended / 18 * 100) | round(1) }}%</td>
+                                            <td>
+                                                <form method="POST" action="{{ url_for('increment_general_attendance') }}" class="d-inline">
+                                                    <input type="hidden" name="member_name" value="{{ data.member_name }}">
+                                                    <button type="submit" class="btn btn-sm btn-outline-success">+1 manual</button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="empty-state">Attendance totals will appear after members sign up or you add a manual attendance entry.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-xl-5">
+            <div class="surface-card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <h2 class="section-title">Host workflow</h2>
+                        <p class="section-kicker">Go straight from upcoming workshop to attendance submission.</p>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% if assigned_workshops %}
+                        <div class="content-grid">
+                            {% for ws in assigned_workshops %}
+                                <div class="workshop-card">
+                                    <div class="d-flex justify-content-between align-items-start gap-3">
+                                        <div>
+                                            <h3 class="h6 mb-1">{{ ws.name }}</h3>
+                                            <div class="inline-meta">
+                                                <span>{{ ws.time | friendly_slot }}</span>
+                                                <span>{{ ws.activity_type }}</span>
+                                            </div>
+                                        </div>
+                                        <span class="badge-soft primary">{{ ws.signups|length }} signed up</span>
+                                    </div>
+                                    <div class="mt-3 d-flex justify-content-between align-items-center gap-3">
+                                        <small class="text-muted">Hosted by you</small>
+                                        <a href="{{ url_for('workshop_attendance', workshop_id=ws.id) }}" class="btn btn-sm btn-brand">Take attendance</a>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="empty-state">No workshops are assigned to you yet.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="surface-card">
+                <div class="card-header">
+                    <h2 class="section-title">Members' workshop sign-ups</h2>
+                    <p class="section-kicker">Quick visibility into where your members have registered.</p>
+                </div>
+                <div class="card-body">
+                    {% if mentees_workshops %}
+                        <ul class="list-clean">
+                            {% for member_name, ws_list in mentees_workshops.items() %}
+                                <li class="p-3 border rounded-4 bg-light-subtle">
+                                    <div class="d-flex justify-content-between align-items-center gap-3 mb-2">
+                                        <div class="fw-semibold">{{ member_name }}</div>
+                                        <span class="badge-soft neutral">{{ ws_list|length }} signup{{ '' if ws_list|length == 1 else 's' }}</span>
+                                    </div>
+                                    {% if ws_list %}
+                                        <ul class="mb-0 ps-3 text-muted">
+                                            {% for ws in ws_list %}
+                                                <li>{{ ws.name }} · {{ ws.time | friendly_slot }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                    {% else %}
+                                        <small class="text-muted">No sign-ups yet.</small>
+                                    {% endif %}
                                 </li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <p class="text-muted mb-0">No sign-ups yet.</p>
+                        <div class="empty-state">No member signup activity to show yet.</div>
                     {% endif %}
                 </div>
             </div>
-        {% endfor %}
-    {% endif %}
-
-    <!-- Member: Workshop Attendance (at the very bottom) -->
-    {% if user.role == 'member' and workshop_attendance_data %}
-        <h4 class="mt-5 mb-3">Workshop Attendance</h4>
-        <div class="table-responsive">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>Workshop Attendance</th>
-                        <th>Attendance Rate</th>
-                        <th>Total Workshops</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for data in workshop_attendance_data %}
-                    <tr>
-                        <td>{{ data.total_attended }}</td>
-                        <td>{{ (data.total_attended / 18 * 100) | round(1) }}%</td>
-                        <td>18</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
         </div>
-    {% endif %}
+    </div>
+{% else %}
+    {% set roleplay_done = progress_summary.roleplay.split('/')[0] | int if progress_summary else 0 %}
+    {% set roleplay_total = progress_summary.roleplay.split('/')[1] | int if progress_summary else 0 %}
+    {% set written_done = progress_summary.written.split('/')[0] | int if progress_summary else 0 %}
+    {% set written_total = progress_summary.written.split('/')[1] | int if progress_summary else 0 %}
+    {% set exam_done = progress_summary.exam.split('/')[0] | int if progress_summary else 0 %}
+    {% set exam_total = progress_summary.exam.split('/')[1] | int if progress_summary else 0 %}
+    {% set overall_done = roleplay_done + written_done + exam_done %}
+    {% set overall_total = roleplay_total + written_total + exam_total %}
+    {% set next_workshop = my_signups|sort(attribute='time')|first if my_signups else None %}
 
-    <!-- My Attendance Summary (Member only) – now at the very bottom -->
-    {% if user.role == 'member' and attendance_summary %}
-        <h4 class="mt-5 mb-3">My Attendance Summary</h4>
-        <div class="card mb-4 border-success">
-            <div class="card-header bg-success text-white">
-                <h5 class="mb-0">My Attendance Summary</h5>
-            </div>
-            <div class="card-body">
-                <p>Signed up for workshops: <strong>{{ attendance_summary.signed }}</strong></p>
-                <p>Attended: <strong>{{ attendance_summary.attended }}</strong></p>
-                <p>Attendance rate: <strong>{{ attendance_summary.rate }}%</strong></p>
+    <div class="row g-3 mb-4">
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Overall completion</div>
+                <div class="metric-value">{{ ((overall_done / overall_total) * 100) | round(0) if overall_total > 0 else 0 }}%</div>
+                <div class="metric-note">{{ overall_done }} of {{ overall_total }} required activities completed.</div>
             </div>
         </div>
-    {% endif %}
-</div>
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Attendance rate</div>
+                <div class="metric-value">{{ attendance_summary.rate if attendance_summary else 0 }}%</div>
+                <div class="metric-note">{{ attendance_summary.attended if attendance_summary else 0 }} attended of 18 total workshops.</div>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Signed up workshops</div>
+                <div class="metric-value">{{ my_signups|length }}</div>
+                <div class="metric-note">Keep an eye on conflicts and upcoming sessions.</div>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="metric-card">
+                <div class="metric-label">Next workshop</div>
+                <div class="metric-value fs-4">{{ next_workshop.time.strftime('%m/%d') if next_workshop else 'None' }}</div>
+                <div class="metric-note">{{ next_workshop.name if next_workshop else 'You have no upcoming sign-ups yet.' }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-12 col-xl-7">
+            <div class="surface-card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <h2 class="section-title">My commitment progress</h2>
+                        <p class="section-kicker">Use this to see what is finished and what still needs your attention.</p>
+                    </div>
+                    <span class="badge-soft warning">Deadline: {{ progress_summary.deadline if progress_summary else 'Not set' }}</span>
+                </div>
+                <div class="card-body content-grid">
+                    <div>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong>Roleplay</strong>
+                            <span class="text-muted">{{ progress_summary.roleplay if progress_summary else '0/0' }}</span>
+                        </div>
+                        <div class="progress-track"><div class="progress-fill" style="width: {{ ((roleplay_done / roleplay_total) * 100) if roleplay_total > 0 else 0 }}%"></div></div>
+                    </div>
+                    <div>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong>Written Presentation</strong>
+                            <span class="text-muted">{{ progress_summary.written if progress_summary else '0/0' }}</span>
+                        </div>
+                        <div class="progress-track"><div class="progress-fill" style="width: {{ ((written_done / written_total) * 100) if written_total > 0 else 0 }}%"></div></div>
+                    </div>
+                    <div>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong>Exam</strong>
+                            <span class="text-muted">{{ progress_summary.exam if progress_summary else '0/0' }}</span>
+                        </div>
+                        <div class="progress-track"><div class="progress-fill" style="width: {{ ((exam_done / exam_total) * 100) if exam_total > 0 else 0 }}%"></div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="surface-card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <h2 class="section-title">Open workshops</h2>
+                        <p class="section-kicker">Pick a session that fits your schedule and required activity type.</p>
+                    </div>
+                    <span class="badge-soft primary">{{ workshops|length }} total</span>
+                </div>
+                <div class="card-body">
+                    {% if workshops %}
+                        <div class="row g-3">
+                            {% for ws in workshops %}
+                                {% set ns = namespace(is_conflict=false) %}
+                                {% set is_signed = ws in my_signups %}
+                                {% if not is_signed %}
+                                    {% for s_start, s_end in signed_times %}
+                                        {% if ws.time < s_end and s_start < ws.end_time %}
+                                            {% set ns.is_conflict = true %}
+                                        {% endif %}
+                                    {% endfor %}
+                                {% endif %}
+                                <div class="col-12 col-lg-6">
+                                    <div class="workshop-card {% if ns.is_conflict and not is_signed %}muted{% endif %}">
+                                        <div class="d-flex justify-content-between align-items-start gap-3 mb-2">
+                                            <div>
+                                                <h3 class="h6 mb-1">{{ ws.name }}</h3>
+                                                <div class="inline-meta">
+                                                    <span>{{ ws.time | friendly_slot }}</span>
+                                                    <span>{{ ws.activity_type }}</span>
+                                                </div>
+                                            </div>
+                                            <span class="badge-soft neutral">{{ ws.signups|length }} signed up</span>
+                                        </div>
+                                        <div class="text-muted small mb-3">Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %}</div>
+                                        <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                                            <div>
+                                                {% if is_signed %}
+                                                    <span class="badge-soft success">Already signed up</span>
+                                                {% elif ns.is_conflict %}
+                                                    <span class="badge-soft warning">Time conflict</span>
+                                                {% else %}
+                                                    <span class="badge-soft primary">Available</span>
+                                                {% endif %}
+                                            </div>
+                                            <div>
+                                                {% if is_signed %}
+                                                    <form method="POST" action="{{ url_for('cancel_signup', workshop_id=ws.id) }}" class="d-inline" onsubmit="return confirm('Are you sure you want to cancel this sign-up?');">
+                                                        <button type="submit" class="btn btn-sm btn-outline-danger">Cancel</button>
+                                                    </form>
+                                                {% elif ns.is_conflict %}
+                                                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled>Conflict</button>
+                                                {% else %}
+                                                    <form method="POST" action="{{ url_for('signup_workshop', workshop_id=ws.id) }}" class="d-inline">
+                                                        <button type="submit" class="btn btn-sm btn-brand">Sign up</button>
+                                                    </form>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="empty-state">There are no workshops yet. Create one or check back later.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-xl-5">
+            <div class="surface-card mb-4">
+                <div class="card-header">
+                    <h2 class="section-title">Recommended next step</h2>
+                    <p class="section-kicker">A quick summary of what you still owe.</p>
+                </div>
+                <div class="card-body">
+                    {% if progress_summary %}
+                        <ul class="list-clean">
+                            <li class="d-flex justify-content-between align-items-center p-3 border rounded-4 bg-light-subtle">
+                                <span>Roleplay remaining</span>
+                                <strong>{{ roleplay_total - roleplay_done }}</strong>
+                            </li>
+                            <li class="d-flex justify-content-between align-items-center p-3 border rounded-4 bg-light-subtle">
+                                <span>Written remaining</span>
+                                <strong>{{ written_total - written_done }}</strong>
+                            </li>
+                            <li class="d-flex justify-content-between align-items-center p-3 border rounded-4 bg-light-subtle">
+                                <span>Exam remaining</span>
+                                <strong>{{ exam_total - exam_done }}</strong>
+                            </li>
+                        </ul>
+                    {% else %}
+                        <div class="empty-state">Your commitment summary will appear here once an officer assigns one.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="surface-card mb-4">
+                <div class="card-header">
+                    <h2 class="section-title">My workshops</h2>
+                    <p class="section-kicker">Everything you have already signed up for.</p>
+                </div>
+                <div class="card-body">
+                    {% if my_signups %}
+                        <ul class="list-clean">
+                            {% for ws in my_signups|sort(attribute='time') %}
+                                <li class="p-3 border rounded-4 bg-light-subtle">
+                                    <div class="d-flex justify-content-between align-items-start gap-3">
+                                        <div>
+                                            <div class="fw-semibold">{{ ws.name }}</div>
+                                            <div class="inline-meta mt-1">
+                                                <span>{{ ws.time | friendly_slot }}</span>
+                                                <span>Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %}</span>
+                                            </div>
+                                        </div>
+                                        <form method="POST" action="{{ url_for('cancel_signup', workshop_id=ws.id) }}" onsubmit="return confirm('Are you sure you want to cancel this sign-up?');">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger">Cancel</button>
+                                        </form>
+                                    </div>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="empty-state">No workshop sign-ups yet. Choose one from the open workshop list.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="surface-card">
+                <div class="card-header">
+                    <h2 class="section-title">Attendance summary</h2>
+                    <p class="section-kicker">This matches the officer view using a fixed total of 18 workshops.</p>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12 col-sm-4">
+                            <div class="p-3 border rounded-4 bg-light-subtle h-100">
+                                <div class="text-muted small mb-1">Signed up</div>
+                                <div class="fs-4 fw-semibold">{{ attendance_summary.signed if attendance_summary else 0 }}</div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-sm-4">
+                            <div class="p-3 border rounded-4 bg-light-subtle h-100">
+                                <div class="text-muted small mb-1">Attended</div>
+                                <div class="fs-4 fw-semibold">{{ attendance_summary.attended if attendance_summary else 0 }}</div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-sm-4">
+                            <div class="p-3 border rounded-4 bg-light-subtle h-100">
+                                <div class="text-muted small mb-1">Rate</div>
+                                <div class="fs-4 fw-semibold">{{ attendance_summary.rate if attendance_summary else 0 }}%</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endif %}
 {% endblock %}

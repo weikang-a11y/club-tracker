@@ -13,25 +13,21 @@ from sqlalchemy.pool import NullPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
-# NO FALLBACK TO SQLITE - force Postgres or crash early
+# Get DATABASE_URL from environment (Railway/Neon/etc.)
 database_url = os.environ.get('DATABASE_URL')
-if not database_url:
-    raise RuntimeError("DATABASE_URL is missing in environment variables - check Railway Variables tab and Postgres service status")
 
-# Force correct dialect for psycopg v3 (no psycopg2)
-if database_url.startswith('postgres://'):
-    database_url = database_url.replace('postgres://', 'postgresql+psycopg://', 1)
-elif database_url.startswith('postgresql://'):
-    database_url = database_url.replace('postgresql://', 'postgresql+psycopg://', 1)
-
-# Ensure SSL (required by Railway Postgres)
-if 'sslmode' not in database_url:
-    database_url += '?sslmode=require'
-
-print("[DB] Using DATABASE_URL:", database_url[:50] + "...")  # debug
-
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}  # avoid pooling crashes
+if database_url:
+    # Production: use the provided URL (add sslmode if missing)
+    if 'sslmode' not in database_url:
+        database_url += '?sslmode=require'
+    print("[DB] Using external database:", database_url[:60] + "...")
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}  # good practice on cloud
+else:
+    # Local development fallback: use SQLite club.db in project folder
+    print("[DB] No DATABASE_URL found → falling back to local SQLite: club.db")
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///club.db'
+    
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)

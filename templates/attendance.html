@@ -1,73 +1,94 @@
 {% extends "base.html" %}
 
 {% block title %}Take Attendance - {{ workshop.name }}{% endblock %}
+{% block page_title %}Take attendance{% endblock %}
+{% block page_subtitle %}Review the roster for {{ workshop.name }} and mark who was present.{% endblock %}
+{% block topbar_actions %}
+    <div class="action-strip">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to dashboard</a>
+    </div>
+{% endblock %}
 
-{% block content %}
-<div class="container mt-5">
-    <h2>Take Attendance: {{ workshop.name }}</h2>
-
-    <div class="row mb-4">
-        <div class="col-md-6">
-            <p><strong>Date & Time:</strong> {{ workshop.time | friendly_slot }}</p>
-        </div>
-        <div class="col-md-6 text-md-end">
-            <p><strong>Assigned Officer:</strong> 
-                {% if workshop.officer %}
-                    {{ workshop.officer.username }}
-                {% else %}
-                    Unknown
-                {% endif %}
-            </p>
+{% block app_content %}
+<div class="row g-4">
+    <div class="col-12 col-xl-4">
+        <div class="surface-card h-100">
+            <div class="card-header">
+                <h2 class="section-title">Workshop summary</h2>
+                <p class="section-kicker">Use this page after the session to submit attendance once.</p>
+            </div>
+            <div class="card-body content-grid">
+                <div>
+                    <div class="text-muted small mb-1">Workshop</div>
+                    <div class="fw-semibold">{{ workshop.name }}</div>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Date & time</div>
+                    <div class="fw-semibold">{{ workshop.time | friendly_slot }}</div>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Activity type</div>
+                    <span class="badge-soft primary">{{ workshop.activity_type }}</span>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Assigned officer</div>
+                    <div class="fw-semibold">{{ workshop.officer.username if workshop.officer else 'Unknown' }}</div>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Signed-up members</div>
+                    <div class="fw-semibold">{{ members_with_attendance | length }}</div>
+                </div>
+            </div>
         </div>
     </div>
 
-    {% if members_with_attendance %}
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0">Signed-up Members ({{ members_with_attendance | length }})</h5>
+    <div class="col-12 col-xl-8">
+        <div class="surface-card">
+            <div class="card-header d-flex justify-content-between align-items-start gap-3">
+                <div>
+                    <h2 class="section-title">Attendance roster</h2>
+                    <p class="section-kicker">Checked members will be counted as present and their remaining commitment total will update automatically.</p>
+                </div>
+                <span class="badge-soft success">{{ members_with_attendance | length }} on roster</span>
             </div>
             <div class="card-body">
-                <form method="POST">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>Member Username</th>
-                                <th>Attended?</th>
-                            </tr>
-                        </thead>
-                        <tbody>
+                {% if members_with_attendance %}
+                    <form method="POST" id="attendance-form">
+                        <div class="content-grid">
                             {% for item in members_with_attendance %}
-                            <tr>
-                                <td>{{ item.user.username }}</td>
-                                <td>
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" 
-                                               name="attended_user_{{ item.user.id }}" 
-                                               id="attended_{{ item.user.id }}" 
-                                               {% if item.attended is true %}checked{% endif %}>
-                                        <label class="form-check-label" for="attended_{{ item.user.id }}">
-                                            Present
-                                        </label>
+                                <label class="workshop-card d-flex justify-content-between align-items-center gap-3" for="attended_{{ item.user.id }}">
+                                    <div>
+                                        <div class="fw-semibold">{{ item.user.username }}</div>
+                                        <small class="text-muted">Mark present if this member attended the full session.</small>
                                     </div>
-                                </td>
-                            </tr>
+                                    <div class="form-check form-switch m-0">
+                                        <input class="form-check-input" type="checkbox" role="switch"
+                                               name="attended_user_{{ item.user.id }}"
+                                               id="attended_{{ item.user.id }}"
+                                               {% if item.attended is true %}checked{% endif %}>
+                                    </div>
+                                </label>
                             {% endfor %}
-                        </tbody>
-                    </table>
+                        </div>
 
-                    <div class="d-grid d-md-block mt-3">
-                        <button type="submit" class="btn btn-success">Save Attendance</button>
-                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary ms-2">Cancel</a>
-                    </div>
-                </form>
+                        <div class="sticky-save mt-4">
+                            <div class="surface-card p-3 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+                                <div>
+                                    <div class="fw-semibold">Ready to save attendance?</div>
+                                    <small class="text-muted">You can reopen this page later. Checked boxes stay selected after saving.</small>
+                                </div>
+                                <div class="action-strip">
+                                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+                                    <button type="submit" class="btn btn-brand">Save attendance</button>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                {% else %}
+                    <div class="empty-state">No members have signed up for this workshop yet.</div>
+                {% endif %}
             </div>
         </div>
-    {% else %}
-        <div class="alert alert-info">
-            No members have signed up for this workshop yet.
-        </div>
-    {% endif %}
-
-    <a href="{{ url_for('dashboard') }}" class="btn btn-secondary mt-3">Back to Dashboard</a>
+    </div>
 </div>
 {% endblock %}

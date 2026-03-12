@@ -2,41 +2,32 @@
 
 {% block title %}Register{% endblock %}
 
-{% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-6 col-lg-5">
-        <div class="card mt-5">
-            <div class="card-body">
-                <h2 class="card-title text-center mb-4">Register</h2>
-
-                <form method="POST">
-                    {{ form.hidden_tag() }}
-
-                    <div class="mb-3">
-                        {{ form.username.label(class="form-label") }}
-                        {{ form.username(class="form-control") }}
-                    </div>
-
-                    <div class="mb-3">
-                        {{ form.password.label(class="form-label") }}
-                        {{ form.password(class="form-control") }}
-                    </div>
-
-                    <div class="mb-3">
-                        {{ form.role.label(class="form-label") }}
-                        {{ form.role(class="form-select") }}
-                    </div>
-
-                    <div class="d-grid">
-                        {{ form.submit(class="btn btn-primary btn-block") }}
-                    </div>
-                </form>
-
-                <div class="text-center mt-3">
-                    <small>Already have an account? <a href="{{ url_for('login') }}">Login here</a></small>
-                </div>
-            </div>
-        </div>
+{% block auth_content %}
+    <div class="text-center mb-4">
+        <h2 class="mb-2">Create your account</h2>
+        <p class="text-muted mb-0">Join as an officer or member to start tracking club activity.</p>
     </div>
-</div>
+
+    <form method="POST" class="row g-3">
+        {{ form.hidden_tag() }}
+        <div class="col-12">
+            {{ form.username.label(class="form-label fw-semibold") }}
+            {{ form.username(class="form-control form-control-lg", placeholder="Choose a username") }}
+        </div>
+        <div class="col-12">
+            {{ form.password.label(class="form-label fw-semibold") }}
+            {{ form.password(class="form-control form-control-lg", placeholder="Create a password") }}
+        </div>
+        <div class="col-12">
+            {{ form.role.label(class="form-label fw-semibold") }}
+            {{ form.role(class="form-select form-select-lg") }}
+        </div>
+        <div class="col-12 d-grid mt-2">
+            {{ form.submit(class="btn btn-brand btn-lg") }}
+        </div>
+    </form>
+
+    <div class="text-center mt-4">
+        <small class="text-muted">Already have an account? <a href="{{ url_for('login') }}">Login here</a></small>
+    </div>
 {% endblock %}
