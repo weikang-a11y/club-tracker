@@ -13,22 +13,38 @@ from sqlalchemy.pool import NullPool
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
-# Get DATABASE_URL from environment (Railway/Neon/etc.)
-database_url = os.environ.get('DATABASE_URL')
+# Read database URL from environment (Railway / cloud)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-if database_url:
-    # Production: use the provided URL (add sslmode if missing)
-    if 'sslmode' not in database_url:
-        database_url += '?sslmode=require'
-    print("[DB] Using external database:", database_url[:60] + "...")
-    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}  # good practice on cloud
+if DATABASE_URL:
+    # Convert old postgres schemes to psycopg driver
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace(
+            "postgres://",
+            "postgresql+psycopg://",
+            1
+        )
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace(
+            "postgresql://",
+            "postgresql+psycopg://",
+            1
+        )
+
+    print(f"[DB] Using external database: {DATABASE_URL[:60]}...")
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+
 else:
-    # Local development fallback: use SQLite club.db in project folder
-    print("[DB] No DATABASE_URL found → falling back to local SQLite: club.db")
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///club.db'
-    
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    # Local development fallback
+    local_db = os.path.join(os.path.dirname(__file__), "club.db")
+
+    print("[DB] No DATABASE_URL found, using local SQLite database.")
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{local_db}"
+
+# Common SQLAlchemy settings
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
