@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Add Workshop{% endblock %}
+{% block title %}Workshop{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mt-4 mb-4">
     <div>
@@ -27,11 +27,11 @@
     <div class="col-lg-7">
         <div class="card border-0 shadow-sm rounded-4">
             <div class="card-body p-4">
-                <h4 class="mb-3">My Created Workshops</h4>
+                <h4 class="mb-3">My Workshops</h4>
                 {% if created_workshops %}
                     <div class="table-responsive">
                         <table class="table align-middle">
-                            <thead><tr><th>Name</th><th>Time</th><th>Host</th><th></th></tr></thead>
+                            <thead><tr><th>Name</th><th>Time</th><th>Officer</th><th></th></tr></thead>
                             <tbody>
                             {% for ws in created_workshops %}
                                 <tr>
@@ -39,17 +39,23 @@
                                     <td>{{ ws.time | friendly_slot }}</td>
                                     <td>{{ ws.officer.username if ws.officer else 'Unknown' }}</td>
                                     <td class="text-end">
-                                        <form method="POST" action="{{ url_for('delete_workshop', workshop_id=ws.id) }}" onsubmit="return confirm('Delete this workshop?');">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger">Delete Workshop</button>
-                                        </form>
+                                        <div class="d-inline-flex gap-2">
+                                            <a href="{{ url_for('edit_workshop', workshop_id=ws.id) }}" class="btn btn-sm btn-outline-primary">Edit Workshop</a>
+                                            <form method="POST" action="{{ url_for('delete_workshop', workshop_id=ws.id) }}" class="js-confirm-form">
+                                                <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
+                                                    data-confirm-title="Delete Workshop"
+                                                    data-confirm-message="Delete this workshop?"
+                                                    data-confirm-btn-text="Delete"
+                                                    data-confirm-btn-class="btn-danger">Delete Workshop</button>
+                                            </form>
+                                        </div>
                                     </td>
                                 </tr>
                             {% endfor %}
                             </tbody>
                         </table>
                     </div>
-                    <div class="form-text">Workshops with sign-ups cannot be deleted.</div>
-                {% else %}
+{% else %}
                     <p class="text-muted mb-0">You have not created any workshops yet.</p>
                 {% endif %}
             </div>

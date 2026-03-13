@@ -153,6 +153,17 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
+    # Backfill missing creator signups for existing workshops
+    for ws in Workshop.query.all():
+        if ws.creator_id:
+            creator = User.query.get(ws.creator_id)
+            if creator and creator not in ws.signups:
+                ws.signups.append(creator)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
 
 def friendly_slot(dt):
     if not dt:
@@ -185,7 +196,11 @@ def dashboard():
         attendance_locked_ids = {row.workshop_id for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()}
 
         member_names = {c.member_name for c in commitments}
-        for member_name in member_names:
+        for ws in assigned_workshops:
+            for member in ws.signups:
+                member_names.add(member.username)
+
+        for member_name in sorted(member_names, key=str.lower):
             member = User.query.filter_by(username=member_name).first()
             if member:
                 actual_attended = db.session.query(workshop_signups).filter_by(user_id=member.id, attended=True).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
@@ -200,7 +215,6 @@ def dashboard():
                 })
     else:
         commitments = Commitment.query.filter_by(member_name=current_user.username).all()
-        # IMPORTANT: keep this scoped to the current member's sign-ups only.
         workshops = current_user.workshops.options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
         created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
 
@@ -212,26 +226,25 @@ def dashboard():
                 'exam': f"{c.required_exam - c.remaining_exam}/{c.required_exam}",
                 'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A'
             }
+            officer = c.user
+            officer_id = officer.id if officer else None
+            actual_attended = 0
+            manual_count = 0
+            if officer_id:
+                actual_attended = db.session.query(workshop_signups).filter_by(user_id=current_user.id, attended=True).join(Workshop).filter(Workshop.officer_id == officer_id).count()
+                ga = GeneralAttendance.query.filter_by(officer_id=officer_id, member_name=current_user.username).first()
+                manual_count = ga.manual_count if ga else 0
 
-        attended_count = db.session.query(workshop_signups).filter_by(
-            user_id=current_user.id,
-            attended=True
-        ).count()
-
-        total_signed = len(current_user.workshops.all())
-
-        attendance_summary = {
-            'signed': total_signed,
-            'attended': attended_count,
-            'rate': round((attended_count / 18 * 100) if 18 > 0 else 0.0, 1)
-        }
+            total_attended = actual_attended + manual_count
+            total_signed = len(current_user.workshops.all())
+            attendance_summary = {'signed': total_signed, 'attended': total_attended, 'rate': round((total_attended / 18 * 100) if 18 > 0 else 0.0, 1)}
 
     for ws in workshops:
         ws.end_time = ws.time + timedelta(minutes=20)
     for ws in created_workshops:
         ws.end_time = ws.time + timedelta(minutes=20)
 
-    my_signups = workshops if current_user.role == 'member' else []
+    my_signups = current_user.workshops.all() if current_user.role == 'member' else []
     mentees_workshops = {}
     if current_user.role == 'officer':
         mentee_names = {c.member_name for c in commitments}
@@ -329,14 +342,104 @@ def add_workshop():
     form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
     if form.validate_on_submit():
         workshop_time = datetime.strptime(f"{form.workshop_date.data} {form.slot.data}:00", '%Y-%m-%d %H:%M:%S')
+        existing = Workshop.query.filter_by(
+            time=workshop_time,
+            officer_id=form.officer_id.data
+        ).first()
+
+        if existing:
+            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')
+            created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(
+                joinedload(Workshop.officer)
+            ).order_by(Workshop.time).all()
+            return render_template('add_workshop.html', form=form, created_workshops=created_workshops)        
         ws = Workshop(name=form.name.data.strip(), time=workshop_time, officer_id=form.officer_id.data,
                       activity_type=form.activity_type.data, creator_id=current_user.id)
         db.session.add(ws)
+        db.session.flush()
+        if current_user not in ws.signups:
+            ws.signups.append(current_user)
         db.session.commit()
         flash('Workshop added.', 'success')
         return redirect(url_for('add_workshop'))
     created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
     return render_template('add_workshop.html', form=form, created_workshops=created_workshops)
+
+
+@app.route('/edit_workshop/<int:workshop_id>', methods=['GET', 'POST'])
+@login_required
+def edit_workshop(workshop_id):
+    workshop = Workshop.query.get_or_404(workshop_id)
+
+    if current_user.role != 'member' or workshop.creator_id != current_user.id:
+        flash('You are not allowed to edit this workshop.', 'danger')
+        return redirect(url_for('add_workshop'))
+
+    original_date = workshop.time.date()
+    original_slot = workshop.time.strftime('%H:%M')
+
+    form = WorkshopForm()
+    officers = User.query.filter_by(role='officer').order_by(User.username).all()
+    form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
+
+    if request.method == 'GET':
+        form.name.data = workshop.name
+        form.workshop_date.data = original_date
+        form.slot.data = original_slot
+        form.activity_type.data = workshop.activity_type
+        form.officer_id.data = workshop.officer_id
+
+    if form.validate_on_submit():
+        workshop_time = datetime.strptime(
+            f"{form.workshop_date.data} {form.slot.data}:00",
+            '%Y-%m-%d %H:%M:%S'
+        )
+
+        existing = Workshop.query.filter_by(
+            time=workshop_time,
+            officer_id=form.officer_id.data
+        ).filter(Workshop.id != workshop.id).first()
+
+        if existing:
+            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')
+
+            created_workshops = Workshop.query.filter_by(
+                creator_id=current_user.id
+            ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+            # revert the form display to the original saved values
+            form.workshop_date.data = original_date
+            form.slot.data = original_slot
+            form.officer_id.data = workshop.officer_id
+            form.activity_type.data = workshop.activity_type
+            form.name.data = workshop.name
+
+            return render_template(
+                'add_workshop.html',
+                form=form,
+                created_workshops=created_workshops,
+                editing_workshop=workshop
+            )
+
+        workshop.name = form.name.data.strip()
+        workshop.time = workshop_time
+        workshop.officer_id = form.officer_id.data
+        workshop.activity_type = form.activity_type.data
+
+        db.session.commit()
+        flash('Workshop updated.', 'success')
+        return redirect(url_for('add_workshop'))
+
+    created_workshops = Workshop.query.filter_by(
+        creator_id=current_user.id
+    ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+    return render_template(
+        'add_workshop.html',
+        form=form,
+        created_workshops=created_workshops,
+        editing_workshop=workshop
+    )
 
 @app.route('/delete_workshop/<int:workshop_id>', methods=['POST'])
 @login_required
@@ -345,9 +448,6 @@ def delete_workshop(workshop_id):
     if current_user.role != 'member' or workshop.creator_id != current_user.id:
         flash('You are not allowed to delete this workshop.', 'danger')
         return redirect(url_for('dashboard'))
-    if len(workshop.signups) > 0:
-        flash('This workshop cannot be deleted because members have already signed up.', 'warning')
-        return redirect(url_for('add_workshop'))
     db.session.delete(workshop)
     db.session.commit()
     flash('Workshop deleted.', 'success')
@@ -489,11 +589,7 @@ def reports():
         end_dt = ws.time + timedelta(minutes=20)
         time_range = f"{ws.time.strftime('%I:%M').lstrip('0')} - {end_dt.strftime('%I:%M').lstrip('0')} {end_dt.strftime('%p').lower()}"
         signup_names = ', '.join(sorted([u.username for u in ws.signups], key=str.lower)) or 'None'
-        calendar_groups.setdefault(day, []).append({
-            'workshop': ws,
-            'time_range': time_range,
-            'signup_names': signup_names
-        })
+        calendar_groups.setdefault(day, []).append({'workshop': ws, 'time_range': time_range, 'signup_names': signup_names})
     return render_template('reports.html', reports_data=reports_data, active_tab=active_tab, calendar_groups=calendar_groups, attendance_locked_ids=attendance_locked_ids)
 
 if __name__ == '__main__':
