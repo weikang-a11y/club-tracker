@@ -1,73 +1,75 @@
 {% extends "base.html" %}
-
-{% block title %}Take Attendance - {{ workshop.name }}{% endblock %}
-
+{% block title %}Workshop Attendance{% endblock %}
 {% block content %}
-<div class="container mt-5">
-    <h2>Take Attendance: {{ workshop.name }}</h2>
-
-    <div class="row mb-4">
-        <div class="col-md-6">
-            <p><strong>Date & Time:</strong> {{ workshop.time | friendly_slot }}</p>
-        </div>
-        <div class="col-md-6 text-md-end">
-            <p><strong>Assigned Officer:</strong> 
-                {% if workshop.officer %}
-                    {{ workshop.officer.username }}
-                {% else %}
-                    Unknown
-                {% endif %}
-            </p>
-        </div>
+<div class="d-flex justify-content-between align-items-center mt-4 mb-4">
+    <div>
+        <h2 class="mb-1">Take Attendance</h2>
+        <p class="text-muted mb-0">{{ workshop.name }} · {{ workshop.time | friendly_slot }} · {{ workshop.activity_type }}</p>
     </div>
-
-    {% if members_with_attendance %}
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0">Signed-up Members ({{ members_with_attendance | length }})</h5>
-            </div>
-            <div class="card-body">
-                <form method="POST">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>Member Username</th>
-                                <th>Attended?</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for item in members_with_attendance %}
-                            <tr>
-                                <td>{{ item.user.username }}</td>
-                                <td>
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" 
-                                               name="attended_user_{{ item.user.id }}" 
-                                               id="attended_{{ item.user.id }}" 
-                                               {% if item.attended is true %}checked{% endif %}>
-                                        <label class="form-check-label" for="attended_{{ item.user.id }}">
-                                            Present
-                                        </label>
-                                    </div>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-
-                    <div class="d-grid d-md-block mt-3">
-                        <button type="submit" class="btn btn-success">Save Attendance</button>
-                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary ms-2">Cancel</a>
-                    </div>
-                </form>
-            </div>
-        </div>
-    {% else %}
-        <div class="alert alert-info">
-            No members have signed up for this workshop yet.
-        </div>
-    {% endif %}
-
-    <a href="{{ url_for('dashboard') }}" class="btn btn-secondary mt-3">Back to Dashboard</a>
+    <a href="{{ url_for('reports', tab='calendar') }}" class="btn btn-outline-secondary">Back to Calendar</a>
 </div>
+
+<div class="attendance-member-card card border-0 shadow-sm rounded-4">
+    <div class="card-body p-4">
+        {% if already_submitted %}
+            <div class="alert alert-secondary mb-0">Attendance has already been submitted for this workshop.</div>
+        {% elif members_with_attendance %}
+            <form method="POST" id="attendance-form">
+                <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                    <div>
+                        <h5 class="mb-1">Members</h5>
+                        <div class="text-muted small">Check members who are present, then save attendance.</div>
+                    </div>
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="attendance-counter text-primary" id="attendance-counter"></div>
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="markAllPresent()">Mark All Present</button>
+                    </div>
+                </div>
+
+                <div class="vstack gap-2">
+                    {% for item in members_with_attendance %}
+                        <label class="form-check border rounded-3 px-3 py-3 attendance-member-row" for="u{{ item.user.id }}">
+                            <span class="fw-medium">{{ item.user.username }}</span>
+                            <span class="d-flex align-items-center gap-2">
+                                <span class="text-muted small">Present</span>
+                                <input class="form-check-input attendance-checkbox m-0" type="checkbox" name="attended_user_{{ item.user.id }}" id="u{{ item.user.id }}" checked>
+                            </span>
+                        </label>
+                    {% endfor %}
+                </div>
+
+                <button type="submit" class="btn btn-primary mt-3">Save Attendance</button>
+            </form>
+        {% else %}
+            <p class="text-muted mb-0">No members signed up for this workshop.</p>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function getAttendanceBoxes() {
+    return Array.from(document.querySelectorAll('.attendance-checkbox'));
+}
+
+function updateAttendanceCounter() {
+    const boxes = getAttendanceBoxes();
+    const checked = boxes.filter(box => box.checked).length;
+    const counter = document.getElementById('attendance-counter');
+    if (counter) {
+        counter.textContent = `Present: ${checked} / ${boxes.length}`;
+    }
+}
+
+function markAllPresent() {
+    getAttendanceBoxes().forEach(box => { box.checked = true; });
+    updateAttendanceCounter();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    getAttendanceBoxes().forEach(box => {
+        box.addEventListener('change', updateAttendanceCounter);
+    });
+    updateAttendanceCounter();
+});
+</script>
 {% endblock %}

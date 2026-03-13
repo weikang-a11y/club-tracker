@@ -1,285 +1,279 @@
 {% extends "base.html" %}
-
 {% block title %}Dashboard{% endblock %}
-
 {% block content %}
-<div class="container mt-4">
-    <h2 class="mb-4">Welcome, {{ user.username }}!</h2>
-    <p class="lead mb-4">
-        Role: <strong>{{ 'Officer' if user.role == 'officer' else 'Member' }}</strong>
-    </p>
-
-    <!-- Action buttons -->
-    <div class="mb-4">
-        {% if user.role == 'officer' %}
-            <a href="{{ url_for('add_commitment') }}" class="btn btn-success me-2">Add New Commitment</a>
-            <a href="{{ url_for('reports') }}" class="btn btn-primary me-2">View Attendance Reports</a>
-        {% endif %}
-
-        {% if user.role == 'member' %}
-            <a href="{{ url_for('add_workshop') }}" class="btn btn-info me-2">Add New Workshop</a>
-        {% endif %}
-
-        <a href="{{ url_for('logout') }}" class="btn btn-outline-danger float-end">Logout</a>
+<div class="card page-header-card mb-4">
+    <div class="card-body p-4">
+        <h2 class="mb-1">Welcome, {{ user.username }}!</h2>
+        <p class="lead mb-0">Role: <strong>{{ 'Officer' if user.role == 'officer' else 'Member' }}</strong></p>
     </div>
+</div>
 
-    <!-- Progress Summary (Member only) – near top -->
-    {% if user.role == 'member' and progress_summary %}
-        <div class="card mb-4 border-primary">
-            <div class="card-header bg-primary text-white">
-                <h5 class="mb-0">My Commitments Progress</h5>
-            </div>
-            <div class="card-body">
-                <div class="row text-center">
-                    <div class="col-md-4 mb-3">
-                        <div class="progress mb-2">
-                            <div class="progress-bar bg-success" role="progressbar" 
-                                 style="width: {{ (progress_summary.roleplay.split('/')[0] | int / progress_summary.roleplay.split('/')[1] | int * 100) if progress_summary.roleplay.split('/')[1] | int > 0 else 0 }}%">
-                                {{ progress_summary.roleplay }}
-                            </div>
-                        </div>
-                        <p>Roleplay</p>
-                    </div>
-                    <div class="col-md-4 mb-3">
-                        <div class="progress mb-2">
-                            <div class="progress-bar bg-info" role="progressbar" 
-                                 style="width: {{ (progress_summary.written.split('/')[0] | int / progress_summary.written.split('/')[1] | int * 100) if progress_summary.written.split('/')[1] | int > 0 else 0 }}%">
-                                {{ progress_summary.written }}
-                            </div>
-                        </div>
-                        <p>Written Presentation</p>
-                    </div>
-                    <div class="col-md-4 mb-3">
-                        <div class="progress mb-2">
-                            <div class="progress-bar bg-warning" role="progressbar" 
-                                 style="width: {{ (progress_summary.exam.split('/')[0] | int / progress_summary.exam.split('/')[1] | int * 100) if progress_summary.exam.split('/')[1] | int > 0 else 0 }}%">
-                                {{ progress_summary.exam }}
-                            </div>
-                        </div>
-                        <p>Exam</p>
-                    </div>
-                </div>
-                <p class="mt-3 text-center"><strong>Deadline:</strong> {{ progress_summary.deadline }}</p>
-            </div>
-        </div>
-    {% endif %}
-
-    <!-- Officer: Members' Commitment Progress -->
-    {% if user.role == 'officer' and commitments %}
-        <h4 class="mt-5 mb-3">Members' Commitment Progress</h4>
-        <div class="table-responsive">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>Member</th>
-                        <th>Roleplay Remaining</th>
-                        <th>Written Remaining</th>
-                        <th>Exam Remaining</th>
-                        <th>Deadline</th>
-                    </tr>
-                </thead>
+{% if user.role == 'officer' %}
+    <div class="row g-3 mb-4">
+        <div class="col-md-6"><div class="card summary-card light-blue"><div class="card-body"><div class="text-muted">Members Assigned</div><div class="display-6">{{ commitments|length }}</div></div></div></div>
+        <div class="col-md-6"><div class="card summary-card light-blue"><div class="card-body"><div class="text-muted">Workshops to Host</div><div class="display-6">{{ assigned_workshops|length }}</div></div></div></div>
+    </div>
+    <h4 class="mt-4 mb-3">Members' Commitments</h4>
+    {% if commitments %}
+        <div class="table-responsive mb-4">
+            <table class="table table-striped table-hover bg-white rounded-3 overflow-hidden">
+                <thead><tr><th>Member</th><th>Roleplay Remaining</th><th>Written Remaining</th><th>Exam Remaining</th><th>Deadline</th></tr></thead>
                 <tbody>
-                    {% for c in commitments %}
-                    <tr>
-                        <td>{{ c.member_name }}</td>
-                        <td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td>
-                        <td>{{ c.remaining_written }} / {{ c.required_written }}</td>
-                        <td>{{ c.remaining_exam }} / {{ c.required_exam }}</td>
-                        <td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td>
-                    </tr>
-                    {% endfor %}
+                {% for c in commitments %}
+                    <tr><td>{{ c.member_name }}</td><td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td><td>{{ c.remaining_written }} / {{ c.required_written }}</td><td>{{ c.remaining_exam }} / {{ c.required_exam }}</td><td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td></tr>
+                {% endfor %}
                 </tbody>
             </table>
         </div>
+    {% else %}
+        <p class="text-muted">No commitments yet.</p>
     {% endif %}
 
-    <!-- Officer: Members' Workshop Attendance -->
-    {% if user.role == 'officer' and workshop_attendance_data %}
-        <h4 class="mt-5 mb-3">Workshop Attendance</h4>
+    <h4 class="mt-5 mb-3">Workshop Attendance</h4>
+    {% if workshop_attendance_data %}
         <div class="table-responsive">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>Member</th>
-                        <th>Workshop Attendance</th>
-                        <th>Attendance</th>
-                        <th>Attendance Rate</th>
-                        <th>Total Workshops</th>
-                    </tr>
-                </thead>
+            <table class="table table-striped table-hover bg-white rounded-3 overflow-hidden">
+                <thead><tr><th>Member</th><th>Workshop Attendance</th><th>Attendance</th><th>Attendance Rate</th><th>Total Workshops</th></tr></thead>
                 <tbody>
-                    {% for data in workshop_attendance_data %}
+                {% for data in workshop_attendance_data %}
                     <tr>
                         <td>{{ data.member_name }}</td>
                         <td>{{ data.total_attended }}</td>
                         <td>
-                            <form method="POST" action="{{ url_for('increment_general_attendance') }}" style="display:inline;">
+                            <form method="POST" action="{{ url_for('increment_general_attendance') }}" class="manual-attendance-form d-inline">
                                 <input type="hidden" name="member_name" value="{{ data.member_name }}">
-                                <button type="submit" class="btn btn-sm btn-success">+1</button>
+                                <button type="button" class="btn btn-sm btn-success open-manual-confirm" data-member-name="{{ data.member_name }}">+1 Manual</button>
                             </form>
                         </td>
                         <td>{{ (data.total_attended / 18 * 100) | round(1) }}%</td>
                         <td>18</td>
                     </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    {% endif %}
-
-    <!-- Workshops -->
-    <h4 class="mt-5 mb-3">Workshops</h4>
-
-    {% if workshops %}
-        <div class="table-responsive">
-            <table class="table table-hover table-bordered">
-                <thead class="table-light">
-                    <tr>
-                        <th>Name</th>
-                        <th>Date & Time</th>
-                        <th>Assigned Officer</th>
-                        <th>Signed Up</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for ws in workshops %}
-                    {% set is_conflict = false %}
-                    {% set is_signed = ws in my_signups if user.role == 'member' else false %}
-
-                    {% if user.role == 'member' and not is_signed %}
-                        {% for s_start, s_end in signed_times %}
-                            {% if ws.time < s_end and s_start < ws.end_time %}
-                                {% set is_conflict = true %}
-                            {% endif %}
-                        {% endfor %}
-                    {% endif %}
-
-                    <tr {% if is_conflict %}class="table-secondary text-muted"{% endif %}>
-                        <td>{{ ws.name }}</td>
-                        <td>{{ ws.time | friendly_slot }}</td>
-                        <td>
-                            {% if ws.officer %}
-                                {{ ws.officer.username }}
-                            {% else %}
-                                Unknown (ID: {{ ws.officer_id or 'None' }})
-                            {% endif %}
-                        </td>
-                        <td>{{ ws.signups | length }}</td>
-                        <td>
-                            {% if user.role == 'member' %}
-                                {% if is_signed %}
-                                    <span class="badge bg-success">Signed Up</span>
-                                {% elif is_conflict %}
-                                    <span class="badge bg-secondary">Time Conflict</span>
-                                {% else %}
-                                    <form method="POST" action="{{ url_for('signup_workshop', workshop_id=ws.id) }}" style="display:inline;">
-                                        <button type="submit" class="btn btn-sm btn-outline-primary">Sign Up</button>
-                                    </form>
-                                {% endif %}
-                            {% endif %}
-
-                            {% if user.role == 'officer' and ws.officer_id == user.id %}
-                                <a href="{{ url_for('workshop_attendance', workshop_id=ws.id) }}"
-                                   class="btn btn-sm btn-info ms-2">Take Attendance</a>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
+                {% endfor %}
                 </tbody>
             </table>
         </div>
     {% else %}
-        <p class="text-muted">No workshops yet.</p>
+        <p class="text-muted">No attendance records yet.</p>
     {% endif %}
 
-    <!-- Member: My Signed-up Workshops -->
-    {% if user.role == 'member' and my_signups %}
-        <h4 class="mt-5 mb-3">My Signed-up Workshops</h4>
-        <ul class="list-group">
-            {% for ws in my_signups %}
-                <li class="list-group-item d-flex justify-content-between align-items-center">
-                    <div>
-                        <strong>{{ ws.name }}</strong><br>
-                        <small>
-                            {{ ws.time | friendly_slot }} 
-                            (Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %})
-                        </small>
-                    </div>
-                    <form method="POST" action="{{ url_for('cancel_signup', workshop_id=ws.id) }}" 
-                          style="display:inline;" 
-                          onsubmit="return confirm('Are you sure you want to cancel this sign-up?');">
-                        <button type="submit" class="btn btn-sm btn-outline-danger">Cancel Sign-up</button>
-                    </form>
-                </li>
-            {% endfor %}
-        </ul>
-    {% endif %}
-
-    <!-- Officer: Members' Sign-ups -->
-    {% if user.role == 'officer' and mentees_workshops %}
-        <h4 class="mt-5 mb-3">My Members' Workshop Sign-ups</h4>
-        {% for member_name, ws_list in mentees_workshops.items() %}
-            <div class="card mb-3">
-                <div class="card-header bg-light">
-                    Member: <strong>{{ member_name }}</strong>
-                </div>
-                <div class="card-body">
-                    {% if ws_list %}
-                        <ul class="list-group list-group-flush">
-                            {% for ws in ws_list %}
-                                <li class="list-group-item">
-                                    {{ ws.name }} — {{ ws.time | friendly_slot }}
-                                    (Host: {% if ws.officer %}{{ ws.officer.username }}{% else %}Unknown{% endif %})
-                                </li>
-                            {% endfor %}
-                        </ul>
-                    {% else %}
-                        <p class="text-muted mb-0">No sign-ups yet.</p>
-                    {% endif %}
-                </div>
-            </div>
-        {% endfor %}
-    {% endif %}
-
-    <!-- Member: Workshop Attendance (at the very bottom) -->
-    {% if user.role == 'member' and workshop_attendance_data %}
-        <h4 class="mt-5 mb-3">Workshop Attendance</h4>
-        <div class="table-responsive">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>Workshop Attendance</th>
-                        <th>Attendance Rate</th>
-                        <th>Total Workshops</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for data in workshop_attendance_data %}
-                    <tr>
-                        <td>{{ data.total_attended }}</td>
-                        <td>{{ (data.total_attended / 18 * 100) | round(1) }}%</td>
-                        <td>18</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+    <div class="modal fade" id="manualAttendanceModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+          <div class="modal-header">
+            <h5 class="modal-title">Confirm Attendance Update</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            Add 1 manual attendance for <strong id="manualAttendanceMemberName"></strong>?
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-success" id="confirmManualAttendanceBtn">Confirm</button>
+          </div>
         </div>
-    {% endif %}
+      </div>
+    </div>
 
-    <!-- My Attendance Summary (Member only) – now at the very bottom -->
-    {% if user.role == 'member' and attendance_summary %}
-        <h4 class="mt-5 mb-3">My Attendance Summary</h4>
-        <div class="card mb-4 border-success">
-            <div class="card-header bg-success text-white">
-                <h5 class="mb-0">My Attendance Summary</h5>
-            </div>
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const modalElement = document.getElementById('manualAttendanceModal');
+        const memberNameElement = document.getElementById('manualAttendanceMemberName');
+        const confirmBtn = document.getElementById('confirmManualAttendanceBtn');
+        if (!modalElement || !memberNameElement || !confirmBtn) return;
+        const modal = new bootstrap.Modal(modalElement);
+        let activeForm = null;
+        document.querySelectorAll('.open-manual-confirm').forEach(button => {
+            button.addEventListener('click', function () {
+                activeForm = this.closest('form');
+                memberNameElement.textContent = this.dataset.memberName || 'this member';
+                modal.show();
+            });
+        });
+        confirmBtn.addEventListener('click', function () {
+            if (activeForm) activeForm.submit();
+        });
+    });
+    </script>
+
+{% else %}
+{% set rp_done = progress_summary.roleplay.split('/')[0] | int if progress_summary else 0 %}
+{% set rp_req = progress_summary.roleplay.split('/')[1] | int if progress_summary else 0 %}
+{% set wr_done = progress_summary.written.split('/')[0] | int if progress_summary else 0 %}
+{% set wr_req = progress_summary.written.split('/')[1] | int if progress_summary else 0 %}
+{% set ex_done = progress_summary.exam.split('/')[0] | int if progress_summary else 0 %}
+{% set ex_req = progress_summary.exam.split('/')[1] | int if progress_summary else 0 %}
+{% set total_done = rp_done + wr_done + ex_done %}
+{% set total_req = rp_req + wr_req + ex_req %}
+{% set overall_pct = ((total_done / total_req) * 100) | round(1) if total_req > 0 else 0 %}
+{% set next_ws = workshops[0] if workshops else None %}
+
+<div class="row g-3 mb-4">
+    <div class="col-lg-3 col-md-6">
+        <div class="card summary-card h-100">
             <div class="card-body">
-                <p>Signed up for workshops: <strong>{{ attendance_summary.signed }}</strong></p>
-                <p>Attended: <strong>{{ attendance_summary.attended }}</strong></p>
-                <p>Attendance rate: <strong>{{ attendance_summary.rate }}%</strong></p>
+                <div class="text-uppercase small text-muted fw-semibold mb-2">Overall Completion</div>
+                <div class="display-6 fw-bold">{{ overall_pct }}%</div>
+                <div class="text-muted">{{ total_done }} of {{ total_req }} activities completed.</div>
             </div>
         </div>
-    {% endif %}
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card summary-card h-100">
+            <div class="card-body">
+                <div class="text-uppercase small text-muted fw-semibold mb-2">Attendance Rate</div>
+                <div class="display-6 fw-bold">{{ attendance_summary.rate if attendance_summary else 0 }}%</div>
+                <div class="text-muted">{{ attendance_summary.attended if attendance_summary else 0 }} attended out of 18 total workshops.</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card summary-card h-100">
+            <div class="card-body">
+                <div class="text-uppercase small text-muted fw-semibold mb-2">Workshops</div>
+                <div class="display-6 fw-bold">{{ workshops|length }}</div>
+                <div class="text-muted">All workshops already linked to your sign-ups.</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card summary-card h-100">
+            <div class="card-body">
+                <div class="text-uppercase small text-muted fw-semibold mb-2">Next Workshop</div>
+                <div class="display-6 fw-bold">{% if next_ws %}{{ next_ws.time.strftime('%m/%d') }}{% else %}—{% endif %}</div>
+                <div class="text-muted">{% if next_ws %}{{ next_ws.name }}{% else %}No workshop yet{% endif %}</div>
+            </div>
+        </div>
+    </div>
 </div>
+
+<div class="row g-4 mb-4">
+    <div class="col-xl-7">
+        <div class="card border-0 shadow-sm rounded-4 h-100">
+            <div class="card-header bg-white border-bottom-0 p-4 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div>
+                    <h4 class="mb-1">My commitment progress</h4>
+                    <p class="text-muted mb-0">Track what you have completed and what is still remaining.</p>
+                </div>
+                {% if progress_summary %}
+                    <span class="badge rounded-pill text-bg-warning-subtle text-warning-emphasis px-3 py-2">Deadline: {{ progress_summary.deadline }}</span>
+                {% endif %}
+            </div>
+            <div class="card-body p-4 pt-2">
+                <div class="mb-4">
+                    <div class="d-flex justify-content-between fw-semibold mb-2">
+                        <span>Roleplay</span>
+                        <span>{{ rp_done }}/{{ rp_req }}</span>
+                    </div>
+                    <div class="progress" style="height: 12px;">
+                        <div class="progress-bar" style="width: {{ (rp_done / rp_req * 100) if rp_req > 0 else 0 }}%"></div>
+                    </div>
+                </div>
+                <div class="mb-4">
+                    <div class="d-flex justify-content-between fw-semibold mb-2">
+                        <span>Written Presentation</span>
+                        <span>{{ wr_done }}/{{ wr_req }}</span>
+                    </div>
+                    <div class="progress" style="height: 12px;">
+                        <div class="progress-bar bg-info" style="width: {{ (wr_done / wr_req * 100) if wr_req > 0 else 0 }}%"></div>
+                    </div>
+                </div>
+                <div>
+                    <div class="d-flex justify-content-between fw-semibold mb-2">
+                        <span>Exam</span>
+                        <span>{{ ex_done }}/{{ ex_req }}</span>
+                    </div>
+                    <div class="progress" style="height: 12px;">
+                        <div class="progress-bar bg-warning" style="width: {{ (ex_done / ex_req * 100) if ex_req > 0 else 0 }}%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-5">
+        <div class="card border-0 shadow-sm rounded-4 h-100">
+            <div class="card-header bg-white border-bottom-0 p-4">
+                <h4 class="mb-1">Recommended next step</h4>
+                <p class="text-muted mb-0">A quick summary of what still needs your attention.</p>
+            </div>
+            <div class="card-body p-4 pt-2">
+                <div class="border rounded-4 px-3 py-3 mb-3 d-flex justify-content-between align-items-center">
+                    <span>Roleplay remaining</span>
+                    <strong>{{ rp_req - rp_done }}</strong>
+                </div>
+                <div class="border rounded-4 px-3 py-3 mb-3 d-flex justify-content-between align-items-center">
+                    <span>Written remaining</span>
+                    <strong>{{ wr_req - wr_done }}</strong>
+                </div>
+                <div class="border rounded-4 px-3 py-3 d-flex justify-content-between align-items-center">
+                    <span>Exam remaining</span>
+                    <strong>{{ ex_req - ex_done }}</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-xl-7">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white border-bottom-0 p-4 d-flex justify-content-between align-items-center">
+                <div>
+                    <h4 class="mb-1">Workshops</h4>
+                    <p class="text-muted mb-0">These are your current workshop sign-ups.</p>
+                </div>
+                <span class="badge rounded-pill text-primary bg-primary-subtle px-3 py-2">{{ workshops|length }} total</span>
+            </div>
+            <div class="card-body p-4 pt-2">
+                {% if workshops %}
+                    <div class="vstack gap-3">
+                        {% for ws in workshops %}
+                            <div class="border rounded-4 p-3 d-flex justify-content-between align-items-center gap-3 flex-wrap">
+                                <div>
+                                    <div class="fw-semibold fs-5">{{ ws.name }}</div>
+                                    <div class="text-muted">{{ ws.time | friendly_slot }}{% if ws.activity_type %} · {{ ws.activity_type }}{% endif %}</div>
+                                    <div class="text-muted">Host: {{ ws.officer.username if ws.officer else 'Unknown' }}</div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <p class="text-muted mb-0">You have not signed up for any workshops yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-5">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white border-bottom-0 p-4">
+                <h4 class="mb-1">Attendance summary</h4>
+                <p class="text-muted mb-0">This matches the officer view using a fixed total of 18 workshops.</p>
+            </div>
+            <div class="card-body p-4 pt-2">
+                <div class="row g-3">
+                    <div class="col-4">
+                        <div class="border rounded-4 p-3 text-center">
+                            <div class="text-muted small">Signed Up</div>
+                            <div class="display-6 fw-semibold">{{ attendance_summary.signed if attendance_summary else 0 }}</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="border rounded-4 p-3 text-center">
+                            <div class="text-muted small">Attended</div>
+                            <div class="display-6 fw-semibold">{{ attendance_summary.attended if attendance_summary else 0 }}</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="border rounded-4 p-3 text-center">
+                            <div class="text-muted small">Rate</div>
+                            <div class="display-6 fw-semibold">{{ attendance_summary.rate if attendance_summary else 0 }}%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}

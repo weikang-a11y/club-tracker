@@ -1,30 +1,73 @@
 {% extends "base.html" %}
-
-{% block title %}Attendance Reports{% endblock %}
-
+{% block title %}Reports{% endblock %}
 {% block content %}
-<div class="container mt-5">
-    <h2>Attendance Reports - Officer {{ current_user.username }}</h2>
+<div class="card page-header-card mb-4">
+    <div class="card-body p-4">
+        <h2 class="mb-1">Reports</h2>
+        <p class="text-muted mb-0">
+            {% if active_tab == 'attendance' %}
+                Member attendance summary.
+            {% else %}
+                Calendar view for hosted workshops and attendance.
+            {% endif %}
+        </p>
+    </div>
+</div>
 
-    <!-- Per-Member Summary -->
+{% if active_tab == 'attendance' %}
     {% if reports_data %}
-        <h4>Members' Attendance Summary</h4>
-        {% for data in reports_data %}
-            <div class="card mb-3">
-                <div class="card-header">
-                    <strong>Member: {{ data.member }}</strong>
+        <div class="row g-3">
+            {% for data in reports_data %}
+                <div class="col-lg-6 col-xl-4">
+                    <div class="card h-100 border-0 shadow-sm rounded-4">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start gap-3">
+                                <div>
+                                    <h5 class="mb-1">{{ data.member }}</h5>
+                                    <div class="text-muted small">Signed up: {{ data.signups_count }}</div>
+                                    <div class="text-muted small">Attended: {{ data.attended_count }}</div>
+                                </div>
+                                <span class="badge text-bg-light fs-6">{{ data.attendance_rate }}%</span>
+                            </div>
+                            <div class="progress mt-3" style="height: 8px;">
+                                <div class="progress-bar" role="progressbar" style="width: {{ data.attendance_rate }}%;"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-body text-muted">No workshops or sign-ups yet.</div>
+        </div>
+    {% endif %}
+{% elif active_tab == 'calendar' %}
+    {% if calendar_groups %}
+        {% for day, items in calendar_groups.items()|sort %}
+            <div class="card mb-3 border-0 shadow-sm rounded-4">
+                <div class="card-header bg-white"><strong>{{ day }}</strong></div>
                 <div class="card-body">
-                    <p>Signed up: <strong>{{ data.signups_count }}</strong></p>
-                    <p>Attended: <strong>{{ data.attended_count }}</strong></p>
-                    <p>Attendance rate: <strong>{{ data.attendance_rate }}%</strong></p>
+                    {% for item in items %}
+                        {% set ws = item.workshop %}
+                        <div class="calendar-event">
+                            <div class="calendar-title mb-1">{{ ws.name }}</div>
+                            <div class="calendar-time mb-1">{{ item.time_range }}</div>
+                            <div class="text-muted small mb-2">Signed up: {{ item.signup_names }}</div>
+                            {% if ws.id in attendance_locked_ids %}
+                                <button class="btn btn-secondary btn-sm" disabled>Attendance Taken</button>
+                            {% else %}
+                                <a href="{{ url_for('workshop_attendance', workshop_id=ws.id) }}" class="btn btn-info btn-sm">Take Attendance</a>
+                            {% endif %}
+                        </div>
+                    {% endfor %}
                 </div>
             </div>
         {% endfor %}
     {% else %}
-        <p class="text-muted">No workshops or sign-ups yet.</p>
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-body text-muted">No hosted workshops yet.</div>
+        </div>
     {% endif %}
-
-    <a href="{{ url_for('dashboard') }}" class="btn btn-secondary mt-3">Back to Dashboard</a>
-</div>
+{% endif %}
 {% endblock %}

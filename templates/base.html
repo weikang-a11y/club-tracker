@@ -6,24 +6,187 @@
     <title>{% block title %}Club Tracker{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { padding-top: 20px; }
+        :root {
+            --sidebar-width: 240px;
+            --sidebar-bg: #0f172a;
+            --sidebar-muted: rgba(255,255,255,.72);
+            --sidebar-active: rgba(255,255,255,.12);
+        }
+        body { background:#f8fafc; min-height:100vh; }
         .alert-dismissible .btn-close { padding: 0.75rem 1.25rem; }
-    </style>
+        .summary-card { border:0; border-radius:16px; box-shadow:0 6px 20px rgba(15,23,42,.06); }
+        .summary-card.light-blue { background:#e8f4ff; }
+        .sidebar {
+            width: var(--sidebar-width);
+            min-height: 100vh;
+            background: var(--sidebar-bg);
+            color: #fff;
+            position: sticky;
+            top: 0;
+            display:flex;
+            flex-direction:column;
+            padding: 1.25rem 1rem;
+        }
+        .sidebar .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: .02em; }
+        .sidebar .role-chip {
+            display:inline-block;
+            margin-top:.75rem;
+            padding:.25rem .65rem;
+            border-radius:999px;
+            background:rgba(255,255,255,.1);
+            color:var(--sidebar-muted);
+            font-size:.875rem;
+        }
+        .sidebar .nav-link {
+            color: var(--sidebar-muted);
+            border-radius: 12px;
+            padding: .7rem .85rem;
+            margin-bottom: .35rem;
+            font-weight: 500;
+        }
+        .sidebar .nav-link:hover,
+        .sidebar .nav-link.active {
+            color:#fff;
+            background: var(--sidebar-active);
+        }
+        .sidebar .logout-link {
+            margin-top:auto;
+            color:#fecaca;
+        }
+        .sidebar .logout-link:hover { color:#fff; background:rgba(239,68,68,.22); }
+        .app-main { min-width:0; }
+        .content-shell { padding: 1.75rem; }
+        .page-header-card { border:0; border-radius:18px; box-shadow:0 6px 20px rgba(15,23,42,.06); }
+        .auth-shell { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:2rem 1rem; }
+        .auth-card { width:min(680px,100%); border:0; border-radius:20px; box-shadow:0 10px 30px rgba(15,23,42,.08); }
+        .auth-title { font-weight:700; text-align:center; margin-bottom:1.5rem; }
+        .auth-subtitle { text-align:center; color:#64748b; margin-bottom:1.5rem; }
+        .auth-btn { padding:.75rem 1rem; font-weight:600; }
+        .auth-link { text-align:center; margin-top:1rem; }
+        .attendance-checkbox { transform: scale(1.5); cursor: pointer; accent-color: #0d6efd; }
+        .attendance-member-card { max-width: 900px; margin: 0 auto; }
+        .attendance-member-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+        .attendance-counter { font-weight:600; }
+        @media (max-width: 991.98px) {
+            .sidebar { position: relative; width:100%; min-height:auto; }
+            .content-shell { padding: 1.25rem; }
+        }
+    
+/* Calendar UI improvement */
+.calendar-event{
+ border-left:4px solid #0d6efd;
+ background:#f8f9fb;
+ padding:12px 14px;
+ border-radius:6px;
+ margin-bottom:10px;
+}
+.calendar-title{
+ font-weight:600;
+}
+.calendar-time{
+ font-size:0.9rem;
+ color:#6c757d;
+}
+
+</style>
 </head>
-<body class="container">
+<body>
+    {% if current_user.is_authenticated %}
+    <div class="container-fluid px-0">
+        <div class="row g-0 min-vh-100">
+            <div class="col-lg-auto">
+                <aside class="sidebar">
+                    <div class="brand">Club Tracker</div>
+                    <div class="role-chip">{{ 'Officer' if current_user.role == 'officer' else 'Member' }}</div>
+                    <div class="small text-white-50 mt-2 mb-4">{{ current_user.username }}</div>
 
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            {% for category, message in messages %}
-                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                    {{ message }}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    <nav class="nav flex-column">
+                        <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">Dashboard</a>
+                        {% if current_user.role == 'officer' %}
+                            <a class="nav-link {% if request.endpoint == 'add_commitment' %}active{% endif %}" href="{{ url_for('add_commitment') }}">Assign Commitment</a>
+                            <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab', 'attendance') == 'attendance' %}active{% endif %}" href="{{ url_for('reports', tab='attendance') }}">Attendance Reports</a>
+                            <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}" href="{{ url_for('reports', tab='calendar') }}">Calendar</a>
+                        {% else %}
+                            <a class="nav-link {% if request.endpoint == 'add_workshop' %}active{% endif %}" href="{{ url_for('add_workshop') }}">Workshop</a>
+                        {% endif %}
+                    </nav>
+
+                    <a class="nav-link logout-link" href="{{ url_for('logout') }}">Logout</a>
+                </aside>
+            </div>
+            <div class="col app-main">
+                <div class="content-shell">
+    {% else %}
+    <div class="auth-shell"><div class="auth-card card p-4 p-md-5">
+    {% endif %}
+
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                                    {{ message }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                                </div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+                    {% block content %}{% endblock %}
+
+    {% if current_user.is_authenticated %}
                 </div>
-            {% endfor %}
-        {% endif %}
-    {% endwith %}
+            </div>
+        </div>
+    </div>
+    {% else %}
+    </div></div>
+    {% endif %}
 
-    {% block content %}{% endblock %}
+
+    <div class="modal fade" id="confirmActionModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+          <div class="modal-header">
+            <h5 class="modal-title" id="confirmActionTitle">Please Confirm</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="confirmActionMessage">Are you sure you want to continue?</div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-danger" id="confirmActionSubmit">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const modalEl = document.getElementById('confirmActionModal');
+        const titleEl = document.getElementById('confirmActionTitle');
+        const messageEl = document.getElementById('confirmActionMessage');
+        const submitBtn = document.getElementById('confirmActionSubmit');
+        if (!modalEl || !titleEl || !messageEl || !submitBtn || typeof bootstrap === 'undefined') return;
+        const modal = new bootstrap.Modal(modalEl);
+        let activeForm = null;
+        document.querySelectorAll('.js-confirm-form').forEach(form => {
+            const trigger = form.querySelector('.js-open-confirm');
+            if (!trigger) return;
+            trigger.addEventListener('click', function () {
+                activeForm = form;
+                submitBtn.disabled = false;
+                titleEl.textContent = this.dataset.confirmTitle || 'Please Confirm';
+                messageEl.textContent = this.dataset.confirmMessage || 'Are you sure you want to continue?';
+                submitBtn.className = 'btn ' + (this.dataset.confirmBtnClass || 'btn-danger');
+                submitBtn.textContent = this.dataset.confirmBtnText || 'Confirm';
+                modal.show();
+            });
+        });
+        submitBtn.addEventListener('click', function () {
+            if (!activeForm) return;
+            submitBtn.disabled = true;
+            activeForm.submit();
+        });
+    });
+    </script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>

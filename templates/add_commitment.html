@@ -1,45 +1,76 @@
 {% extends "base.html" %}
-
-{% block title %}Add Commitment{% endblock %}
-
+{% block title %}Assign Commitment{% endblock %}
 {% block content %}
-<div class="container mt-5">
-    <h2 class="mb-4">Add New Commitment</h2>
-    <p class="text-muted mb-4">Assign required activities for a member (officers only).</p>
-
-    <form method="POST" class="mt-4">
-        {{ form.hidden_tag() }}
-
-        <div class="mb-3">
-            {{ form.member_name.label(class="form-label") }}
-            {{ form.member_name(class="form-control", placeholder="Enter member username (e.g. Member1)") }}
-        </div>
-
-        <div class="row">
-            <div class="col-md-4 mb-3">
-                {{ form.required_roleplay.label(class="form-label") }}
-                {{ form.required_roleplay(class="form-control") }}
+<div class="d-flex justify-content-between align-items-center mt-4 mb-4">
+    <div>
+        <h2 class="mb-1">Assign Commitment</h2>
+        <p class="text-muted mb-0">Assign or remove commitments for members.</p>
+    </div>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+</div>
+<div class="row g-4">
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-body p-4">
+                <form method="POST">
+                    {{ form.hidden_tag() }}
+                    <div class="mb-3">{{ form.member_name.label(class="form-label") }}{{ form.member_name(class="form-control", placeholder="Enter member username") }}</div>
+                    <div class="mb-3">
+                        <h5 class="mb-3">Commitment Requirements</h5>
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-4">
+                                <label class="form-label">Roleplay</label>
+                                {{ form.required_roleplay(class="form-control") }}
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Written Presentation</label>
+                                {{ form.required_written(class="form-control") }}
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Exam</label>
+                                {{ form.required_exam(class="form-control") }}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">{{ form.deadline.label(class="form-label") }}{{ form.deadline(class="form-control") }}</div>
+                    <div class="d-flex gap-2"><button type="submit" class="btn btn-success">Save Commitment</button></div>
+                </form>
             </div>
-            <div class="col-md-4 mb-3">
-                {{ form.required_written.label(class="form-label") }}
-                {{ form.required_written(class="form-control") }}
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-body p-4">
+                <h4 class="mb-3">Current Commitments</h4>
+                {% if commitments %}
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <thead><tr><th>Member</th><th>Deadline</th><th>Remaining</th><th></th></tr></thead>
+                            <tbody>
+                            {% for c in commitments %}
+                                <tr>
+                                    <td>{{ c.member_name }}</td>
+                                    <td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td>
+                                    <td>R {{ c.remaining_roleplay }}/{{ c.required_roleplay }}, W {{ c.remaining_written }}/{{ c.required_written }}, E {{ c.remaining_exam }}/{{ c.required_exam }}</td>
+                                    <td class="text-end">
+                                        <form method="POST" action="{{ url_for('delete_commitment', commitment_id=c.id) }}" class="js-confirm-form">
+                                            <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
+                                                data-confirm-title="Delete Commitment"
+                                                data-confirm-message="Delete this commitment for {{ c.member_name }}?"
+                                                data-confirm-btn-text="Delete"
+                                                data-confirm-btn-class="btn-danger">Delete</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted mb-0">No commitments yet.</p>
+                {% endif %}
             </div>
-            <div class="col-md-4 mb-3">
-                {{ form.required_exam.label(class="form-label") }}
-                {{ form.required_exam(class="form-control") }}
-            </div>
         </div>
-
-        <div class="mb-3">
-            {{ form.deadline.label(class="form-label") }}
-            {{ form.deadline(class="form-control") }}
-            <small class="form-text text-muted">Overall deadline for all activities (YYYY-MM-DD)</small>
-        </div>
-
-        <div class="mt-4">
-            <button type="submit" class="btn btn-success">Save Commitment</button>
-            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary ms-2">Cancel</a>
-        </div>
-    </form>
+    </div>
 </div>
 {% endblock %}

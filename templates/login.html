@@ -1,37 +1,23 @@
 {% extends "base.html" %}
-
 {% block title %}Login{% endblock %}
-
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-6 col-lg-5">
-        <div class="card mt-5">
-            <div class="card-body">
-                <h2 class="card-title text-center mb-4">Login</h2>
-
-                <form method="POST">
-                    {{ form.hidden_tag() }}
-
-                    <div class="mb-3">
-                        {{ form.username.label(class="form-label") }}
-                        {{ form.username(class="form-control") }}
-                    </div>
-
-                    <div class="mb-3">
-                        {{ form.password.label(class="form-label") }}
-                        {{ form.password(class="form-control") }}
-                    </div>
-
-                    <div class="d-grid">
-                        {{ form.submit(class="btn btn-primary btn-block") }}
-                    </div>
-                </form>
-
-                <div class="text-center mt-3">
-                    <small>Don't have an account? <a href="{{ url_for('register') }}">Register here</a></small>
-                </div>
-            </div>
-        </div>
+<h2 class="auth-title">Login</h2>
+<p class="auth-subtitle">Sign in to manage club activities and attendance.</p>
+<form method="POST">
+    {{ form.hidden_tag() }}
+    <div class="mb-3">
+        {{ form.username.label(class="form-label") }}
+        {{ form.username(class="form-control form-control-lg") }}
     </div>
+    <div class="mb-3">
+        {{ form.password.label(class="form-label") }}
+        {{ form.password(class="form-control form-control-lg") }}
+    </div>
+    <div class="d-grid mt-4">
+        {{ form.submit(class="btn btn-primary auth-btn") }}
+    </div>
+</form>
+<div class="auth-link">
+    <small>Don't have an account? <a href="{{ url_for('register') }}">Register here</a></small>
 </div>
 {% endblock %}
