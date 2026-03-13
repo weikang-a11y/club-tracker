@@ -13,6 +13,7 @@ import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
+
 # Database config with Railway/Postgres support + local SQLite fallback
 DATABASE_URL = os.getenv('DATABASE_URL')
 if DATABASE_URL:
@@ -199,7 +200,8 @@ def dashboard():
                 })
     else:
         commitments = Commitment.query.filter_by(member_name=current_user.username).all()
-        workshops = Workshop.query.options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
+        # IMPORTANT: keep this scoped to the current member's sign-ups only.
+        workshops = current_user.workshops.options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
         created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
 
         if commitments:
@@ -229,7 +231,7 @@ def dashboard():
     for ws in created_workshops:
         ws.end_time = ws.time + timedelta(minutes=20)
 
-    my_signups = current_user.workshops.all() if current_user.role == 'member' else []
+    my_signups = workshops if current_user.role == 'member' else []
     mentees_workshops = {}
     if current_user.role == 'officer':
         mentee_names = {c.member_name for c in commitments}
@@ -486,7 +488,12 @@ def reports():
         day = ws.time.strftime('%Y-%m-%d')
         end_dt = ws.time + timedelta(minutes=20)
         time_range = f"{ws.time.strftime('%I:%M').lstrip('0')} - {end_dt.strftime('%I:%M').lstrip('0')} {end_dt.strftime('%p').lower()}"
-        calendar_groups.setdefault(day, []).append({'workshop': ws, 'time_range': time_range})
+        signup_names = ', '.join(sorted([u.username for u in ws.signups], key=str.lower)) or 'None'
+        calendar_groups.setdefault(day, []).append({
+            'workshop': ws,
+            'time_range': time_range,
+            'signup_names': signup_names
+        })
     return render_template('reports.html', reports_data=reports_data, active_tab=active_tab, calendar_groups=calendar_groups, attendance_locked_ids=attendance_locked_ids)
 
 if __name__ == '__main__':
