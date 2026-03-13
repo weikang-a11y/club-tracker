@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+<<<<<<< HEAD
 {% block title %}Workshop Attendance{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mt-4 mb-4">
@@ -72,4 +73,98 @@ document.addEventListener('DOMContentLoaded', function() {
     updateAttendanceCounter();
 });
 </script>
+=======
+
+{% block title %}Take Attendance - {{ workshop.name }}{% endblock %}
+{% block page_title %}Take attendance{% endblock %}
+{% block page_subtitle %}Review the roster for {{ workshop.name }} and mark who was present.{% endblock %}
+{% block topbar_actions %}
+    <div class="action-strip">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to dashboard</a>
+    </div>
+{% endblock %}
+
+{% block app_content %}
+<div class="row g-4">
+    <div class="col-12 col-xl-4">
+        <div class="surface-card h-100">
+            <div class="card-header">
+                <h2 class="section-title">Workshop summary</h2>
+                <p class="section-kicker">Use this page after the session to submit attendance once.</p>
+            </div>
+            <div class="card-body content-grid">
+                <div>
+                    <div class="text-muted small mb-1">Workshop</div>
+                    <div class="fw-semibold">{{ workshop.name }}</div>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Date & time</div>
+                    <div class="fw-semibold">{{ workshop.time | friendly_slot }}</div>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Activity type</div>
+                    <span class="badge-soft primary">{{ workshop.activity_type }}</span>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Assigned officer</div>
+                    <div class="fw-semibold">{{ workshop.officer.username if workshop.officer else 'Unknown' }}</div>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1">Signed-up members</div>
+                    <div class="fw-semibold">{{ members_with_attendance | length }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-xl-8">
+        <div class="surface-card">
+            <div class="card-header d-flex justify-content-between align-items-start gap-3">
+                <div>
+                    <h2 class="section-title">Attendance roster</h2>
+                    <p class="section-kicker">Checked members will be counted as present and their remaining commitment total will update automatically.</p>
+                </div>
+                <span class="badge-soft success">{{ members_with_attendance | length }} on roster</span>
+            </div>
+            <div class="card-body">
+                {% if members_with_attendance %}
+                    <form method="POST" id="attendance-form">
+                        <div class="content-grid">
+                            {% for item in members_with_attendance %}
+                                <label class="workshop-card d-flex justify-content-between align-items-center gap-3" for="attended_{{ item.user.id }}">
+                                    <div>
+                                        <div class="fw-semibold">{{ item.user.username }}</div>
+                                        <small class="text-muted">Mark present if this member attended the full session.</small>
+                                    </div>
+                                    <div class="form-check form-switch m-0">
+                                        <input class="form-check-input" type="checkbox" role="switch"
+                                               name="attended_user_{{ item.user.id }}"
+                                               id="attended_{{ item.user.id }}"
+                                               {% if item.attended is true %}checked{% endif %}>
+                                    </div>
+                                </label>
+                            {% endfor %}
+                        </div>
+
+                        <div class="sticky-save mt-4">
+                            <div class="surface-card p-3 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+                                <div>
+                                    <div class="fw-semibold">Ready to save attendance?</div>
+                                    <small class="text-muted">You can reopen this page later. Checked boxes stay selected after saving.</small>
+                                </div>
+                                <div class="action-strip">
+                                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+                                    <button type="submit" class="btn btn-brand">Save attendance</button>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                {% else %}
+                    <div class="empty-state">No members have signed up for this workshop yet.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+>>>>>>> f07cca205f3685850226e6dd293b63c0b2496f73
 {% endblock %}

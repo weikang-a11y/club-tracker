@@ -13,6 +13,7 @@ import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
+<<<<<<< HEAD
 
 # Database config with Railway/Postgres support + local SQLite fallback
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -30,6 +31,40 @@ else:
     app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{local_db}'
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+=======
+# Read database URL from environment (Railway / cloud)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if DATABASE_URL:
+    # Convert old postgres schemes to psycopg driver
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace(
+            "postgres://",
+            "postgresql+psycopg://",
+            1
+        )
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace(
+            "postgresql://",
+            "postgresql+psycopg://",
+            1
+        )
+
+    print(f"[DB] Using external database: {DATABASE_URL[:60]}...")
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+
+else:
+    # Local development fallback
+    local_db = os.path.join(os.path.dirname(__file__), "club.db")
+
+    print("[DB] No DATABASE_URL found, using local SQLite database.")
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{local_db}"
+
+# Common SQLAlchemy settings
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+>>>>>>> f07cca205f3685850226e6dd293b63c0b2496f73
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)

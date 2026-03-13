@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+<<<<<<< HEAD
 {% block title %}Add Workshop{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mt-4 mb-4">
@@ -56,4 +57,48 @@
         </div>
     </div>
 </div>
+=======
+
+{% block title %}Create Workshop{% endblock %}
+{% block page_title %}Create workshop{% endblock %}
+{% block page_subtitle %}Add a new workshop and choose the officer who will host it.{% endblock %}
+{% block topbar_actions %}<a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to dashboard</a>{% endblock %}
+
+{% block app_content %}
+<div class="surface-card" style="max-width: 860px;">
+    <div class="card-header">
+        <h2 class="section-title">New workshop</h2>
+        <p class="section-kicker">Members can create workshops and assign an officer host.</p>
+    </div>
+    <div class="card-body">
+        <form method="POST" class="row g-3">
+            {{ form.hidden_tag() }}
+            <div class="col-12">
+                {{ form.name.label(class="form-label fw-semibold") }}
+                {{ form.name(class="form-control form-control-lg", placeholder="Workshop title") }}
+            </div>
+            <div class="col-md-6">
+                {{ form.workshop_date.label(class="form-label fw-semibold") }}
+                {{ form.workshop_date(class="form-control") }}
+            </div>
+            <div class="col-md-6">
+                {{ form.slot.label(class="form-label fw-semibold") }}
+                {{ form.slot(class="form-select") }}
+            </div>
+            <div class="col-md-6">
+                {{ form.activity_type.label(class="form-label fw-semibold") }}
+                {{ form.activity_type(class="form-select") }}
+            </div>
+            <div class="col-md-6">
+                {{ form.officer_id.label(class="form-label fw-semibold") }}
+                {{ form.officer_id(class="form-select") }}
+            </div>
+            <div class="col-12 d-flex gap-2 pt-2">
+                <button type="submit" class="btn btn-brand">Create workshop</button>
+                <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+>>>>>>> f07cca205f3685850226e6dd293b63c0b2496f73
 {% endblock %}

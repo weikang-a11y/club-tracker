@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+<<<<<<< HEAD
 {% block title %}Assign Commitment{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mt-4 mb-4">
@@ -73,4 +74,49 @@
         </div>
     </div>
 </div>
+=======
+
+{% block title %}Assign Commitment{% endblock %}
+{% block page_title %}Assign commitment{% endblock %}
+{% block page_subtitle %}Set required activity counts and a deadline for one member.{% endblock %}
+{% block topbar_actions %}<a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to dashboard</a>{% endblock %}
+
+{% block app_content %}
+<div class="surface-card" style="max-width: 860px;">
+    <div class="card-header">
+        <h2 class="section-title">New commitment</h2>
+        <p class="section-kicker">This creates the member's required Roleplay, Written Presentation, and Exam targets.</p>
+    </div>
+    <div class="card-body">
+        <form method="POST" class="row g-3">
+            {{ form.hidden_tag() }}
+            <div class="col-12">
+                {{ form.member_name.label(class="form-label fw-semibold") }}
+                {{ form.member_name(class="form-control form-control-lg", placeholder="Enter member username") }}
+            </div>
+            <div class="col-md-4">
+                {{ form.required_roleplay.label(class="form-label fw-semibold") }}
+                {{ form.required_roleplay(class="form-control") }}
+            </div>
+            <div class="col-md-4">
+                {{ form.required_written.label(class="form-label fw-semibold") }}
+                {{ form.required_written(class="form-control") }}
+            </div>
+            <div class="col-md-4">
+                {{ form.required_exam.label(class="form-label fw-semibold") }}
+                {{ form.required_exam(class="form-control") }}
+            </div>
+            <div class="col-md-6">
+                {{ form.deadline.label(class="form-label fw-semibold") }}
+                {{ form.deadline(class="form-control") }}
+                <div class="form-text">Use one overall deadline for all required activities.</div>
+            </div>
+            <div class="col-12 d-flex gap-2 pt-2">
+                <button type="submit" class="btn btn-brand">Save commitment</button>
+                <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+>>>>>>> f07cca205f3685850226e6dd293b63c0b2496f73
 {% endblock %}
