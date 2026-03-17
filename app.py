@@ -13,6 +13,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
+from datetime import datetime, timedelta, timezone
 import os
 
 load_dotenv()
@@ -310,9 +311,17 @@ def send_email_reminder(user, workshop):
 
 def process_workshop_reminders():
     with app.app_context():
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         print("REMINDER JOB RUNNING AT", now)
+
+        print("NOW (UTC):", now)
+        print("TOTAL WORKSHOPS:", Workshop.query.count())
+        print("ALL WORKSHOP TIMES:", [w.time for w in Workshop.query.order_by(Workshop.time).all()])
+
+        soonest_cutoff = now + timedelta(days=1)
+        if not Workshop.query.filter(Workshop.time.between(now, soonest_cutoff)).first():
+            return
         
         if not User.query.filter(User.notify_enabled == True).first():
             return
@@ -336,13 +345,14 @@ def process_workshop_reminders():
         
         for ws in upcoming:
             for user in ws.signups:
-                print(
-                    "CHECK USER:",
-                    user.username,
-                    "email=", user.email,
-                    "notify=", user.notify_enabled,
-                    "minutes_before=", user.remind_minutes_before
-                )
+
+                print(f"[CHECK] Workshop {ws.id} {ws.activity_type} at {ws.time}")
+                print(f"[USER] {user.username} email={user.email} notify={user.notify_enabled}")
+                print(f"[REMIND_AT] {ws.time - timedelta(minutes=user.remind_minutes_before)}")
+                print(f"[NOW] {now}")
+                print(f"[ALREADY_SENT] {bool(ReminderLog.query.filter_by(workshop_id=ws.id, user_id=user.id).first())}")
+                print("----")
+
                 if not user.notify_enabled or not user.email:
                     continue
 
@@ -355,12 +365,10 @@ def process_workshop_reminders():
                 print("REMIND_AT =", remind_at, "NOW =", now, "ALREADY_SENT =", bool(already_sent))
                 if remind_at <= now and not already_sent:
                     print("REMINDER DUE:", user.username, ws.id, ws.activity_type, ws.time)
-
+                    db.session.add(ReminderLog(workshop_id=ws.id, user_id=user.id))  # lock first
+                    db.session.commit()                                              # prevent duplicates
                     sent = send_email_reminder(user, ws)
                     print("REMINDER SENT RESULT =", sent)
-
-                    if sent:
-                        db.session.add(ReminderLog(workshop_id=ws.id, user_id=user.id))
         
         try:
             db.session.commit()
@@ -571,7 +579,10 @@ def add_workshop():
     officers = User.query.filter_by(role='officer').order_by(User.username).all()
     form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
     if form.validate_on_submit():
-        workshop_time = datetime.strptime(f"{form.workshop_date.data} {form.slot.data}:00", '%Y-%m-%d %H:%M:%S')
+        workshop_time = datetime.strptime(
+            f"{form.workshop_date.data} {form.slot.data}:00",
+            "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
         
         error = validate_workshop_slot(workshop_time, form.officer_id.data)
 
@@ -625,8 +636,8 @@ def edit_workshop(workshop_id):
     if form.validate_on_submit():
         workshop_time = datetime.strptime(
             f"{form.workshop_date.data} {form.slot.data}:00",
-            '%Y-%m-%d %H:%M:%S'
-        )
+            "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
 
         error = validate_workshop_slot(
             workshop_time,

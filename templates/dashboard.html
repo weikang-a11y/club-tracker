@@ -139,7 +139,7 @@
         <div class="card summary-card h-100">
             <div class="card-body">
                 <div class="text-uppercase small text-muted fw-semibold mb-2">Next Workshop</div>
-                <div class="display-6 fw-bold">{% if next_ws %}{{ next_ws.time.strftime('%m/%d') }}{% else %}—{% endif %}</div>
+                <div class="display-6 fw-bold">{% if next_ws %}{{ next_ws.time.astimezone().strftime('%m/%d') }}{% else %}—{% endif %}</div>
                 <div class="text-muted">{% if next_ws %}{{ next_ws.activity_type }}{% else %}No workshop yet{% endif %}</div>
             </div>
         </div>
@@ -190,8 +190,8 @@
                 </div>
             </div>
         </div>
-    </div>
-</div>
+
+    </div></div>
 
 <div class="row g-3">
     <div class="col-xl-7">
