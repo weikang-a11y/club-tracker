@@ -272,6 +272,11 @@ def local_time(dt, fmt="%Y-%m-%d %I:%M %p"):
     local_dt = utc_to_local(dt)
     return local_dt.strftime(fmt) if local_dt else "N/A"
 
+def local_to_utc(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=LOCAL_TZ)
+    return dt.astimezone(timezone.utc)
+
 app.jinja_env.filters['friendly_slot'] = friendly_slot
 app.jinja_env.filters['local_time'] = local_time
 
@@ -641,6 +646,16 @@ def add_workshop():
 
         flash('Workshop added.', 'success')
         return redirect(url_for('add_workshop'))
+    
+    created_workshops = Workshop.query.filter_by(
+        creator_id=current_user.id
+    ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+    return render_template(
+        'add_workshop.html',
+        form=form,
+        created_workshops=created_workshops
+    )    
 
 
 @app.route('/edit_workshop/<int:workshop_id>', methods=['GET', 'POST'])
@@ -727,6 +742,16 @@ def edit_workshop(workshop_id):
 
         flash('Workshop updated.', 'success')
         return redirect(url_for('add_workshop'))
+    
+    created_workshops = Workshop.query.filter_by(
+        creator_id=current_user.id
+    ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+    return render_template(
+        'add_workshop.html',
+        form=form,
+        created_workshops=created_workshops
+    )    
 
 @app.route('/delete_workshop/<int:workshop_id>', methods=['POST'])
 @login_required
