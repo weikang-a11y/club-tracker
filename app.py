@@ -272,19 +272,31 @@ def validate_workshop_slot(workshop_time, officer_id, exclude_workshop_id=None):
     return None
 
 def send_email(to_email, subject, html_content):
+    print("SEND_EMAIL called")
+    print("TO =", to_email)
+    print("FROM_EMAIL =", FROM_EMAIL)
+    print("HAS SENDGRID KEY =", bool(SENDGRID_API_KEY))
+
     if not SENDGRID_API_KEY or not FROM_EMAIL or not to_email:
+        print("SEND_EMAIL skipped: missing config")
         return False
 
-    message = Mail(
-        from_email=FROM_EMAIL,
-        to_emails=to_email,
-        subject=subject,
-        html_content=html_content
-    )
+    try:
+        message = Mail(
+            from_email=FROM_EMAIL,
+            to_emails=to_email,
+            subject=subject,
+            html_content=html_content
+        )
 
-    sg = SendGridAPIClient(SENDGRID_API_KEY)
-    sg.send(message)
-    return True
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        print("SEND_EMAIL success:", response.status_code)
+        return True
+
+    except Exception as e:
+        print("SEND_EMAIL error:", e)
+        return False
 
 def send_email_reminder(user, workshop):
     return send_email(
@@ -300,6 +312,8 @@ def process_workshop_reminders():
     with app.app_context():
         now = datetime.now()
 
+        print("REMINDER JOB RUNNING AT", now)
+        
         if not User.query.filter(User.notify_enabled == True).first():
             return
 
@@ -318,8 +332,17 @@ def process_workshop_reminders():
             Workshop.time.between(now, reminder_window)
         ).options(joinedload(Workshop.signups)).all()
 
+        print("UPCOMING WORKSHOPS =", len(upcoming))
+        
         for ws in upcoming:
             for user in ws.signups:
+                print(
+                    "CHECK USER:",
+                    user.username,
+                    "email=", user.email,
+                    "notify=", user.notify_enabled,
+                    "minutes_before=", user.remind_minutes_before
+                )
                 if not user.notify_enabled or not user.email:
                     continue
 
@@ -329,10 +352,16 @@ def process_workshop_reminders():
                     user_id=user.id
                 ).first()
 
+                print("REMIND_AT =", remind_at, "NOW =", now, "ALREADY_SENT =", bool(already_sent))
                 if remind_at <= now and not already_sent:
-                    send_email_reminder(user, ws)
-                    db.session.add(ReminderLog(workshop_id=ws.id, user_id=user.id))
+                    print("REMINDER DUE:", user.username, ws.id, ws.activity_type, ws.time)
 
+                    sent = send_email_reminder(user, ws)
+                    print("REMINDER SENT RESULT =", sent)
+
+                    if sent:
+                        db.session.add(ReminderLog(workshop_id=ws.id, user_id=user.id))
+        
         try:
             db.session.commit()
         except Exception:
