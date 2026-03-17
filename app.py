@@ -324,12 +324,14 @@ def send_email(to_email, subject, html_content):
         return False
 
 def send_email_reminder(user, workshop):
+    local_time_str = utc_to_local(workshop.time).strftime('%Y-%m-%d %I:%M %p')
+
     return send_email(
         user.email,
         "Workshop Reminder",
         f"""
         Reminder: Your <b>{workshop.activity_type}</b> workshop is scheduled at
-        {workshop.time.strftime('%Y-%m-%d %I:%M %p')}.
+        {local_time_str}.
         """
     )
 
