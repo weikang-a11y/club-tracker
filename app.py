@@ -829,9 +829,13 @@ def reports():
 
     return render_template('reports.html', reports_data=reports_data, active_tab=active_tab, calendar_groups=calendar_groups, attendance_locked_ids=attendance_locked_ids)
 
-if __name__ == '__main__':
-    scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler()
+
+if not scheduler.running:
     scheduler.add_job(process_workshop_reminders, 'interval', minutes=1)
     scheduler.start()
+    print("REMINDER SCHEDULER STARTED")
+    
+if __name__ == '__main__':
     app.run(debug=True)
     
