@@ -191,6 +191,46 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
+    # Add missing user columns for reminder settings
+    user_cols = {c['name'] for c in db.inspect(db.engine).get_columns('user')}
+
+    if 'email' not in user_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN email VARCHAR(120)'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    if 'phone' not in user_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN phone VARCHAR(20)'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    if 'notify_enabled' not in user_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN notify_enabled BOOLEAN DEFAULT FALSE'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    if 'remind_minutes_before' not in user_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN remind_minutes_before INTEGER DEFAULT 60'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    commitment_cols = {c['name'] for c in db.inspect(db.engine).get_columns('commitment')}
+
+    if 'event' not in commitment_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE commitment ADD COLUMN event VARCHAR(20)'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            
     # Backfill missing creator signups for existing workshops
     for ws in Workshop.query.all():
         if ws.creator_id:
