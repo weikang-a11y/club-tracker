@@ -14,6 +14,7 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import os
 
 load_dotenv()
@@ -57,6 +58,8 @@ EVENT_REQUIREMENTS = {
     "SVCDC": {"roleplay":2, "written":2, "exam":1, "deadline":"2027-01-08"},
     "SCDC": {"roleplay":2, "written":2, "exam":2, "deadline":"2027-02-23"}
 }
+
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -243,18 +246,33 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
-
 def friendly_slot(dt):
     if not dt:
         return 'N/A'
-    date_part = dt.strftime('%Y-%m-%d')
-    time_str = dt.strftime('%H:%M')
+
+    local_dt = utc_to_local(dt)
+    date_part = local_dt.strftime('%Y-%m-%d')
+    time_str = local_dt.strftime('%H:%M')
+
     for value, label in TIME_SLOTS:
         if value == time_str:
             return f"{date_part} {label}"
-    return dt.strftime('%Y-%m-%d %I:%M %p')
+
+    return local_dt.strftime('%Y-%m-%d %I:%M %p')
+
+def utc_to_local(dt):
+    if not dt:
+        return dt
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(LOCAL_TZ)
+
+def local_time(dt, fmt="%Y-%m-%d %I:%M %p"):
+    local_dt = utc_to_local(dt)
+    return local_dt.strftime(fmt) if local_dt else "N/A"
 
 app.jinja_env.filters['friendly_slot'] = friendly_slot
+app.jinja_env.filters['local_time'] = local_time
 
 def validate_workshop_slot(workshop_time, officer_id, exclude_workshop_id=None):
     query = Workshop.query.filter_by(
@@ -356,7 +374,7 @@ def process_workshop_reminders():
                 if not user.notify_enabled or not user.email:
                     continue
 
-                remind_at = ws.time - timedelta(minutes=user.remind_minutes_before)
+                remind_at = utc_to_local(ws.time) - timedelta(minutes=user.remind_minutes_before)
                 already_sent = ReminderLog.query.filter_by(
                     workshop_id=ws.id,
                     user_id=user.id
@@ -579,10 +597,11 @@ def add_workshop():
     officers = User.query.filter_by(role='officer').order_by(User.username).all()
     form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
     if form.validate_on_submit():
-        workshop_time = datetime.strptime(
+        local_workshop_time = datetime.strptime(
             f"{form.workshop_date.data} {form.slot.data}:00",
             "%Y-%m-%d %H:%M:%S"
-        ).replace(tzinfo=timezone.utc)
+        )
+        workshop_time = local_to_utc(local_workshop_time)
         
         error = validate_workshop_slot(workshop_time, form.officer_id.data)
 
@@ -634,10 +653,11 @@ def edit_workshop(workshop_id):
         form.officer_id.data = workshop.officer_id
 
     if form.validate_on_submit():
-        workshop_time = datetime.strptime(
+        local_workshop_time = datetime.strptime(
             f"{form.workshop_date.data} {form.slot.data}:00",
             "%Y-%m-%d %H:%M:%S"
-        ).replace(tzinfo=timezone.utc)
+        )
+        workshop_time = local_to_utc(local_workshop_time)
 
         error = validate_workshop_slot(
             workshop_time,
@@ -829,11 +849,18 @@ def reports():
     attendance_locked_ids = {row.workshop_id for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()}
     calendar_groups = {}
     for ws in officer_workshops:
-        day = ws.time.strftime('%Y-%m-%d')
-        end_dt = ws.time + timedelta(minutes=20)
-        time_range = f"{ws.time.strftime('%I:%M').lstrip('0')} - {end_dt.strftime('%I:%M').lstrip('0')} {end_dt.strftime('%p').lower()}"
+        local_start = utc_to_local(ws.time)
+        local_end = local_start + timedelta(minutes=20)
+
+        day = local_start.strftime('%Y-%m-%d')
+        time_range = f"{local_start.strftime('%I:%M').lstrip('0')} - {local_end.strftime('%I:%M').lstrip('0')} {local_end.strftime('%p').lower()}"
+
         signup_names = ', '.join(sorted([u.username for u in ws.signups], key=str.lower)) or 'None'
-        calendar_groups.setdefault(day, []).append({'workshop': ws, 'time_range': time_range, 'signup_names': signup_names})
+        calendar_groups.setdefault(day, []).append({
+            'workshop': ws,
+            'time_range': time_range,
+            'signup_names': signup_names
+        })
 
     for day in calendar_groups:
         calendar_groups[day].sort(key=lambda item: item['workshop'].time)
