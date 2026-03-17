@@ -15,6 +15,7 @@ from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from sqlalchemy.exc import IntegrityError
 import os
 
 load_dotenv()
@@ -623,11 +624,23 @@ def add_workshop():
         db.session.flush()
         if current_user not in ws.signups:
             ws.signups.append(current_user)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')            
+            created_workshops = Workshop.query.filter_by(
+                creator_id=current_user.id
+            ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+            return render_template(
+                'add_workshop.html',
+                form=form,
+                created_workshops=created_workshops
+            )
+
         flash('Workshop added.', 'success')
         return redirect(url_for('add_workshop'))
-    created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-    return render_template('add_workshop.html', form=form, created_workshops=created_workshops)
 
 
 @app.route('/edit_workshop/<int:workshop_id>', methods=['GET', 'POST'])
@@ -690,20 +703,30 @@ def edit_workshop(workshop_id):
         workshop.officer_id = form.officer_id.data
         workshop.activity_type = form.activity_type.data
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')
+
+            created_workshops = Workshop.query.filter_by(
+                creator_id=current_user.id
+            ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+            form.workshop_date.data = original_date
+            form.slot.data = original_slot
+            form.officer_id.data = workshop.officer_id
+            form.activity_type.data = workshop.activity_type
+
+            return render_template(
+                'add_workshop.html',
+                form=form,
+                created_workshops=created_workshops,
+                editing_workshop=workshop
+            )
+
         flash('Workshop updated.', 'success')
         return redirect(url_for('add_workshop'))
-
-    created_workshops = Workshop.query.filter_by(
-        creator_id=current_user.id
-    ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-
-    return render_template(
-        'add_workshop.html',
-        form=form,
-        created_workshops=created_workshops,
-        editing_workshop=workshop
-    )
 
 @app.route('/delete_workshop/<int:workshop_id>', methods=['POST'])
 @login_required
