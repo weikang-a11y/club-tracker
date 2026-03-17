@@ -17,10 +17,10 @@
     {% if commitments %}
         <div class="table-responsive mb-4">
             <table class="table table-striped table-hover bg-white rounded-3 overflow-hidden">
-                <thead><tr><th>Member</th><th>Roleplay Remaining</th><th>Written Remaining</th><th>Exam Remaining</th><th>Deadline</th></tr></thead>
+                <thead><tr><th>Member</th><th>Event</th><th>Roleplay Remaining</th><th>Written Remaining</th><th>Exam Remaining</th><th>Deadline</th></tr></thead>
                 <tbody>
                 {% for c in commitments %}
-                    <tr><td>{{ c.member_name }}</td><td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td><td>{{ c.remaining_written }} / {{ c.required_written }}</td><td>{{ c.remaining_exam }} / {{ c.required_exam }}</td><td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td></tr>
+                    <tr><td>{{ c.member_name }}</td><td>{{ c.event }}</td><td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td><td>{{ c.remaining_written }} / {{ c.required_written }}</td><td>{{ c.remaining_exam }} / {{ c.required_exam }}</td><td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -140,18 +140,20 @@
             <div class="card-body">
                 <div class="text-uppercase small text-muted fw-semibold mb-2">Next Workshop</div>
                 <div class="display-6 fw-bold">{% if next_ws %}{{ next_ws.time.strftime('%m/%d') }}{% else %}—{% endif %}</div>
-                <div class="text-muted">{% if next_ws %}{{ next_ws.name }}{% else %}No workshop yet{% endif %}</div>
+                <div class="text-muted">{% if next_ws %}{{ next_ws.activity_type }}{% else %}No workshop yet{% endif %}</div>
             </div>
         </div>
     </div>
 </div>
 
 <div class="row g-4 mb-4">
-    <div class="col-xl-7">
+    <div class="col-12">
         <div class="card border-0 shadow-sm rounded-4 h-100">
             <div class="card-header bg-white border-bottom-0 p-4 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <div>
-                    <h4 class="mb-1">My commitment progress</h4>
+		    <h4 class="mb-1">
+    			My {{ progress_summary.event if progress_summary and progress_summary.event else '' }} commitment progress
+		    </h4>
                     <p class="text-muted mb-0">Track what you have completed and what is still remaining.</p>
                 </div>
                 {% if progress_summary %}
@@ -189,37 +191,16 @@
             </div>
         </div>
     </div>
-
-    <div class="col-xl-5">
-        <div class="card border-0 shadow-sm rounded-4 h-100">
-            <div class="card-header bg-white border-bottom-0 p-4">
-                <h4 class="mb-1">Recommended next step</h4>
-                <p class="text-muted mb-0">A quick summary of what still needs your attention.</p>
-            </div>
-            <div class="card-body p-4 pt-2">
-                <div class="border rounded-4 px-3 py-3 mb-3 d-flex justify-content-between align-items-center">
-                    <span>Roleplay remaining</span>
-                    <strong>{{ rp_req - rp_done }}</strong>
-                </div>
-                <div class="border rounded-4 px-3 py-3 mb-3 d-flex justify-content-between align-items-center">
-                    <span>Written remaining</span>
-                    <strong>{{ wr_req - wr_done }}</strong>
-                </div>
-                <div class="border rounded-4 px-3 py-3 d-flex justify-content-between align-items-center">
-                    <span>Exam remaining</span>
-                    <strong>{{ ex_req - ex_done }}</strong>
-                </div>
-            </div>
-        </div>
-    </div>
 </div>
 
-<div class="row g-4">
+<div class="row g-3">
     <div class="col-xl-7">
         <div class="card border-0 shadow-sm rounded-4">
             <div class="card-header bg-white border-bottom-0 p-4 d-flex justify-content-between align-items-center">
                 <div>
-                    <h4 class="mb-1">Workshops</h4>
+		    <h4 class="mb-1">
+			{% if progress_summary and progress_summary.event %}{{ progress_summary.event }} {% endif %}Workshops
+		    </h4>
                     <p class="text-muted mb-0">These are your current workshop sign-ups.</p>
                 </div>
                 <span class="badge rounded-pill text-primary bg-primary-subtle px-3 py-2">{{ workshops|length }} total</span>
@@ -230,8 +211,8 @@
                         {% for ws in workshops %}
                             <div class="border rounded-4 p-3 d-flex justify-content-between align-items-center gap-3 flex-wrap">
                                 <div>
-                                    <div class="fw-semibold fs-5">{{ ws.name }}</div>
-                                    <div class="text-muted">{{ ws.time | friendly_slot }}{% if ws.activity_type %} · {{ ws.activity_type }}{% endif %}</div>
+				    <div class="fw-semibold fs-5">{{ ws.activity_type }}</div>
+				    <div class="text-muted">{{ ws.time | friendly_slot }}</div>
                                     <div class="text-muted">Host: {{ ws.officer.username if ws.officer else 'Unknown' }}</div>
                                 </div>
                             </div>

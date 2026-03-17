@@ -16,23 +16,15 @@
                     {{ form.hidden_tag() }}
                     <div class="mb-3">{{ form.member_name.label(class="form-label") }}{{ form.member_name(class="form-control", placeholder="Enter member username") }}</div>
                     <div class="mb-3">
-                        <h5 class="mb-3">Commitment Requirements</h5>
+                        <h5 class="mb-3">Event Commitment Requirements</h5>
                         <div class="row g-3 align-items-end">
-                            <div class="col-md-4">
-                                <label class="form-label">Roleplay</label>
-                                {{ form.required_roleplay(class="form-control") }}
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label">Written Presentation</label>
-                                {{ form.required_written(class="form-control") }}
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label">Exam</label>
-                                {{ form.required_exam(class="form-control") }}
-                            </div>
+				<div class="mb-3">
+				    {{ form.event.label(class="form-label") }}
+				    {{ form.event(class="form-select", id="eventSelect") }}
+				    <div id="eventDescription" class="text-muted small mt-2"></div>
+				</div>
                         </div>
                     </div>
-                    <div class="mb-3">{{ form.deadline.label(class="form-label") }}{{ form.deadline(class="form-control") }}</div>
                     <div class="d-flex gap-2"><button type="submit" class="btn btn-success">Save Commitment</button></div>
                 </form>
             </div>
@@ -45,13 +37,18 @@
                 {% if commitments %}
                     <div class="table-responsive">
                         <table class="table align-middle">
-                            <thead><tr><th>Member</th><th>Deadline</th><th>Remaining</th><th></th></tr></thead>
+                            <thead><tr><th>Member</th><th>Event</th><th>Remaining</th><th>Deadline</th><th></th></tr></thead>
                             <tbody>
                             {% for c in commitments %}
                                 <tr>
                                     <td>{{ c.member_name }}</td>
+				    <td>{{ c.event }}</td>
+                                    <td>
+                                    R {{ c.remaining_roleplay }}/{{ c.required_roleplay }},
+                                    W {{ c.remaining_written }}/{{ c.required_written }},
+                                    E {{ c.remaining_exam }}/{{ c.required_exam }}
+                                    </td>
                                     <td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td>
-                                    <td>R {{ c.remaining_roleplay }}/{{ c.required_roleplay }}, W {{ c.remaining_written }}/{{ c.required_written }}, E {{ c.remaining_exam }}/{{ c.required_exam }}</td>
                                     <td class="text-end">
                                         <form method="POST" action="{{ url_for('delete_commitment', commitment_id=c.id) }}" class="js-confirm-form">
                                             <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
@@ -73,4 +70,23 @@
         </div>
     </div>
 </div>
+<script>
+const desc = {
+    VCMC: "R 1/1, W 1/1, E 1/1, Deadline: 2026-11-15",
+    SVCDC: "R 2/2, W 2/2, E 1/1, Deadline: 2027-01-08",
+    SCDC: "R 2/2, W 2/2, E 2/2, Deadline: 2027-02-23"
+};
+
+const eventSelect = document.getElementById("eventSelect");
+const eventDescription = document.getElementById("eventDescription");
+
+function updateEventDescription() {
+    eventDescription.textContent = desc[eventSelect.value] || "";
+}
+
+if (eventSelect && eventDescription) {
+    eventSelect.addEventListener("change", updateEventDescription);
+    updateEventDescription();
+}
+</script>
 {% endblock %}

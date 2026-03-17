@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+
+<div class="card page-header-card mb-4">
+    <div class="card-body p-4">
+        <h2 class="mb-1">Settings</h2>
+        <p class="text-muted mb-0">Manage your workshop reminder preferences.</p>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm rounded-4">
+    <div class="card-body p-4">
+        <form method="POST">
+            <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input type="email" name="email" class="form-control" value="{{ current_user.email or '' }}">
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Phone</label>
+                <input type="text" name="phone" class="form-control" value="{{ current_user.phone or '' }}">
+            </div>
+
+            <div class="form-check mb-3">
+                <input type="checkbox" name="notify_enabled" class="form-check-input" id="notify_enabled"
+                       {% if current_user.notify_enabled %}checked{% endif %}>
+                <label class="form-check-label" for="notify_enabled">
+                    Enable workshop reminders
+                </label>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Reminder Time</label>
+                <select name="remind_minutes_before" class="form-select">
+                    <option value="30" {% if current_user.remind_minutes_before == 30 %}selected{% endif %}>30 minutes before</option>
+                    <option value="60" {% if current_user.remind_minutes_before == 60 %}selected{% endif %}>1 hour before</option>
+                    <option value="1440" {% if current_user.remind_minutes_before == 1440 %}selected{% endif %}>1 day before</option>
+                </select>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </form>
+    </div>
+</div>
+
+{% endblock %}

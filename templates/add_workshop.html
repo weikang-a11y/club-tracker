@@ -14,7 +14,6 @@
             <div class="card-body p-4">
                 <form method="POST">
                     {{ form.hidden_tag() }}
-                    <div class="mb-3">{{ form.name.label(class="form-label") }}{{ form.name(class="form-control") }}</div>
                     <div class="mb-3">{{ form.workshop_date.label(class="form-label") }}{{ form.workshop_date(class="form-control") }}</div>
                     <div class="mb-3">{{ form.slot.label(class="form-label") }}{{ form.slot(class="form-select") }}</div>
                     <div class="mb-3">{{ form.activity_type.label(class="form-label") }}{{ form.activity_type(class="form-select") }}</div>
@@ -31,11 +30,11 @@
                 {% if created_workshops %}
                     <div class="table-responsive">
                         <table class="table align-middle">
-                            <thead><tr><th>Name</th><th>Time</th><th>Officer</th><th></th></tr></thead>
+                            <thead><tr><th>Type</th><th>Time</th><th>Officer</th><th></th></tr></thead>
                             <tbody>
                             {% for ws in created_workshops %}
                                 <tr>
-                                    <td>{{ ws.name }}</td>
+                                    <td>{{ ws.activity_type }}</td>
                                     <td>{{ ws.time | friendly_slot }}</td>
                                     <td>{{ ws.officer.username if ws.officer else 'Unknown' }}</td>
                                     <td class="text-end">

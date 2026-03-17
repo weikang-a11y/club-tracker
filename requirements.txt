@@ -5,3 +5,6 @@ flask-wtf==1.2.1
 werkzeug==3.0.3
 gunicorn==22.0.0
 psycopg==3.2.1  # pure psycopg (v3) - no binary
+apscheduler==3.10.4
+sendgrid
+python-dotenv

@@ -9,7 +9,13 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
 from sqlalchemy.pool import NullPool
+from apscheduler.schedulers.background import BackgroundScheduler
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
+from dotenv import load_dotenv
 import os
+
+load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
@@ -31,6 +37,9 @@ else:
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+FROM_EMAIL = os.getenv("FROM_EMAIL")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
@@ -42,15 +51,26 @@ TIME_SLOTS = [
 ]
 ACTIVITY_TYPES = ['Roleplay', 'Written Presentation', 'Exam']
 
+EVENT_REQUIREMENTS = {
+    "VCMC": {"roleplay":1, "written":1, "exam":1, "deadline":"2026-11-15"},
+    "SVCDC": {"roleplay":2, "written":2, "exam":1, "deadline":"2027-01-08"},
+    "SCDC": {"roleplay":2, "written":2, "exam":2, "deadline":"2027-02-23"}
+}
+
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
     role = db.Column(db.String(20), nullable=False)
+    email = db.Column(db.String(120))
+    phone = db.Column(db.String(20))
+    notify_enabled = db.Column(db.Boolean, default=False)
+    remind_minutes_before = db.Column(db.Integer, default=60)    
 
 class Commitment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     member_name = db.Column(db.String(100))
+    event = db.Column(db.String(20))
     required_roleplay = db.Column(db.Integer, default=0)
     required_written = db.Column(db.Integer, default=0)
     required_exam = db.Column(db.Integer, default=0)
@@ -69,6 +89,10 @@ class Workshop(db.Model):
     activity_type = db.Column(db.String(50), nullable=False)
     creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
+    __table_args__ = (
+        db.UniqueConstraint('time', 'officer_id', name='unique_officer_timeslot'),
+    )
+    
     officer = db.relationship('User', foreign_keys=[officer_id], backref='hosted_workshops')
     creator = db.relationship('User', foreign_keys=[creator_id], backref='created_workshops')
     signups = db.relationship('User', secondary='workshop_signups', backref=db.backref('workshops', lazy='dynamic'))
@@ -93,6 +117,16 @@ class AttendanceSubmission(db.Model):
     officer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     submitted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+class ReminderLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    workshop_id = db.Column(db.Integer, db.ForeignKey('workshop.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    sent_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint('workshop_id', 'user_id', name='unique_workshop_reminder'),
+    )
+    
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -114,14 +148,18 @@ class LoginForm(FlaskForm):
 
 class CommitmentForm(FlaskForm):
     member_name = StringField('Member Name', [DataRequired()])
-    required_roleplay = IntegerField('Required Roleplay', [DataRequired(), NumberRange(min=0)])
-    required_written = IntegerField('Required Written Presentation', [DataRequired(), NumberRange(min=0)])
-    required_exam = IntegerField('Required Exam', [DataRequired(), NumberRange(min=0)])
-    deadline = DateField('Deadline', [DataRequired()])
+    event = SelectField(
+        "Event",
+        choices=[
+            ("VCMC","VCMC"),
+            ("SVCDC","SVCDC"),
+            ("SCDC","SCDC")
+        ],
+        validators=[DataRequired()]
+    )
     submit = SubmitField('Save Commitment')
 
 class WorkshopForm(FlaskForm):
-    name = StringField('Workshop Name', [DataRequired()])
     workshop_date = DateField('Date', [DataRequired()])
     slot = SelectField('Time Slot (20 min)', [DataRequired()], choices=[('', 'Select a time slot')] + TIME_SLOTS, default='')
     activity_type = SelectField('Activity Type', [DataRequired()], choices=[('', 'Select an activity type')] + [(t, t) for t in ACTIVITY_TYPES], default='')
@@ -177,6 +215,90 @@ def friendly_slot(dt):
 
 app.jinja_env.filters['friendly_slot'] = friendly_slot
 
+def validate_workshop_slot(workshop_time, officer_id, exclude_workshop_id=None):
+    query = Workshop.query.filter_by(
+        time=workshop_time,
+        officer_id=officer_id
+    )
+
+    if exclude_workshop_id is not None:
+        query = query.filter(Workshop.id != exclude_workshop_id)
+
+    existing = query.first()
+
+    if existing:
+        return "This officer already has a workshop booked for that date and time slot. Please choose a different time or officer."
+
+    return None
+
+def send_email(to_email, subject, html_content):
+    if not SENDGRID_API_KEY or not FROM_EMAIL or not to_email:
+        return False
+
+    message = Mail(
+        from_email=FROM_EMAIL,
+        to_emails=to_email,
+        subject=subject,
+        html_content=html_content
+    )
+
+    sg = SendGridAPIClient(SENDGRID_API_KEY)
+    sg.send(message)
+    return True
+
+def send_email_reminder(user, workshop):
+    return send_email(
+        user.email,
+        "Workshop Reminder",
+        f"""
+        Reminder: Your <b>{workshop.activity_type}</b> workshop is scheduled at
+        {workshop.time.strftime('%Y-%m-%d %I:%M %p')}.
+        """
+    )
+
+def process_workshop_reminders():
+    with app.app_context():
+        now = datetime.now()
+
+        if not User.query.filter(User.notify_enabled == True).first():
+            return
+
+        active_users_exist = User.query.filter(
+            User.notify_enabled == True,
+            User.email.isnot(None),
+            User.email != ''
+        ).first()
+
+        if not active_users_exist:
+            return
+
+        reminder_window = now + timedelta(hours=24)
+
+        upcoming = Workshop.query.filter(
+            Workshop.time.between(now, reminder_window)
+        ).options(joinedload(Workshop.signups)).all()
+
+        for ws in upcoming:
+            for user in ws.signups:
+                if not user.notify_enabled or not user.email:
+                    continue
+
+                remind_at = ws.time - timedelta(minutes=user.remind_minutes_before)
+                already_sent = ReminderLog.query.filter_by(
+                    workshop_id=ws.id,
+                    user_id=user.id
+                ).first()
+
+                if remind_at <= now and not already_sent:
+                    send_email_reminder(user, ws)
+                    db.session.add(ReminderLog(workshop_id=ws.id, user_id=user.id))
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
+    
 @app.route('/')
 @login_required
 def dashboard():
@@ -224,7 +346,8 @@ def dashboard():
                 'roleplay': f"{c.required_roleplay - c.remaining_roleplay}/{c.required_roleplay}",
                 'written': f"{c.required_written - c.remaining_written}/{c.required_written}",
                 'exam': f"{c.required_exam - c.remaining_exam}/{c.required_exam}",
-                'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A'
+                'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A',
+                'event': c.event
             }
             officer = c.user
             officer_id = officer.id if officer else None
@@ -263,6 +386,9 @@ def dashboard():
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
     form = RegisterForm()
     if form.validate_on_submit():
         existing = User.query.filter_by(username=form.username.data.strip()).first()
@@ -279,6 +405,9 @@ def register():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
     form = LoginForm()
     if form.validate_on_submit():
         user = User.query.filter_by(username=form.username.data.strip()).first()
@@ -294,6 +423,30 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    if current_user.role != 'member':
+        flash('Only members can access settings.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    if request.method == 'POST':
+        current_user.email = request.form.get('email', '').strip() or None
+        current_user.phone = request.form.get('phone', '').strip() or None
+        current_user.notify_enabled = bool(request.form.get('notify_enabled'))
+
+        remind_val = request.form.get('remind_minutes_before', '60').strip()
+        try:
+            current_user.remind_minutes_before = int(remind_val)
+        except ValueError:
+            current_user.remind_minutes_before = 60
+
+        db.session.commit()
+        flash('Settings updated.', 'success')
+        return redirect(url_for('settings'))
+
+    return render_template('settings.html')
+
 @app.route('/add_commitment', methods=['GET', 'POST'])
 @login_required
 def add_commitment():
@@ -303,14 +456,22 @@ def add_commitment():
     form = CommitmentForm()
     if form.validate_on_submit():
         member_name = form.member_name.data.strip()
-        commit = Commitment(member_name=member_name,
-            required_roleplay=form.required_roleplay.data,
-            required_written=form.required_written.data,
-            required_exam=form.required_exam.data,
-            remaining_roleplay=form.required_roleplay.data,
-            remaining_written=form.required_written.data,
-            remaining_exam=form.required_exam.data,
-            deadline=form.deadline.data,
+        event = form.event.data
+        rule = EVENT_REQUIREMENTS[event]
+
+        commit = Commitment(
+            member_name=member_name,
+            event=event,
+
+            required_roleplay=rule["roleplay"],
+            required_written=rule["written"],
+            required_exam=rule["exam"],
+
+            remaining_roleplay=rule["roleplay"],
+            remaining_written=rule["written"],
+            remaining_exam=rule["exam"],
+
+            deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
             user_id=current_user.id)
         db.session.add(commit)
         db.session.commit()
@@ -342,18 +503,22 @@ def add_workshop():
     form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
     if form.validate_on_submit():
         workshop_time = datetime.strptime(f"{form.workshop_date.data} {form.slot.data}:00", '%Y-%m-%d %H:%M:%S')
-        existing = Workshop.query.filter_by(
-            time=workshop_time,
-            officer_id=form.officer_id.data
-        ).first()
+        
+        error = validate_workshop_slot(workshop_time, form.officer_id.data)
 
-        if existing:
-            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')
-            created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(
-                joinedload(Workshop.officer)
-            ).order_by(Workshop.time).all()
-            return render_template('add_workshop.html', form=form, created_workshops=created_workshops)        
-        ws = Workshop(name=form.name.data.strip(), time=workshop_time, officer_id=form.officer_id.data,
+        if error:
+            flash(error, 'warning')
+            created_workshops = Workshop.query.filter_by(
+                creator_id=current_user.id
+            ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+            return render_template(
+                'add_workshop.html',
+                form=form,
+                created_workshops=created_workshops
+            )
+        
+        ws = Workshop(name=form.activity_type.data, time=workshop_time, officer_id=form.officer_id.data,
                       activity_type=form.activity_type.data, creator_id=current_user.id)
         db.session.add(ws)
         db.session.flush()
@@ -383,7 +548,6 @@ def edit_workshop(workshop_id):
     form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
 
     if request.method == 'GET':
-        form.name.data = workshop.name
         form.workshop_date.data = original_date
         form.slot.data = original_slot
         form.activity_type.data = workshop.activity_type
@@ -395,13 +559,14 @@ def edit_workshop(workshop_id):
             '%Y-%m-%d %H:%M:%S'
         )
 
-        existing = Workshop.query.filter_by(
-            time=workshop_time,
-            officer_id=form.officer_id.data
-        ).filter(Workshop.id != workshop.id).first()
+        error = validate_workshop_slot(
+            workshop_time,
+            form.officer_id.data,
+            exclude_workshop_id=workshop.id
+        )
 
-        if existing:
-            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')
+        if error:
+            flash(error, 'warning')
 
             created_workshops = Workshop.query.filter_by(
                 creator_id=current_user.id
@@ -412,7 +577,6 @@ def edit_workshop(workshop_id):
             form.slot.data = original_slot
             form.officer_id.data = workshop.officer_id
             form.activity_type.data = workshop.activity_type
-            form.name.data = workshop.name
 
             return render_template(
                 'add_workshop.html',
@@ -420,8 +584,8 @@ def edit_workshop(workshop_id):
                 created_workshops=created_workshops,
                 editing_workshop=workshop
             )
-
-        workshop.name = form.name.data.strip()
+        
+        workshop.name = form.activity_type.data
         workshop.time = workshop_time
         workshop.officer_id = form.officer_id.data
         workshop.activity_type = form.activity_type.data
@@ -590,7 +754,15 @@ def reports():
         time_range = f"{ws.time.strftime('%I:%M').lstrip('0')} - {end_dt.strftime('%I:%M').lstrip('0')} {end_dt.strftime('%p').lower()}"
         signup_names = ', '.join(sorted([u.username for u in ws.signups], key=str.lower)) or 'None'
         calendar_groups.setdefault(day, []).append({'workshop': ws, 'time_range': time_range, 'signup_names': signup_names})
+
+    for day in calendar_groups:
+        calendar_groups[day].sort(key=lambda item: item['workshop'].time)
+
     return render_template('reports.html', reports_data=reports_data, active_tab=active_tab, calendar_groups=calendar_groups, attendance_locked_ids=attendance_locked_ids)
 
 if __name__ == '__main__':
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(process_workshop_reminders, 'interval', minutes=1)
+    scheduler.start()
     app.run(debug=True)
+    

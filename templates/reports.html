@@ -50,8 +50,8 @@
                 <div class="card-body">
                     {% for item in items %}
                         {% set ws = item.workshop %}
-                        <div class="calendar-event">
-                            <div class="calendar-title mb-1">{{ ws.name }}</div>
+                        <div class="calendar-event event-{{ ws.activity_type|lower }}">
+                            <div class="calendar-title mb-1 fw-semibold">{{ ws.activity_type }}</div>
                             <div class="calendar-time mb-1">{{ item.time_range }}</div>
                             <div class="text-muted small mb-2">Signed up: {{ item.signup_names }}</div>
                             {% if ws.id in attendance_locked_ids %}
