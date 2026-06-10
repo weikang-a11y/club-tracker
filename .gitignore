@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 instance/
 club.db
+*.last
+*.org
+*.bak
+*.backup

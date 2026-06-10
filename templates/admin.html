@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Admin Panel{% endblock %}
+{% block content %}
+
+<div class="card page-header-card mb-4">
+    <div class="card-body p-4 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <h2 class="mb-1">Admin Panel</h2>
+            <p class="lead mb-0 text-muted">Manage users, accounts, and data.</p>
+        </div>
+        <span class="badge bg-danger fs-6">Admin Only</span>
+    </div>
+</div>
+
+{# ── Database Stats ─────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">Total Users</div>
+                <div class="display-6 fw-bold">{{ stats.total_users }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">Officers</div>
+                <div class="display-6 fw-bold">{{ stats.officers }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">Members</div>
+                <div class="display-6 fw-bold">{{ stats.members }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">Pod Assignments</div>
+                <div class="display-6 fw-bold">{{ stats.pods }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">AH Records</div>
+                <div class="display-6 fw-bold">{{ stats.ah_records }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">WS Records</div>
+                <div class="display-6 fw-bold">{{ stats.ws_records }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">Workshops</div>
+                <div class="display-6 fw-bold">{{ stats.workshops }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card summary-card light-blue text-center">
+            <div class="card-body py-3">
+                <div class="text-muted small">Commitments</div>
+                <div class="display-6 fw-bold">{{ stats.commitments }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ── Quick Actions ──────────────────────────────────────────── #}
+<div class="card mb-4 border-0 shadow-sm rounded-4">
+    <div class="card-header bg-white p-4">
+        <h5 class="mb-0 fw-bold">Quick Actions</h5>
+    </div>
+    <div class="card-body p-4 pt-2 d-flex flex-wrap gap-2">
+        <form method="POST" action="{{ url_for('admin_delete_test_users') }}"
+              class="js-confirm-form d-inline">
+            <button type="button" class="btn btn-warning js-open-confirm"
+                    data-confirm-title="Delete Test Accounts"
+                    data-confirm-message="This will delete all accounts named Officer1, Member1, Member2, etc. Are you sure?"
+                    data-confirm-btn-text="Delete Test Accounts"
+                    data-confirm-btn-class="btn-warning">
+                🗑 Delete Test Accounts
+            </button>
+        </form>
+    </div>
+</div>
+
+{# ── User Table ─────────────────────────────────────────────── #}
+<div class="card border-0 shadow-sm rounded-4">
+    <div class="card-header bg-white p-4 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0 fw-bold">All Users ({{ users|length }})</h5>
+        <input type="text" id="userSearch" class="form-control form-control-sm w-auto"
+               placeholder="Search username..." onkeyup="filterUsers()" style="min-width:200px;">
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0" id="userTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>Username</th>
+                        <th>Role</th>
+                        <th>Admin</th>
+                        <th>Email</th>
+                        <th>Must Change PW</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for user in users %}
+                <tr class="{{ 'table-warning' if user.is_admin else '' }}">
+                    <td class="fw-semibold">
+                        {{ user.username }}
+                        {% if user.id == current_user.id %}
+                            <span class="badge bg-secondary ms-1">You</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge {{ 'bg-primary' if user.role == 'officer' else 'bg-success' }}">
+                            {{ user.role }}
+                        </span>
+                    </td>
+                    <td>
+                        {% if user.is_admin %}
+                            <span class="badge bg-danger">Admin</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted small">{{ user.email or '—' }}</td>
+                    <td>
+                        {% if user.must_change_password %}
+                            <span class="badge bg-warning text-dark">Pending</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="d-flex gap-1 flex-wrap">
+
+                            {# Reset Password #}
+                            {% if user.id != current_user.id %}
+                            <form method="POST" action="{{ url_for('admin_reset_password', user_id=user.id) }}"
+                                  class="js-confirm-form d-inline">
+                                <button type="button" class="btn btn-sm btn-outline-secondary js-open-confirm"
+                                        data-confirm-title="Reset Password"
+                                        data-confirm-message="Reset password for {{ user.username }} to DECA2026!? They will be prompted to change it on next login."
+                                        data-confirm-btn-text="Reset Password"
+                                        data-confirm-btn-class="btn-secondary">
+                                    Reset PW
+                                </button>
+                            </form>
+
+                            {# Toggle Admin #}
+                            <form method="POST" action="{{ url_for('admin_toggle_admin', user_id=user.id) }}"
+                                  class="js-confirm-form d-inline">
+                                <button type="button" class="btn btn-sm {{ 'btn-outline-danger' if user.is_admin else 'btn-outline-warning' }} js-open-confirm"
+                                        data-confirm-title="{{ 'Remove Admin' if user.is_admin else 'Grant Admin' }}"
+                                        data-confirm-message="{{ 'Remove admin access from ' + user.username + '?' if user.is_admin else 'Grant admin access to ' + user.username + '?' }}"
+                                        data-confirm-btn-text="{{ 'Remove Admin' if user.is_admin else 'Grant Admin' }}"
+                                        data-confirm-btn-class="{{ 'btn-danger' if user.is_admin else 'btn-warning' }}">
+                                    {{ 'Remove Admin' if user.is_admin else 'Make Admin' }}
+                                </button>
+                            </form>
+
+                            {# Delete User #}
+                            <form method="POST" action="{{ url_for('admin_delete_user', user_id=user.id) }}"
+                                  class="js-confirm-form d-inline">
+                                <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
+                                        data-confirm-title="Delete User"
+                                        data-confirm-message="Permanently delete {{ user.username }}? This will also delete all their attendance records, pod assignments, and commitments. This cannot be undone."
+                                        data-confirm-btn-text="Delete User"
+                                        data-confirm-btn-class="btn-danger">
+                                    Delete
+                                </button>
+                            </form>
+                            {% endif %}
+
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+function filterUsers() {
+    const input = document.getElementById('userSearch').value.toLowerCase();
+    const rows = document.querySelectorAll('#userTable tbody tr');
+    rows.forEach(row => {
+        const username = row.cells[0].textContent.toLowerCase();
+        row.style.display = username.includes(input) ? '' : 'none';
+    });
+}
+</script>
+
+{% endblock %}

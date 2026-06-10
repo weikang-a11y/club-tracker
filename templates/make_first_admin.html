@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Setup Admin{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-center align-items-center" style="min-height: 80vh;">
+  <div class="card shadow" style="width: 100%; max-width: 420px;">
+    <div class="card-body p-4">
+
+      <div class="text-center mb-4">
+        <h4 class="fw-bold">First Time Admin Setup</h4>
+        <p class="text-muted small">
+          No admin exists yet. Enter your credentials to grant yourself admin access.
+          This page becomes unavailable once an admin exists.
+        </p>
+      </div>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} py-2">{{ message }}</div>
+        {% endfor %}
+      {% endwith %}
+
+      <form method="POST">
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Username</label>
+          <input type="text" name="username" class="form-control" placeholder="Your username" required>
+        </div>
+        <div class="mb-4">
+          <label class="form-label fw-semibold">Password</label>
+          <div class="input-group">
+            <input type="password" name="password" class="form-control" id="admin_password" placeholder="Your password" required>
+            <button type="button" class="btn btn-outline-secondary" onclick="togglePassword('admin_password', this)" tabindex="-1">
+              <i class="bi bi-eye"></i>
+            </button>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-danger w-100">
+          Grant Admin Access
+        </button>
+      </form>
+
+    </div>
+  </div>
+</div>
+
+<script>
+function togglePassword(fieldId, btn) {
+  const input = document.getElementById(fieldId);
+  const icon = btn.querySelector('i');
+  if (input.type === 'password') {
+    input.type = 'text';
+    icon.classList.replace('bi-eye', 'bi-eye-slash');
+  } else {
+    input.type = 'password';
+    icon.classList.replace('bi-eye-slash', 'bi-eye');
+  }
+}
+</script>
+{% endblock %}

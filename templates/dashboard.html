@@ -8,11 +8,126 @@
     </div>
 </div>
 
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+    <div class="alert alert-{{ category }} py-2">{{ message }}</div>
+  {% endfor %}
+{% endwith %}
+
 {% if user.role == 'officer' %}
+
+    {# ── Summary cards ─────────────────────────────────────────── #}
     <div class="row g-3 mb-4">
-        <div class="col-md-6"><div class="card summary-card light-blue"><div class="card-body"><div class="text-muted">Members Assigned</div><div class="display-6">{{ commitments|length }}</div></div></div></div>
-        <div class="col-md-6"><div class="card summary-card light-blue"><div class="card-body"><div class="text-muted">Workshops to Host</div><div class="display-6">{{ assigned_workshops|length }}</div></div></div></div>
+        <div class="col-md-4">
+            <div class="card summary-card light-blue">
+                <div class="card-body">
+                    <div class="text-muted">Members in Pod</div>
+                    <div class="display-6">{{ ah_ws_data|length }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card summary-card light-blue">
+                <div class="card-body">
+                    <div class="text-muted">Workshops to Host</div>
+                    <div class="display-6">{{ assigned_workshops|length }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card summary-card {{ 'bg-danger text-white' if ah_ws_data|selectattr('at_risk')|list|length > 0 else 'light-blue' }}">
+                <div class="card-body">
+                    <div class="{{ 'text-white-50' if ah_ws_data|selectattr('at_risk')|list|length > 0 else 'text-muted' }}">At-Risk Members</div>
+                    <div class="display-6">{{ ah_ws_data|selectattr('at_risk')|list|length }}</div>
+                </div>
+            </div>
+        </div>
     </div>
+
+    {# ── AH / WS Attendance Table ──────────────────────────────── #}
+    {% if ah_ws_data %}
+    <div class="card mb-4 border-0 shadow-sm rounded-4">
+        <div class="card-header bg-white border-bottom p-4 d-flex justify-content-between align-items-center">
+            <div>
+                <h4 class="mb-1">All-Hands &amp; Workshop Attendance</h4>
+                <p class="text-muted mb-0">AH threshold: 80% for all members &nbsp;·&nbsp; WS threshold: 75% Novice / 25% Experienced</p>
+            </div>
+            {% set at_risk_count = ah_ws_data|selectattr('at_risk')|list|length %}
+            {% if at_risk_count > 0 %}
+                <span class="badge bg-danger fs-6">⚠ {{ at_risk_count }} At-Risk</span>
+            {% else %}
+                <span class="badge bg-success fs-6">✓ All On Track</span>
+            {% endif %}
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Member</th>
+                            <th>Pod</th>
+                            <th>Level</th>
+                            <th>AH Attended</th>
+                            <th>AH Rate</th>
+                            <th>WS Attended</th>
+                            <th>WS Rate</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in ah_ws_data %}
+                        <tr class="{{ 'table-danger' if row.at_risk else '' }}">
+                            <td class="fw-semibold">{{ row.member.username }}</td>
+                            <td>{{ row.pod_number }}</td>
+                            <td>
+                                <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
+                                    {{ 'Novice' if row.level == 'N' else 'Experienced' }}
+                                </span>
+                            </td>
+                            <td>{{ row.ah_sum|int }} / {{ row.ah_total }}</td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
+                                        <div class="progress-bar {{ 'bg-danger' if row.ah_rate < 80 else 'bg-success' }}"
+                                             style="width: {{ row.ah_rate }}%"></div>
+                                    </div>
+                                    <small class="text-nowrap">{{ row.ah_rate }}%</small>
+                                </div>
+                            </td>
+                            <td>{{ row.ws_sum|int }} / {{ row.ws_total }}</td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
+                                        <div class="progress-bar {{ 'bg-danger' if row.ws_rate < row.ws_threshold_pct else 'bg-success' }}"
+                                             style="width: {{ row.ws_rate }}%"></div>
+                                    </div>
+                                    <small class="text-nowrap">{{ row.ws_rate }}%</small>
+                                </div>
+                            </td>
+                            <td>
+                                {% if row.at_risk %}
+                                    <span class="badge bg-danger" title="{{ row.risk_reasons|join(', ') }}">⚠ At-Risk</span>
+                                {% else %}
+                                    <span class="badge bg-success">✓ On Track</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% if row.at_risk %}
+                        <tr class="table-danger">
+                            <td colspan="8" class="ps-4 text-danger small py-1">
+                                <i class="bi bi-exclamation-circle me-1"></i>{{ row.risk_reasons|join(' · ') }}
+                            </td>
+                        </tr>
+                        {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ── Members' Commitments ──────────────────────────────────── #}
     <h4 class="mt-4 mb-3">Members' Commitments</h4>
     {% if commitments %}
         <div class="table-responsive mb-4">
@@ -20,7 +135,14 @@
                 <thead><tr><th>Member</th><th>Event</th><th>Roleplay Remaining</th><th>Written Remaining</th><th>Exam Remaining</th><th>Deadline</th></tr></thead>
                 <tbody>
                 {% for c in commitments %}
-                    <tr><td>{{ c.member_name }}</td><td>{{ c.event }}</td><td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td><td>{{ c.remaining_written }} / {{ c.required_written }}</td><td>{{ c.remaining_exam }} / {{ c.required_exam }}</td><td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td></tr>
+                    <tr>
+                        <td>{{ c.member_name }}</td>
+                        <td>{{ c.event }}</td>
+                        <td>{{ c.remaining_roleplay }} / {{ c.required_roleplay }}</td>
+                        <td>{{ c.remaining_written }} / {{ c.required_written }}</td>
+                        <td>{{ c.remaining_exam }} / {{ c.required_exam }}</td>
+                        <td>{{ c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A' }}</td>
+                    </tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -29,6 +151,7 @@
         <p class="text-muted">No commitments yet.</p>
     {% endif %}
 
+    {# ── Workshop Attendance (manual +1) ───────────────────────── #}
     <h4 class="mt-5 mb-3">Workshop Attendance</h4>
     {% if workshop_attendance_data %}
         <div class="table-responsive">
@@ -56,22 +179,23 @@
         <p class="text-muted">No attendance records yet.</p>
     {% endif %}
 
+    {# ── Manual attendance confirm modal ───────────────────────── #}
     <div class="modal fade" id="manualAttendanceModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content border-0 shadow">
-          <div class="modal-header">
-            <h5 class="modal-title">Confirm Attendance Update</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            Add 1 manual attendance for <strong id="manualAttendanceMemberName"></strong>?
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-success" id="confirmManualAttendanceBtn">Confirm</button>
-          </div>
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow">
+                <div class="modal-header">
+                    <h5 class="modal-title">Confirm Attendance Update</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    Add 1 manual attendance for <strong id="manualAttendanceMemberName"></strong>?
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-success" id="confirmManualAttendanceBtn">Confirm</button>
+                </div>
+            </div>
         </div>
-      </div>
     </div>
 
     <script>
@@ -96,17 +220,22 @@
     </script>
 
 {% else %}
+{# ════════════════════════════════════════════════════════════
+   MEMBER DASHBOARD
+   ════════════════════════════════════════════════════════════ #}
+
 {% set rp_done = progress_summary.roleplay.split('/')[0] | int if progress_summary else 0 %}
-{% set rp_req = progress_summary.roleplay.split('/')[1] | int if progress_summary else 0 %}
+{% set rp_req  = progress_summary.roleplay.split('/')[1] | int if progress_summary else 0 %}
 {% set wr_done = progress_summary.written.split('/')[0] | int if progress_summary else 0 %}
-{% set wr_req = progress_summary.written.split('/')[1] | int if progress_summary else 0 %}
+{% set wr_req  = progress_summary.written.split('/')[1] | int if progress_summary else 0 %}
 {% set ex_done = progress_summary.exam.split('/')[0] | int if progress_summary else 0 %}
-{% set ex_req = progress_summary.exam.split('/')[1] | int if progress_summary else 0 %}
+{% set ex_req  = progress_summary.exam.split('/')[1] | int if progress_summary else 0 %}
 {% set total_done = rp_done + wr_done + ex_done %}
-{% set total_req = rp_req + wr_req + ex_req %}
+{% set total_req  = rp_req + wr_req + ex_req %}
 {% set overall_pct = ((total_done / total_req) * 100) | round(1) if total_req > 0 else 0 %}
 {% set next_ws = workshops[0] if workshops else None %}
 
+{# ── Summary cards ─────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
     <div class="col-lg-3 col-md-6">
         <div class="card summary-card h-100">
@@ -120,18 +249,22 @@
     <div class="col-lg-3 col-md-6">
         <div class="card summary-card h-100">
             <div class="card-body">
-                <div class="text-uppercase small text-muted fw-semibold mb-2">Attendance Rate</div>
-                <div class="display-6 fw-bold">{{ attendance_summary.rate if attendance_summary else 0 }}%</div>
-                <div class="text-muted">{{ attendance_summary.attended if attendance_summary else 0 }} attended out of 18 total workshops.</div>
+                <div class="text-uppercase small text-muted fw-semibold mb-2">AH Attendance</div>
+                <div class="display-6 fw-bold {{ 'text-danger' if member_stats and member_stats.ah_rate < 80 else '' }}">
+                    {{ member_stats.ah_rate if member_stats else 0 }}%
+                </div>
+                <div class="text-muted">Required: 80%</div>
             </div>
         </div>
     </div>
     <div class="col-lg-3 col-md-6">
         <div class="card summary-card h-100">
             <div class="card-body">
-                <div class="text-uppercase small text-muted fw-semibold mb-2">Workshops</div>
-                <div class="display-6 fw-bold">{{ workshops|length }}</div>
-                <div class="text-muted">All workshops already linked to your sign-ups.</div>
+                <div class="text-uppercase small text-muted fw-semibold mb-2">WS Attendance</div>
+                <div class="display-6 fw-bold {{ 'text-danger' if member_stats and member_stats.ws_rate < member_stats.ws_threshold_pct else '' }}">
+                    {{ member_stats.ws_rate if member_stats else 0 }}%
+                </div>
+                <div class="text-muted">Required: {{ member_stats.ws_threshold_pct|int if member_stats else 0 }}%</div>
             </div>
         </div>
     </div>
@@ -146,18 +279,84 @@
     </div>
 </div>
 
+{# ── At-risk alert banner ──────────────────────────────────── #}
+{% if member_stats and member_stats.at_risk %}
+<div class="alert alert-danger d-flex align-items-center gap-2 mb-4" role="alert">
+    <i class="bi bi-exclamation-triangle-fill fs-5"></i>
+    <div>
+        <strong>At-Risk:</strong> {{ member_stats.risk_reasons|join(' · ') }}
+    </div>
+</div>
+{% elif member_stats %}
+<div class="alert alert-success d-flex align-items-center gap-2 mb-4" role="alert">
+    <i class="bi bi-check-circle-fill fs-5"></i>
+    <div>You are on track with all attendance requirements.</div>
+</div>
+{% endif %}
+
+{# ── AH / WS Attendance detail card ───────────────────────── #}
+{% if member_stats %}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+    <div class="card-header bg-white border-bottom-0 p-4">
+        <h4 class="mb-1">My Attendance</h4>
+        <p class="text-muted mb-0">
+            Level: <strong>{{ 'Novice' if member_stats.level == 'N' else 'Experienced' }}</strong>
+        </p>
+    </div>
+    <div class="card-body p-4 pt-0">
+        <div class="row g-4">
+            <div class="col-md-6">
+                <div class="d-flex justify-content-between fw-semibold mb-1">
+                    <span>All-Hands (AH)</span>
+                    <span class="{{ 'text-danger' if member_stats.ah_rate < 80 else 'text-success' }}">
+                        {{ member_stats.ah_rate }}%
+                    </span>
+                </div>
+                <div class="progress mb-2" style="height:10px;">
+                    <div class="progress-bar {{ 'bg-danger' if member_stats.ah_rate < 80 else 'bg-success' }}"
+                         style="width: {{ member_stats.ah_rate }}%"></div>
+                </div>
+                <small class="text-muted">
+                    {{ member_stats.ah_sum|int }} of {{ member_stats.ah_total }} sessions attended
+                    &nbsp;·&nbsp; Required: 80%
+                </small>
+            </div>
+            <div class="col-md-6">
+                <div class="d-flex justify-content-between fw-semibold mb-1">
+                    <span>Workshop (WS)</span>
+                    <span class="{{ 'text-danger' if member_stats.ws_rate < member_stats.ws_threshold_pct else 'text-success' }}">
+                        {{ member_stats.ws_rate }}%
+                    </span>
+                </div>
+                <div class="progress mb-2" style="height:10px;">
+                    <div class="progress-bar {{ 'bg-danger' if member_stats.ws_rate < member_stats.ws_threshold_pct else 'bg-success' }}"
+                         style="width: {{ member_stats.ws_rate }}%"></div>
+                </div>
+                <small class="text-muted">
+                    {{ member_stats.ws_sum|int }} of {{ member_stats.ws_total }} sessions attended
+                    &nbsp;·&nbsp; Required: {{ member_stats.ws_threshold_pct|int }}%
+                </small>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# ── Commitment progress bars ──────────────────────────────── #}
 <div class="row g-4 mb-4">
     <div class="col-12">
         <div class="card border-0 shadow-sm rounded-4 h-100">
             <div class="card-header bg-white border-bottom-0 p-4 d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <div>
-		    <h4 class="mb-1">
-    			My {{ progress_summary.event if progress_summary and progress_summary.event else '' }} commitment progress
-		    </h4>
+                    <h4 class="mb-1">
+                        My {{ progress_summary.event if progress_summary and progress_summary.event else '' }} Commitment Progress
+                    </h4>
                     <p class="text-muted mb-0">Track what you have completed and what is still remaining.</p>
                 </div>
                 {% if progress_summary %}
-                    <span class="badge rounded-pill text-bg-warning-subtle text-warning-emphasis px-3 py-2">Deadline: {{ progress_summary.deadline }}</span>
+                    <span class="badge rounded-pill text-bg-warning-subtle text-warning-emphasis px-3 py-2">
+                        Deadline: {{ progress_summary.deadline }}
+                    </span>
                 {% endif %}
             </div>
             <div class="card-body p-4 pt-2">
@@ -190,17 +389,18 @@
                 </div>
             </div>
         </div>
+    </div>
+</div>
 
-    </div></div>
-
+{# ── Workshops and Attendance summary ──────────────────────── #}
 <div class="row g-3">
     <div class="col-xl-7">
         <div class="card border-0 shadow-sm rounded-4">
             <div class="card-header bg-white border-bottom-0 p-4 d-flex justify-content-between align-items-center">
                 <div>
-		    <h4 class="mb-1">
-			{% if progress_summary and progress_summary.event %}{{ progress_summary.event }} {% endif %}Workshops
-		    </h4>
+                    <h4 class="mb-1">
+                        {% if progress_summary and progress_summary.event %}{{ progress_summary.event }} {% endif %}Workshops
+                    </h4>
                     <p class="text-muted mb-0">These are your current workshop sign-ups.</p>
                 </div>
                 <span class="badge rounded-pill text-primary bg-primary-subtle px-3 py-2">{{ workshops|length }} total</span>
@@ -211,8 +411,8 @@
                         {% for ws in workshops %}
                             <div class="border rounded-4 p-3 d-flex justify-content-between align-items-center gap-3 flex-wrap">
                                 <div>
-				    <div class="fw-semibold fs-5">{{ ws.activity_type }}</div>
-				    <div class="text-muted">{{ ws.time | friendly_slot }}</div>
+                                    <div class="fw-semibold fs-5">{{ ws.activity_type }}</div>
+                                    <div class="text-muted">{{ ws.time | friendly_slot }}</div>
                                     <div class="text-muted">Host: {{ ws.officer.username if ws.officer else 'Unknown' }}</div>
                                 </div>
                             </div>
@@ -228,8 +428,8 @@
     <div class="col-xl-5">
         <div class="card border-0 shadow-sm rounded-4">
             <div class="card-header bg-white border-bottom-0 p-4">
-                <h4 class="mb-1">Attendance summary</h4>
-                <p class="text-muted mb-0">This matches the officer view using a fixed total of 18 workshops.</p>
+                <h4 class="mb-1">Workshop Attendance Summary</h4>
+                <p class="text-muted mb-0">Based on a fixed total of 18 workshops.</p>
             </div>
             <div class="card-body p-4 pt-2">
                 <div class="row g-3">
@@ -256,5 +456,6 @@
         </div>
     </div>
 </div>
+
 {% endif %}
 {% endblock %}
