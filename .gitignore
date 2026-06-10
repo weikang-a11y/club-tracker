@@ -7,3 +7,7 @@ club.db
 *.org
 *.bak
 *.backup
+*.xlsx
+*.xls
+*.csv
+*.db
