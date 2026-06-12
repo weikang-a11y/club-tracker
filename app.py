@@ -646,7 +646,7 @@ def logout():
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
-    if current_user.role != 'member':
+    if current_user.role not in ['member','admin']:
         flash('Only members can access settings.', 'danger')
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
@@ -666,7 +666,7 @@ def settings():
 @app.route('/add_commitment', methods=['GET', 'POST'])
 @login_required
 def add_commitment():
-    if current_user.role != 'officer':
+    if current_user.role == 'member':
         flash('Only officers can add commitments.', 'danger')
         return redirect(url_for('dashboard'))
     form = CommitmentForm()
