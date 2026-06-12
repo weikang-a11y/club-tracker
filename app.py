@@ -666,7 +666,7 @@ def settings():
 @app.route('/add_commitment', methods=['GET', 'POST'])
 @login_required
 def add_commitment():
-    if current_user.role == 'member':
+    if current_user.role != 'officer':
         flash('Only officers can add commitments.', 'danger')
         return redirect(url_for('dashboard'))
     form = CommitmentForm()
@@ -707,7 +707,7 @@ def delete_commitment(commitment_id):
 @app.route('/add_workshop', methods=['GET', 'POST'])
 @login_required
 def add_workshop():
-    if current_user.role not in ['member','admin']:
+    if current_user.role != 'member':
         flash('Only members can add workshops.', 'danger')
         return redirect(url_for('dashboard'))
     form = WorkshopForm()
@@ -745,7 +745,7 @@ def add_workshop():
 @login_required
 def edit_workshop(workshop_id):
     workshop = Workshop.query.get_or_404(workshop_id)
-    if current_user.role not in ['member','admin'] or workshop.creator_id != current_user.id:
+    if current_user.role != 'member' or workshop.creator_id != current_user.id:
         flash('You are not allowed to edit this workshop.', 'danger')
         return redirect(url_for('add_workshop'))
     original_date = workshop.time.date()
@@ -796,7 +796,7 @@ def edit_workshop(workshop_id):
 @login_required
 def delete_workshop(workshop_id):
     workshop = Workshop.query.get_or_404(workshop_id)
-    if current_user.role not in ['member','admin'] or workshop.creator_id != current_user.id:
+    if current_user.role != 'member' or workshop.creator_id != current_user.id:
         flash('You are not allowed to delete this workshop.', 'danger')
         return redirect(url_for('dashboard'))
     db.session.delete(workshop)
