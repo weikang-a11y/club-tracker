@@ -177,6 +177,37 @@ class MentorPod(db.Model):
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
 
+class MentorPodEditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    action = db.Column(db.String(50), nullable=False)  # "add", "edit", "delete"
+    details = db.Column(db.String(255))
+
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    actor = db.relationship('User', foreign_keys=[actor_id])
+    member = db.relationship('User', foreign_keys=[member_id])
+
+
+class MDPAuditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    target_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+
+    action = db.Column(db.String(50), nullable=False)
+    category = db.Column(db.String(50), nullable=False)  # commitment/workshop/pod/attendance
+
+    details = db.Column(db.String(255))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    actor = db.relationship('User', foreign_keys=[actor_id])
+    target_user = db.relationship('User', foreign_keys=[target_user_id])
+
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
@@ -224,6 +255,22 @@ def get_attendance_stats(user):
         'at_risk': at_risk,
         'risk_reasons': risk_reasons,
     }
+
+def commitment_progress(commitment):
+    total = (
+        commitment.required_roleplay +
+        commitment.required_written +
+        commitment.required_exam
+    )
+
+    remaining = (
+        commitment.remaining_roleplay +
+        commitment.remaining_written +
+        commitment.remaining_exam
+    )
+
+    done = total - remaining
+    return round((done / total) * 100, 1) if total else 0
 
 # ── Forms ─────────────────────────────────────────────────────────────────────
 
@@ -282,6 +329,13 @@ class WorkshopForm(FlaskForm):
     def validate_officer_id(self, field):
         if not field.data:
             raise ValidationError('Please select an officer.')
+
+class MentorPodForm(FlaskForm):
+    pod_number = IntegerField('Pod Number', validators=[DataRequired()])
+    member_id = SelectField('Member', coerce=int, validators=[DataRequired()])
+    experience_level = SelectField('Level', choices=[('N','Novice'),('E','Experienced')])
+    year_in_deca = StringField('Year in DECA')
+    submit = SubmitField('Save')
 
 # ── Schema migration ──────────────────────────────────────────────────────────
 
@@ -457,6 +511,24 @@ def process_workshop_reminders():
             db.session.rollback()
             raise
 
+def log_pod_edit(actor_id, member_id, action, details=""):
+    return MentorPodEditLog(
+        actor_id=actor_id,
+        member_id=member_id,
+        action=action,
+        details=details
+    )
+
+def log_mdp_action(actor_id, action, category, target_user_id=None, details=""):
+    log = MDPAuditLog(
+        actor_id=actor_id,
+        target_user_id=target_user_id,
+        action=action,
+        category=category,
+        details=details
+    )
+    db.session.add(log)
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -471,9 +543,12 @@ def dashboard():
     created_workshops = []
     attendance_locked_ids = set()
     ah_ws_data = []      # NEW: AH/WS attendance per member for officer view
-    member_stats = None  # NEW: AH/WS stats for member's own view
+    member_stats = None
+    
+    mentee_progress = []
+    # NEW: AH/WS stats for member's own view
 
-    if current_user.role == 'officer':
+    if current_user.role == 'officer' or current_user.is_admin:
         commitments = Commitment.query.filter_by(user_id=current_user.id).order_by(Commitment.deadline).all()
         assigned_workshops = Workshop.query.filter_by(officer_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
         workshops = assigned_workshops
@@ -483,6 +558,19 @@ def dashboard():
         pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
         pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
         pod_member_users = [u for u in pod_member_users if u]
+
+        for member in pod_member_users:
+            commitments = Commitment.query.filter_by(member_name=member.username).all()
+
+            if commitments:
+                avg = sum(commitment_progress(c) for c in commitments) / len(commitments)
+            else:
+                avg = 0
+
+            mentee_progress.append({
+                'member': member.username,
+                'progress': round(avg, 1)
+            })
 
         # Fall back to commitment-based member names if no pod assignments
         if not pod_member_users:
@@ -589,7 +677,9 @@ def dashboard():
         attendance_locked_ids=attendance_locked_ids,
         ah_ws_data=ah_ws_data,
         member_stats=member_stats,
+        mentee_progress=mentee_progress,
     )
+
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -602,7 +692,7 @@ def register():
             flash('This username is already in use. Please choose a different username.', 'warning')
             return render_template('register.html', form=form)
         hashed_pw = generate_password_hash(form.password.data)
-        user = User(username=form.username.data.strip(), password=hashed_pw, role=form.role.data)
+        user = User(username=form.username.data.strip(), password=hashed_pw, role=form.role.data, is_admin=(form.role.data == 'admin'))
         db.session.add(user)
         db.session.commit()
         flash('Registration successful. Please sign in.', 'success')
@@ -611,13 +701,24 @@ def register():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
     form = LoginForm()
     if form.validate_on_submit():
         user = User.query.filter_by(username=form.username.data.strip()).first()
         if user and check_password_hash(user.password, form.password.data):
+            
+            print("===== LOGIN DEBUG =====")
+            print("Username:", user.username)
+            print("Role:", user.role)
+            print("is_admin:", user.is_admin)
+            print("=======================")
+            
             login_user(user)
+
+            print("current_user role after login:", user.role)
+            
             # NEW: redirect to change password if flagged
             if user.must_change_password:
                 return redirect(url_for('change_password'))
@@ -646,7 +747,7 @@ def logout():
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
-    if current_user.role not in ['member','admin']:
+    if current_user.role != 'member':
         flash('Only members can access settings.', 'danger')
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
@@ -687,6 +788,15 @@ def add_commitment():
             user_id=current_user.id)
         db.session.add(commit)
         db.session.commit()
+
+        log_mdp_action(
+            actor_id=current_user.id,
+            action="add",
+            category="commitment",
+            target_user_id=current_user.id,
+            details=f"Added commitment for {member_name}"
+        )
+        
         flash('Commitment added.', 'success')
         return redirect(url_for('add_commitment'))
     commitments = Commitment.query.filter_by(user_id=current_user.id).order_by(Commitment.deadline).all()
@@ -700,6 +810,15 @@ def delete_commitment(commitment_id):
         flash('You are not allowed to delete this commitment.', 'danger')
         return redirect(url_for('dashboard'))
     db.session.delete(commitment)
+
+    log_mdp_action(
+        actor_id=current_user.id,
+        action="delete",
+        category="commitment",
+        target_user_id=commitment.user_id,
+        details=f"Deleted commitment for {commitment.member_name}"
+    )
+    
     db.session.commit()
     flash('Commitment deleted.', 'success')
     return redirect(url_for('add_commitment'))
@@ -729,6 +848,15 @@ def add_workshop():
         db.session.flush()
         if current_user not in ws.signups:
             ws.signups.append(current_user)
+
+            log_mdp_action(
+                actor_id=current_user.id,
+                action="add",
+                category="workshop",
+                target_user_id=current_user.id,
+                details=f"Created workshop {ws.activity_type} on {ws.time}"
+            )
+            
         try:
             db.session.commit()
         except IntegrityError:
@@ -776,6 +904,15 @@ def edit_workshop(workshop_id):
         workshop.time = workshop_time
         workshop.officer_id = form.officer_id.data
         workshop.activity_type = form.activity_type.data
+
+        log_mdp_action(
+            actor_id=current_user.id,
+            action="edit",
+            category="workshop",
+            target_user_id=workshop.creator_id,
+            details=f"Edited workshop {workshop.id} ({workshop.activity_type})"
+        )
+        
         try:
             db.session.commit()
         except IntegrityError:
@@ -815,6 +952,15 @@ def signup_workshop(workshop_id):
         flash('Already signed up.', 'info')
         return redirect(url_for('dashboard'))
     workshop.signups.append(current_user)
+
+    log_mdp_action(
+        actor_id=current_user.id,
+        action="signup",
+        category="workshop",
+        target_user_id=workshop.officer_id,
+        details=f"Signed up for workshop {workshop.id}"
+    )
+    
     db.session.commit()
     flash('Signed up.', 'success')
     return redirect(url_for('dashboard'))
@@ -828,6 +974,16 @@ def cancel_signup(workshop_id):
     workshop = Workshop.query.get_or_404(workshop_id)
     if current_user in workshop.signups:
         workshop.signups.remove(current_user)
+
+        log_mdp_action(
+            actor_id=current_user.id,
+            action="cancel",
+            category="workshop",
+            target_user_id=workshop.officer_id,
+            details=f"Cancelled workshop {workshop.id}"
+        )
+
+        
         db.session.commit()
         flash('Sign-up cancelled.', 'success')
     else:
@@ -866,6 +1022,15 @@ def workshop_attendance(workshop_id):
                             commitment.remaining_exam = max(0, commitment.remaining_exam - 1)
                         db.session.add(commitment)
         db.session.add(AttendanceSubmission(workshop_id=workshop_id, officer_id=current_user.id))
+
+        log_mdp_action(
+            actor_id=current_user.id,
+            action="attendance_submit",
+            category="attendance",
+            target_user_id=current_user.id,
+            details=f"Submitted attendance for workshop {workshop_id}"
+        )
+        
         db.session.commit()
         flash('Attendance updated successfully.', 'success')
         return redirect(url_for('reports', tab='calendar'))
@@ -985,6 +1150,14 @@ def admin_panel():
     return render_template('admin.html', users=users, stats=stats)
 
 
+@app.route('/admin/logs')
+@login_required
+@admin_required
+def view_logs():
+    logs = MDPAuditLog.query.order_by(MDPAuditLog.timestamp.desc()).all()
+    return render_template('logs.html', logs=logs)
+
+
 @app.route('/admin/delete_user/<int:user_id>', methods=['POST'])
 @login_required
 @admin_required
@@ -1088,6 +1261,89 @@ def make_first_admin():
         flash(f'"{username}" is now an admin. Please log in and go to /admin.', 'success')
         return redirect(url_for('login'))
     return render_template('make_first_admin.html')
+
+@app.route('/admin/mentor_pods', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def mentor_pods():
+    form = MentorPodForm()
+
+    form.member_id.choices = [
+        (u.id, u.username)
+        for u in User.query.filter_by(role='member').all()
+    ]
+
+    if form.validate_on_submit():
+        pod = MentorPod(
+            pod_number=form.pod_number.data,
+            member_id=form.member_id.data,
+            mentor_id=current_user.id,
+            experience_level=form.experience_level.data,
+            year_in_deca=form.year_in_deca.data
+        )
+        db.session.add(pod)
+
+        log_mdp_action(
+            actor_id=current_user.id,
+            action="pod_add",
+            category="pod",
+            target_user_id=pod.member_id,
+            details=f"Added to Pod {pod.pod_number}"
+        )
+        
+        db.session.commit()
+
+        
+        
+        flash("Mentor pod saved", "success")
+        return redirect(url_for('mentor_pods'))
+
+    pods = MentorPod.query.all()
+    return render_template('mentor_pods.html', form=form, pods=pods)
+
+@app.route('/admin/mentor_pods/edit/<int:pod_id>', methods=['POST'])
+@login_required
+@admin_required
+def edit_pod(pod_id):
+    pod = MentorPod.query.get_or_404(pod_id)
+
+    pod.pod_number = request.form['pod_number']
+    pod.member_id = request.form['member_id']
+    pod.experience_level = request.form['experience_level']
+    pod.year_in_deca = request.form['year_in_deca']
+
+    log_mdp_action(
+        actor_id=current_user.id,
+        action="pod_edit",
+        category="pod",
+        target_user_id=pod.member_id,
+        details=f"Updated Pod {pod.pod_number}"
+    )
+
+    db.session.commit()
+    flash("Pod updated", "success")
+    return redirect(url_for('mentor_pods'))
+
+
+@app.route('/admin/mentor_pods/delete/<int:pod_id>', methods=['POST'])
+@login_required
+@admin_required
+def delete_pod(pod_id):
+    pod = MentorPod.query.get_or_404(pod_id)
+
+    log_mdp_action(
+        actor_id=current_user.id,
+        action="pod_delete",
+        category="pod",
+        target_user_id=pod.member_id,
+        details=f"Removed from Pod {pod.pod_number}"
+    )
+    
+    db.session.delete(pod)
+    db.session.commit()
+    flash("Pod deleted", "success")
+    return redirect(url_for('mentor_pods'))
+
 
 scheduler = BackgroundScheduler()
 
