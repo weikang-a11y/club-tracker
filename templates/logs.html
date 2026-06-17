@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}MDP Audit Log{% endblock %}
+
+{% block content %}
+
+<div style="
+    background:#eef3f8;
+    padding:12px 18px;
+    border-radius:10px;
+    margin-bottom:10px;
+">
+    <h1 style="margin:0;">MDP Audit Log</h1>
+</div>
+
+<div class="card shadow-sm">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Actor</th>
+                        <th>Action</th>
+                        <th>Category</th>
+                        <th>Target User</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td>{{ log.timestamp }}</td>
+
+                        <td>
+                            {% if log.actor %}
+                                {{ log.actor.username }}
+                            {% else %}
+                                Unknown
+                            {% endif %}
+                        </td>
+
+                        <td>{{ log.action }}</td>
+                        <td>{{ log.category }}</td>
+
+                        <td>
+                            {% if log.target_user %}
+                                {{ log.target_user.username }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+
+                        <td>{{ log.details }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

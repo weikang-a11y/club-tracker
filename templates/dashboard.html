@@ -4,7 +4,18 @@
 <div class="card page-header-card mb-4">
     <div class="card-body p-4">
         <h2 class="mb-1">Welcome, {{ user.username }}!</h2>
-        <p class="lead mb-0">Role: <strong>{{ 'Officer' if user.role == 'officer' else 'Member' }}</strong></p>
+        <p class="lead mb-0">
+            Role:
+            <strong>
+                {% if user.is_admin %}
+                    Admin
+                {% elif user.role == 'officer' %}
+                    Officer
+                {% else %}
+                    Member
+                {% endif %}
+            </strong>
+        </p>
     </div>
 </div>
 

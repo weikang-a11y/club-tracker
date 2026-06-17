@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
 import os
+from collections import defaultdict
 
 load_dotenv()
 
@@ -332,9 +333,27 @@ class WorkshopForm(FlaskForm):
 
 class MentorPodForm(FlaskForm):
     pod_number = IntegerField('Pod Number', validators=[DataRequired()])
-    member_id = SelectField('Member', coerce=int, validators=[DataRequired()])
-    experience_level = SelectField('Level', choices=[('N','Novice'),('E','Experienced')])
-    year_in_deca = StringField('Year in DECA')
+
+    member_id = SelectField(
+        'Member',
+        coerce=int,
+        validators=[DataRequired()]
+    )
+
+    mentor_id = SelectField(
+        'Mentor',
+        coerce=int,
+        validators=[DataRequired()]
+    )
+
+    experience_level = SelectField(
+        'Level',
+        choices=[
+            ('N', 'Novice'),
+            ('E', 'Experienced')
+        ]
+    )
+
     submit = SubmitField('Save')
 
 # ── Schema migration ──────────────────────────────────────────────────────────
@@ -531,10 +550,26 @@ def log_mdp_action(actor_id, action, category, target_user_id=None, details=""):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+# REMOVE THIS LINE (IMPORTANT - causes crash)
+# from app import workshop_signups
+
+
+# --- keep your existing imports ---
+# (everything else stays the same)
+
+# workshop_signups must be defined BEFORE any usage (keep where it already is in your file)
+# DO NOT IMPORT IT
+
+
+# =========================
+# FIXED DASHBOARD ROUTE
+# =========================
 @app.route('/')
 @login_required
 def dashboard():
-    commitments = []
+
+    overall_mentee_progress = 0
+    mentee_progress = []
     progress_summary = None
     attendance_summary = None
     assigned_workshops = []
@@ -542,84 +577,132 @@ def dashboard():
     workshops = []
     created_workshops = []
     attendance_locked_ids = set()
-    ah_ws_data = []      # NEW: AH/WS attendance per member for officer view
+    ah_ws_data = []
     member_stats = None
-    
-    mentee_progress = []
-    # NEW: AH/WS stats for member's own view
+    mentees_workshops = {}
+
+    # ALWAYS define this so template never breaks
+    mentee_names = set()
 
     if current_user.role == 'officer' or current_user.is_admin:
-        commitments = Commitment.query.filter_by(user_id=current_user.id).order_by(Commitment.deadline).all()
-        assigned_workshops = Workshop.query.filter_by(officer_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-        workshops = assigned_workshops
-        attendance_locked_ids = {row.workshop_id for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()}
 
-        # Build member list from pod assignments
-        pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
-        pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
+        assigned_workshops = Workshop.query.filter_by(
+            officer_id=current_user.id
+        ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+
+        workshops = assigned_workshops
+
+        attendance_locked_ids = {
+            row.workshop_id for row in AttendanceSubmission.query.filter_by(
+                officer_id=current_user.id
+            ).all()
+        }
+
+        pod_members = MentorPod.query.filter_by(
+            mentor_id=current_user.id
+        ).all()
+
+        pod_member_users = [
+            db.session.get(User, pm.member_id)
+            for pm in pod_members
+        ]
         pod_member_users = [u for u in pod_member_users if u]
 
-        for member in pod_member_users:
-            commitments = Commitment.query.filter_by(member_name=member.username).all()
+        # FIX: rename variable so we don't overwrite anything
+        user_commitments = []
 
-            if commitments:
-                avg = sum(commitment_progress(c) for c in commitments) / len(commitments)
-            else:
-                avg = 0
+        for member in pod_member_users:
+            user_commitments = Commitment.query.filter_by(user_id=member.id).all()
+
+            avg = (
+                sum(commitment_progress(c) for c in user_commitments) / len(user_commitments)
+                if user_commitments else 0
+            )
 
             mentee_progress.append({
                 'member': member.username,
                 'progress': round(avg, 1)
             })
 
-        # Fall back to commitment-based member names if no pod assignments
+        overall_mentee_progress = (
+            sum(m['progress'] for m in mentee_progress) / len(mentee_progress)
+            if mentee_progress else 0
+        )
+
+        # fallback safety
         if not pod_member_users:
-            member_names = {c.member_name for c in commitments}
+            member_ids = set()
+
             for ws in assigned_workshops:
-                for member in ws.signups:
-                    member_names.add(member.username)
-            pod_member_users = [User.query.filter_by(username=n).first() for n in sorted(member_names)]
+                for m in ws.signups:
+                    member_ids.add(m.id)
+
+            pod_member_users = [
+                db.session.get(User, uid)
+                for uid in member_ids
+            ]
             pod_member_users = [u for u in pod_member_users if u]
 
-        # Workshop attendance (existing logic)
+        # attendance data
         for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
-            actual_attended = db.session.query(workshop_signups).filter_by(user_id=member.id, attended=True).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
-            ga = GeneralAttendance.query.filter_by(officer_id=current_user.id, member_name=member.username).first()
+
+            actual_attended = db.session.query(workshop_signups).filter_by(
+                user_id=member.id,
+                attended=True
+            ).join(Workshop).filter(
+                Workshop.officer_id == current_user.id
+            ).count()
+
+            ga = GeneralAttendance.query.filter_by(
+                officer_id=current_user.id,
+                member_name=member.username
+            ).first()
+
             manual_count = ga.manual_count if ga else 0
-            total_attended = actual_attended + manual_count
+
             workshop_attendance_data.append({
                 'member_name': member.username,
-                'total_attended': total_attended,
+                'total_attended': actual_attended + manual_count,
                 'manual_count': manual_count,
                 'actual_attended': actual_attended
             })
 
-        # NEW: AH/WS attendance stats per pod member
+        # AH/WS stats
         for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
             stats = get_attendance_stats(member)
             pod = MentorPod.query.filter_by(member_id=member.id).first()
+
             ah_ws_data.append({
                 'member': member,
                 'pod_number': pod.pod_number if pod else '?',
                 'level': stats['level'],
                 'ah_rate': stats['ah_rate'],
-                'ah_sum': stats['ah_sum'],
-                'ah_total': stats['ah_total'],
                 'ws_rate': stats['ws_rate'],
-                'ws_sum': stats['ws_sum'],
-                'ws_total': stats['ws_total'],
-                'ws_threshold_pct': stats['ws_threshold_pct'],
                 'at_risk': stats['at_risk'],
-                'risk_reasons': stats['risk_reasons'],
             })
 
+        # FIX: define mentee_names safely
+        mentee_names = {c.member_name for c in Commitment.query.filter_by(user_id=current_user.id).all()}
+
     else:
-        commitments = Commitment.query.filter_by(member_name=current_user.username).all()
-        workshops = current_user.workshops.options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
-        created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+        # MEMBER VIEW
+
+        commitments = Commitment.query.filter_by(
+            member_name=current_user.username
+        ).all()
+
+        workshops = current_user.workshops.options(
+            joinedload(Workshop.officer),
+            joinedload(Workshop.creator)
+        ).order_by(Workshop.time).all()
+
+        created_workshops = Workshop.query.filter_by(
+            creator_id=current_user.id
+        ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
 
         if commitments:
             c = commitments[0]
+
             progress_summary = {
                 'roleplay': f"{c.required_roleplay - c.remaining_roleplay}/{c.required_roleplay}",
                 'written': f"{c.required_written - c.remaining_written}/{c.required_written}",
@@ -627,57 +710,35 @@ def dashboard():
                 'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A',
                 'event': c.event
             }
-            officer = c.user
-            officer_id = officer.id if officer else None
-            actual_attended = 0
-            manual_count = 0
-            if officer_id:
-                actual_attended = db.session.query(workshop_signups).filter_by(user_id=current_user.id, attended=True).join(Workshop).filter(Workshop.officer_id == officer_id).count()
-                ga = GeneralAttendance.query.filter_by(officer_id=officer_id, member_name=current_user.username).first()
-                manual_count = ga.manual_count if ga else 0
 
-            total_attended = actual_attended + manual_count
-            total_signed = len(current_user.workshops.all())
-            attendance_summary = {
-                'signed': total_signed,
-                'attended': total_attended,
-                'rate': round((total_attended / 18 * 100) if 18 > 0 else 0.0, 1)
-            }
-
-        # NEW: AH/WS stats for member's own dashboard
         member_stats = get_attendance_stats(current_user)
 
-    for ws in workshops:
-        ws.end_time = ws.time + timedelta(minutes=20)
-    for ws in created_workshops:
-        ws.end_time = ws.time + timedelta(minutes=20)
+    # SAFE: never crash here
+    signed_times = []
 
-    my_signups = current_user.workshops.all() if current_user.role == 'member' else []
-    mentees_workshops = {}
-    if current_user.role == 'officer':
-        mentee_names = {c.member_name for c in commitments}
-        for name in mentee_names:
-            member = User.query.filter_by(username=name).first()
-            mentees_workshops[name] = member.workshops.order_by(Workshop.time).all() if member else []
+    if current_user.role == 'member':
+        my_signups = current_user.workshops.all()
+        signed_times = [
+            (w.time, w.time + timedelta(minutes=20))
+            for w in my_signups
+        ]
 
-    signed_times = [(w.time, w.time + timedelta(minutes=20)) for w in my_signups] if current_user.role == 'member' else []
-
-    return render_template('dashboard.html',
-        commitments=commitments,
+    return render_template(
+        'dashboard.html',
+        commitments=commitments if 'commitments' in locals() else [],
         progress_summary=progress_summary,
         attendance_summary=attendance_summary,
         assigned_workshops=assigned_workshops,
         workshop_attendance_data=workshop_attendance_data,
         workshops=workshops,
-        my_signups=my_signups,
-        mentees_workshops=mentees_workshops,
-        signed_times=signed_times,
-        user=current_user,
         created_workshops=created_workshops,
         attendance_locked_ids=attendance_locked_ids,
         ah_ws_data=ah_ws_data,
         member_stats=member_stats,
         mentee_progress=mentee_progress,
+        overall_mentee_progress=overall_mentee_progress,
+        signed_times=signed_times,
+        user=current_user,
     )
 
 
@@ -773,6 +834,11 @@ def add_commitment():
     form = CommitmentForm()
     if form.validate_on_submit():
         member_name = form.member_name.data.strip()
+
+        member = User.query.filter_by(
+            username=member_name
+        ).first()
+
         event = form.event.data
         rule = EVENT_REQUIREMENTS[event]
         commit = Commitment(
@@ -785,7 +851,7 @@ def add_commitment():
             remaining_written=rule["written"],
             remaining_exam=rule["exam"],
             deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
-            user_id=current_user.id)
+            user_id=member.id if member else None)
         db.session.add(commit)
         db.session.commit()
 
@@ -816,7 +882,7 @@ def delete_commitment(commitment_id):
         action="delete",
         category="commitment",
         target_user_id=commitment.user_id,
-        details=f"Deleted commitment for {commitment.member_name}"
+        details=f"Deleted commitment for {commitment.user_id}"
     )
     
     db.session.commit()
@@ -1272,14 +1338,18 @@ def mentor_pods():
         (u.id, u.username)
         for u in User.query.filter_by(role='member').all()
     ]
+    form.mentor_id.choices = [
+        (u.id, u.username)
+        for u in User.query.filter_by(role='officer').all()
+    ]
 
     if form.validate_on_submit():
         pod = MentorPod(
             pod_number=form.pod_number.data,
             member_id=form.member_id.data,
-            mentor_id=current_user.id,
+            mentor_id=form.mentor_id.data,
             experience_level=form.experience_level.data,
-            year_in_deca=form.year_in_deca.data
+            year_in_deca=""
         )
         db.session.add(pod)
 
@@ -1299,7 +1369,20 @@ def mentor_pods():
         return redirect(url_for('mentor_pods'))
 
     pods = MentorPod.query.all()
-    return render_template('mentor_pods.html', form=form, pods=pods)
+
+    grouped_pods = defaultdict(list)
+
+    for pod in pods:
+        grouped_pods[pod.mentor].append(pod)
+
+    grouped_pods = dict(grouped_pods)
+
+    return render_template(
+        'mentor_pods.html',
+        form=form,
+        pods=pods,
+        grouped_pods=grouped_pods
+    )
 
 @app.route('/admin/mentor_pods/edit/<int:pod_id>', methods=['POST'])
 @login_required
@@ -1344,6 +1427,84 @@ def delete_pod(pod_id):
     flash("Pod deleted", "success")
     return redirect(url_for('mentor_pods'))
 
+@app.route('/mentee-progress')
+@login_required
+def mentee_progress_page():
+    if current_user.role != 'officer' and not current_user.is_admin:
+        flash('Only officers can view mentee progress.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    # build mentee progress here
+    mentee_progress = []
+    if current_user.is_admin:
+        pod_members = MentorPod.query.all()
+    else:
+        pod_members = MentorPod.query.filter_by(
+            mentor_id=current_user.id
+        ).all()
+
+    for p in pod_members[:10]:
+            print("POD:", p.id, "mentor_id:", p.mentor_id, "member_id:", p.member_id)
+
+    pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
+    pod_member_users = [u for u in pod_member_users if u]
+
+    for member in pod_member_users:
+
+        print("LOOKING FOR:",member.username)
+            
+        # LOOK UP COMMITMENTS BY USER ID
+        commitments = Commitment.query.filter_by(
+            user_id=member.id
+        ).all()
+
+        print("FOUND:",len(commitments))
+
+        if commitments:
+            avg = (
+                sum(commitment_progress(c) for c in commitments)
+                / len(commitments)
+            )
+        else:
+            avg = 0
+
+        mentee_progress.append({
+            'member': member.username,
+            'progress': round(avg, 1)
+        })
+
+
+    overall_mentee_progress = (
+        sum(m['progress'] for m in mentee_progress) / len(mentee_progress)
+        if mentee_progress else 0
+    )
+
+    for c in Commitment.query.limit(20).all():
+        print(
+            c.member_name,
+            "required:",
+            c.required_roleplay,
+            c.required_written,
+            c.required_exam,
+            "remaining:",
+            c.remaining_roleplay,
+            c.remaining_written,
+            c.remaining_exam,
+            "progress:",
+            commitment_progress(c)
+        )
+
+    print("\nCOMMITMENT USER IDS:")
+    for c in Commitment.query.limit(20).all():
+        print(
+            "member_name =", c.member_name,
+            "| user_id =", c.user_id
+        )
+    return render_template(
+        'mentee_progress.html',
+        mentee_progress=mentee_progress,
+        overall_mentee_progress=overall_mentee_progress
+    )
 
 scheduler = BackgroundScheduler()
 

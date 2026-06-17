@@ -139,7 +139,15 @@
             <div class="col-lg-auto">
                 <aside class="sidebar">
                     <div class="brand border-bottom pb-3 mb-3 text-uppercase">DECA Tracker</div>
-                    <div class="role-chip">{{ 'Officer' if current_user.role == 'officer' else 'Member' }}</div>
+                    <div class="role-chip">
+                        {% if current_user.is_admin %}
+                            Admin
+                        {% elif current_user.role == 'officer' %}
+                            Officer
+                        {% else %}
+                            Member
+                        {% endif %}
+                    </div>
                     <div class="small text-white-50 mt-2 mb-4">{{ current_user.username }}</div>
 
                     <nav class="nav flex-column">
@@ -156,6 +164,18 @@
                             <hr class="border-secondary my-2">
                             <a class="nav-link {% if request.endpoint == 'admin_panel' %}active{% endif %}" href="{{ url_for('admin_panel') }}">
                                 ⚙ Admin Panel
+                            </a>
+                            <a class="nav-link {% if request.endpoint == 'mdp_logs' %}active{% endif %}" 
+                            href="{{ url_for('view_logs') }}">
+                            MDP Changes
+                            </a>
+                            <a class="nav-link {% if request.endpoint == 'mentor_pods' %}active{% endif %}" 
+                            href="{{ url_for('mentor_pods') }}">
+                            Mentor Pods
+                            </a>
+                            <a class="nav-link {% if request.endpoint == 'mentee_progress_page' %}active{% endif %}" 
+                            href="{{ url_for('mentee_progress_page') }}">
+                                Mentee Progress
                             </a>
                         {% endif %}
                     </nav>
