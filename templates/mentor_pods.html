@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+
+{% block title %}Mentor Pods{% endblock %}
+
+{% block content %}
+
+<div style="
+    background:#eef3f8;
+    padding:12px 18px;
+    border-radius:10px;
+    margin-bottom:10px;
+">
+    <h2 style="margin:0;">Mentor Pod Management</h2>
+</div>
+
+<div style="
+    background:#eef3f8;
+    padding:12px 18px;
+    border-radius:10px;
+    margin-bottom:20px;
+">
+    <h2 style="margin:0;">Mentor Groups</h2>
+</div>
+
+<div style="display:flex; flex-wrap:wrap; gap:20px;">
+
+{% for mentor, members in grouped_pods.items() %}
+
+<div style="
+    width:320px;
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow:0 2px 8px rgba(0,0,0,0.15);
+    background:white;
+">
+
+    <!-- Pod Header -->
+    <div style="
+        background:#6c8ebf;
+        color:white;
+        padding:12px;
+    ">
+
+        <div style="font-size:18px; font-weight:bold;">
+            Pod #{{ members[0].pod_number }}
+        </div>
+
+        <div style="margin-top:4px;">
+            Mentor: {{ mentor.username if mentor else "No Mentor" }}
+        </div>
+
+    </div>
+
+    <!-- Members -->
+    <div style="padding:10px;">
+
+        {% for pod in members %}
+
+        <div style="
+            padding:8px;
+            margin-bottom:8px;
+            border-radius:8px;
+            background:#f8f9fa;
+        ">
+
+            <strong>{{ pod.member.username }}</strong><br>
+
+            {% if pod.experience_level == "N" %}
+                <span style="color:#198754;">Novice</span>
+            {% else %}
+                <span style="color:#fd7e14;">Experienced</span>
+            {% endif %}
+
+        </div>
+
+        {% endfor %}
+
+    </div>
+
+</div>
+
+{% endfor %}
+
+</div>
+
+<hr style="margin:30px 0;">
+
+<div style="
+    background:#eef3f8;
+    padding:12px 18px;
+    border-radius:10px;
+    margin-bottom:10px;
+">
+    <h2 style="margin:0;">All Members</h2>
+</div>
+
+<p style="
+    color:#666;
+    margin-bottom:15px;
+    font-size:14px;
+">
+    Use this table to reassign members to different mentors. Changes are saved when you click the Save button.
+</p>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Member</th>
+            <th>Mentor</th>
+            <th>Pod #</th>
+            <th>Level</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+
+    <tbody>
+
+    {% for pod in pods %}
+    <tr>
+
+        <td>{{ pod.member.username }}</td>
+
+        <td>{{ pod.mentor.username }}</td>
+
+        <td>{{ pod.pod_number }}</td>
+
+        <td>
+            {{ "Novice" if pod.experience_level == "N" else "Experienced" }}
+        </td>
+
+        <td>
+
+            <form method="POST"
+                  action="{{ url_for('edit_pod', pod_id=pod.id) }}"
+                  style="display:inline;">
+
+                <select name="mentor_id">
+
+                    {% for mentor in form.mentor_id.choices %}
+
+                    <option value="{{ mentor[0] }}"
+                        {% if mentor[0] == pod.mentor_id %}selected{% endif %}>
+
+                        {{ mentor[1] }}
+
+                    </option>
+
+                    {% endfor %}
+
+                </select>
+
+                <button type="submit"
+                        class="btn btn-sm btn-primary">
+                    Save
+                </button>
+
+            </form>
+
+            <form method="POST"
+                  action="{{ url_for('delete_pod', pod_id=pod.id) }}"
+                  style="display:inline;">
+
+                <button type="submit"
+                        class="btn btn-sm btn-danger">
+                    Delete
+                </button>
+
+            </form>
+
+        </td>
+
+    </tr>
+    {% endfor %}
+
+    </tbody>
+</table>
+
+{% endblock %}

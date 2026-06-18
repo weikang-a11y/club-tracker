@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Mentee Progress{% endblock %}
+
+{% block content %}
+
+<div class="container mt-4">
+
+    <!-- Header -->
+    <div class="mb-4" style="
+        background:#eef3f8;
+        padding:12px 18px;
+        border-radius:10px;
+    ">
+        <h1 style="margin:0;">Mentee Progress</h1>
+    </div>
+
+    <!-- Overall Summary Card -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h4 class="card-title">Overall Progress</h4>
+
+            <p class="mb-2">
+                <strong>All Mentees Average:</strong>
+                {{ overall_mentee_progress | round(1) }}%
+            </p>
+
+            <div class="progress">
+                <div class="progress-bar"
+                     role="progressbar"
+                     style="width: {{ overall_mentee_progress }}%;">
+                    {{ overall_mentee_progress | round(1) }}%
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Individual Mentees -->
+    <div class="card">
+        <div class="card-body">
+            <h4 class="card-title mb-3">Individual Mentee Progress</h4>
+
+            {% if mentee_progress and mentee_progress|length > 0 %}
+
+                {% for m in mentee_progress %}
+                    <div class="mb-3">
+
+                        <div class="d-flex justify-content-between">
+                            <span><strong>{{ m.member }}</strong></span>
+                            <span>{{ m.progress }}%</span>
+                        </div>
+
+                        <div class="progress">
+                            <div class="progress-bar"
+                                 role="progressbar"
+                                 style="width: {{ m.progress }}%;">
+                            </div>
+                        </div>
+
+                    </div>
+                {% endfor %}
+
+            {% else %}
+                <p class="text-muted">No mentee data available.</p>
+            {% endif %}
+
+        </div>
+    </div>
+
+</div>
+
+{% endblock %}
