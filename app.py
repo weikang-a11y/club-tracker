@@ -8,7 +8,6 @@ from wtforms.validators import DataRequired, Length, NumberRange, ValidationErro
 from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
-from sqlalchemy.pool import NullPool
 from apscheduler.schedulers.background import BackgroundScheduler
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
@@ -33,7 +32,12 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
     print(f"[DB] Using external database: {DATABASE_URL[:60]}...")
     app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+       'pool_pre_ping': True,
+       'pool_recycle': 300,
+       'pool_size': 5,
+       'max_overflow': 10,
+   }
 else:
     local_db = os.path.join(os.path.dirname(__file__), 'club.db')
     print('[DB] No DATABASE_URL found, using local SQLite database.')
