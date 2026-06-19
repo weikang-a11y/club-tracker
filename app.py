@@ -683,6 +683,10 @@ def dashboard():
                 'ah_rate': stats['ah_rate'],
                 'ws_rate': stats['ws_rate'],
                 'at_risk': stats['at_risk'],
+                'ah_sum': stats['ah_sum'],
+                'ah_total': stats['ah_total'],
+                'ws_sum': stats['ws_sum'],
+                'ws_total': stats['ws_total'],
             })
 
         # FIX: define mentee_names safely
