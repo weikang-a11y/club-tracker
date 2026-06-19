@@ -687,6 +687,7 @@ def dashboard():
                 'ah_total': stats['ah_total'],
                 'ws_sum': stats['ws_sum'],
                 'ws_total': stats['ws_total'],
+                'ws_threshold_pct': stats['ws_threshold_pct'],
             })
 
         # FIX: define mentee_names safely
