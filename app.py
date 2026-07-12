@@ -1018,6 +1018,7 @@ def practice_sessions():
             conference_order=CONFERENCE_ORDER,
             activity_types=ACTIVITY_TYPES,
             time_slots=TIME_SLOTS,
+            active_conf=get_active_conference(),
         )
     else:
         # Member view: show open slots from their officer
@@ -1180,52 +1181,70 @@ def reports():
     if current_user.role != 'officer':
         flash('Only officers can view reports.', 'danger')
         return redirect(url_for('dashboard'))
-    active_tab = request.args.get('tab', 'attendance')
-    officer_workshops = Workshop.query.filter_by(officer_id=current_user.id).options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
+    active_tab = request.args.get('tab', 'commitment')
 
-    member_summary = {}
-    for ws in officer_workshops:
-        attended_ids = {row[0] for row in db.session.query(workshop_signups.c.user_id).filter_by(workshop_id=ws.id, attended=True).all()}
-        for member in ws.signups:
-            username = member.username
-            if username not in member_summary:
-                member_summary[username] = {'signups': 0, 'attended': 0, 'manual': 0}
-            member_summary[username]['signups'] += 1
-            if member.id in attended_ids:
-                member_summary[username]['attended'] += 1
-    gas = GeneralAttendance.query.filter_by(officer_id=current_user.id).all()
-    for ga in gas:
-        username = ga.member_name
-        if username in member_summary:
-            member_summary[username]['manual'] += ga.manual_count
-        else:
-            member_summary[username] = {'signups': 0, 'attended': 0, 'manual': ga.manual_count}
+    # ── Commitment Reports tab: pod member progress per conference ──
+    pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
+    pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
+    pod_member_users = [u for u in pod_member_users if u]
+    active_conf = get_active_conference()
 
-    reports_data = []
-    for username, stats in member_summary.items():
-        total_attended = stats['attended'] + stats['manual']
-        rate = (total_attended / 18 * 100) if 18 > 0 else 0
-        reports_data.append({'member': username, 'signups_count': stats['signups'], 'attended_count': total_attended, 'attendance_rate': round(rate, 1)})
-    reports_data.sort(key=lambda x: x['member'].lower())
-
-    attendance_locked_ids = {row.workshop_id for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()}
-    calendar_groups = {}
-    for ws in officer_workshops:
-        local_start = utc_to_local(ws.time)
-        local_end = local_start + timedelta(minutes=20)
-        day = local_start.strftime('%Y-%m-%d')
-        time_range = f"{local_start.strftime('%I:%M').lstrip('0')} - {local_end.strftime('%I:%M').lstrip('0')} {local_end.strftime('%p').lower()}"
-        signup_names = ', '.join(sorted([u.username for u in ws.signups], key=str.lower)) or 'None'
-        calendar_groups.setdefault(day, []).append({
-            'workshop': ws,
-            'time_range': time_range,
-            'signup_names': signup_names
+    commitment_data = []
+    for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        level = pod.experience_level if pod else 'N'
+        member_commitments = {}
+        for conf in CONFERENCE_ORDER:
+            com = Commitment.query.filter_by(member_name=member.username, event=conf).first()
+            member_commitments[conf] = com
+        commitment_data.append({
+            'member': member,
+            'level': level,
+            'pod_number': pod.pod_number if pod else '?',
+            'commitments': member_commitments,
+            'active_conf': active_conf,
         })
-    for day in calendar_groups:
-        calendar_groups[day].sort(key=lambda item: item['workshop'].time)
 
-    return render_template('reports.html', reports_data=reports_data, active_tab=active_tab,
-                           calendar_groups=calendar_groups, attendance_locked_ids=attendance_locked_ids)
+    # ── Calendar tab: practice sessions with signups ──
+    practice_sessions_list = PracticeSession.query.filter_by(officer_id=current_user.id).order_by(
+        PracticeSession.session_date, PracticeSession.session_time).all()
+    calendar_groups = {}
+    time_map = {'15:00': '3:00 pm', '15:20': '3:20 pm', '15:40': '3:40 pm'}
+    for ps in practice_sessions_list:
+        day = ps.session_date.strftime('%Y-%m-%d')
+        calendar_groups.setdefault(day, []).append({
+            'session': ps,
+            'time_label': time_map.get(ps.session_time, ps.session_time),
+        })
+
+    # Keep AH/WS data for reports page (used in existing split tables)
+    ah_ws_data = []
+    for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
+        stats = get_attendance_stats(member)
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        ah_ws_data.append({
+            'member': member,
+            'pod_number': pod.pod_number if pod else '?',
+            'level': stats['level'],
+            'ah_rate': stats['ah_rate'],
+            'ah_sum': stats['ah_sum'],
+            'ah_total': stats['ah_total'],
+            'ws_rate': stats['ws_rate'],
+            'ws_sum': stats['ws_sum'],
+            'ws_total': stats['ws_total'],
+            'ws_threshold_pct': stats['ws_threshold_pct'],
+            'at_risk': stats['at_risk'],
+            'risk_reasons': stats['risk_reasons'],
+        })
+
+    return render_template('reports.html',
+        active_tab=active_tab,
+        commitment_data=commitment_data,
+        conference_order=CONFERENCE_ORDER,
+        active_conf=active_conf,
+        calendar_groups=calendar_groups,
+        ah_ws_data=ah_ws_data,
+    )
 
 
 # ── Admin routes ─────────────────────────────────────────────────────────────

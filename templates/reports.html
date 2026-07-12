@@ -5,163 +5,166 @@
     <div class="card-body p-4">
         <h2 class="mb-1">Reports</h2>
         <p class="text-muted mb-0">
-            {% if active_tab == 'attendance' %}
-                Member attendance summary.
-            {% else %}
-                Calendar view for hosted workshops and attendance.
-            {% endif %}
+            {% if active_tab == 'commitment' %}Pod member commitment progress by conference.
+            {% else %}Calendar view of your practice sessions and sign-ups.{% endif %}
         </p>
     </div>
 </div>
 
-{% if active_tab == 'attendance' %}
-    {# ── All-Hands Attendance ───────────────────────────────────── #}
-    {% if ah_ws_data %}
-    <div class="card mb-4 border-0 shadow-sm rounded-4">
-        <div class="card-header bg-white border-bottom p-4">
-            <h4 class="mb-1">All-Hands Attendance</h4>
-            <p class="text-muted mb-0">AH threshold: 80% for all members</p>
+{% if active_tab == 'commitment' %}
+{# ═══════════════════════════════════════
+   COMMITMENT REPORTS TAB
+   ═══════════════════════════════════════ #}
+
+{% if commitment_data %}
+
+{# Active conference badge #}
+<div class="mb-3 d-flex align-items-center gap-2">
+    <span class="text-muted small">Active conference:</span>
+    <span class="badge bg-info-subtle text-info rounded-pill px-3">{{ active_conf }}</span>
+</div>
+
+{# One card per conference #}
+{% for conf in conference_order %}
+<div class="card mb-4 border-0 shadow-sm rounded-4">
+    <div class="card-header bg-white border-bottom p-4 d-flex justify-content-between align-items-center">
+        <div>
+            <h4 class="mb-1">{{ conf }} Commitments</h4>
+            <p class="text-muted mb-0 small">
+                {% if conf == active_conf %}
+                    <span class="badge bg-info-subtle text-info me-1">Active</span>
+                {% endif %}
+                Deadline: {{ commitment_data[0].commitments[conf].deadline.strftime('%Y-%m-%d') if commitment_data and commitment_data[0].commitments[conf] else 'N/A' }}
+            </p>
         </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-hover table-sm mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Member</th>
-                            <th>Pod</th>
-                            <th>Level</th>
-                            <th>AH Attended</th>
-                            <th>AH Rate</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in ah_ws_data %}
-                        <tr>
-                            <td class="fw-semibold">{{ row.member.username }}</td>
-                            <td>{{ row.pod_number }}</td>
-                            <td>
-                                <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
-                                    {{ 'Novice' if row.level == 'N' else 'Experienced' }}
-                                </span>
-                            </td>
-                            <td>{{ row.ah_sum|int }} / {{ row.ah_total }}</td>
-                            <td>
-                                <div class="d-flex align-items-center gap-2">
-                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
-                                        <div class="progress-bar {{ 'bg-danger' if row.ah_rate < 80 else 'bg-success' }}"
-                                             style="width: {{ row.ah_rate }}%"></div>
-                                    </div>
-                                    <small class="text-nowrap">{{ row.ah_rate }}%</small>
+        {# Count fully complete members for this conference #}
+        {% set complete_count = commitment_data | selectattr('commitments.' + conf) |
+            selectattr('commitments.' + conf + '.remaining_roleplay', 'equalto', 0) | list | length %}
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Member</th>
+                        <th>Level</th>
+                        <th>Roleplay</th>
+                        <th>Written</th>
+                        <th>Exam</th>
+                        <th>Overall</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in commitment_data %}
+                    {% set com = row.commitments[conf] %}
+                    {% if com %}
+                    {% set rp_done = com.required_roleplay - com.remaining_roleplay %}
+                    {% set wr_done = com.required_written - com.remaining_written %}
+                    {% set ex_done = com.required_exam - com.remaining_exam %}
+                    {% set total_done = rp_done + wr_done + ex_done %}
+                    {% set total_req = com.required_roleplay + com.required_written + com.required_exam %}
+                    {% set pct = ((total_done / total_req) * 100) | round(0) | int if total_req > 0 else 100 %}
+                    <tr class="{{ 'table-success' if pct == 100 else '' }}">
+                        <td class="fw-semibold">{{ row.member.username }}</td>
+                        <td>
+                            <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
+                                {{ 'Novice' if row.level == 'N' else 'Exp' }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="{{ 'text-success fw-semibold' if com.remaining_roleplay == 0 else ('text-danger' if conf == active_conf else '') }}">
+                                {{ rp_done }}/{{ com.required_roleplay }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="{{ 'text-success fw-semibold' if com.remaining_written == 0 else ('text-danger' if conf == active_conf else '') }}">
+                                {{ wr_done }}/{{ com.required_written }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="{{ 'text-success fw-semibold' if com.remaining_exam == 0 else ('text-danger' if conf == active_conf else '') }}">
+                                {{ ex_done }}/{{ com.required_exam }}
+                            </span>
+                        </td>
+                        <td style="min-width:120px;">
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="progress flex-grow-1" style="height:8px;">
+                                    <div class="progress-bar {{ 'bg-success' if pct == 100 else ('bg-danger' if pct < 50 and conf == active_conf else 'bg-primary') }}"
+                                         style="width:{{ pct }}%"></div>
                                 </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
+                                <small class="text-nowrap">{{ pct }}%</small>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td class="fw-semibold">{{ row.member.username }}</td>
+                        <td><span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">{{ 'Novice' if row.level == 'N' else 'Exp' }}</span></td>
+                        <td colspan="4" class="text-muted small">No commitment record yet</td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
+</div>
+{% endfor %}
 
-    {# ── Workshop Attendance ────────────────────────────────────── #}
-    <div class="card mb-4 border-0 shadow-sm rounded-4">
-        <div class="card-header bg-white border-bottom p-4">
-            <h4 class="mb-1">Workshop Attendance</h4>
-            <p class="text-muted mb-0">WS threshold: 75% Novice / 25% Experienced</p>
-        </div>
+{% else %}
+<div class="card border-0 shadow-sm rounded-4">
+    <div class="card-body text-muted">No pod members found.</div>
+</div>
+{% endif %}
+
+
+{% elif active_tab == 'calendar' %}
+{# ═══════════════════════════════════════
+   CALENDAR TAB — Practice Sessions
+   ═══════════════════════════════════════ #}
+
+{% if calendar_groups %}
+    {% for day, items in calendar_groups.items()|sort %}
+    <div class="card mb-3 border-0 shadow-sm rounded-4">
+        <div class="card-header bg-white"><strong>{{ day }}</strong></div>
         <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-hover table-sm mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Member</th>
-                            <th>Pod</th>
-                            <th>Level</th>
-                            <th>WS Attended</th>
-                            <th>WS Rate</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in ah_ws_data %}
-                        <tr>
-                            <td class="fw-semibold">{{ row.member.username }}</td>
-                            <td>{{ row.pod_number }}</td>
-                            <td>
-                                <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
-                                    {{ 'Novice' if row.level == 'N' else 'Experienced' }}
-                                </span>
-                            </td>
-                            <td>{{ row.ws_sum|int }} / {{ row.ws_total }}</td>
-                            <td>
-                                <div class="d-flex align-items-center gap-2">
-                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
-                                        <div class="progress-bar {{ 'bg-danger' if row.ws_rate < row.ws_threshold_pct else 'bg-success' }}"
-                                             style="width: {{ row.ws_rate }}%"></div>
-                                    </div>
-                                    <small class="text-nowrap">{{ row.ws_rate }}%</small>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    {% if reports_data %}
-        <div class="row g-3">
-            {% for data in reports_data %}
-                <div class="col-lg-6 col-xl-4">
-                    <div class="card h-100 border-0 shadow-sm rounded-4">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start gap-3">
-                                <div>
-                                    <h5 class="mb-1">{{ data.member }}</h5>
-                                    <div class="text-muted small">Signed up: {{ data.signups_count }}</div>
-                                    <div class="text-muted small">Attended: {{ data.attended_count }}</div>
-                                </div>
-                                <span class="badge text-bg-light fs-6">{{ data.attendance_rate }}%</span>
-                            </div>
-                            <div class="progress mt-3" style="height: 8px;">
-                                <div class="progress-bar" role="progressbar" style="width: {{ data.attendance_rate }}%;"></div>
-                            </div>
-                        </div>
+            {% for item in items %}
+            {% set ps = item.session %}
+            <div class="d-flex align-items-start gap-3 px-4 py-3 border-bottom">
+                <div class="text-muted small pt-1" style="min-width:70px;">{{ item.time_label }}</div>
+                <div class="flex-grow-1">
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <span class="badge
+                            {% if ps.practice_type == 'Roleplay' %}bg-primary
+                            {% elif ps.practice_type == 'Written Presentation' %}bg-success
+                            {% else %}bg-warning text-dark{% endif %}">
+                            {{ ps.practice_type }}
+                        </span>
+                        <span class="badge bg-secondary-subtle text-secondary">{{ ps.conference }}</span>
                     </div>
+                    {% if ps.member %}
+                        <div class="fw-semibold">{{ ps.member.username }}
+                            <span class="text-muted fw-normal small ms-1">signed up</span>
+                        </div>
+                        <a href="{{ url_for('submit_practice_log', member=ps.member.username, type=ps.practice_type, conf=ps.conference) }}"
+                           class="btn btn-sm btn-outline-success mt-1">Log Completion</a>
+                    {% else %}
+                        <div class="text-muted small">No sign-up yet — slot is open</div>
+                    {% endif %}
+                    {% if ps.notes %}
+                        <div class="text-muted small mt-1">{{ ps.notes }}</div>
+                    {% endif %}
                 </div>
+            </div>
             {% endfor %}
         </div>
-    {% else %}
-        <div class="card border-0 shadow-sm rounded-4">
-            <div class="card-body text-muted">No workshops have been created yet.</div>
-        </div>
-    {% endif %}
-{% elif active_tab == 'calendar' %}
-    {% if calendar_groups %}
-        {% for day, items in calendar_groups.items()|sort %}
-            <div class="card mb-3 border-0 shadow-sm rounded-4">
-                <div class="card-header bg-white"><strong>{{ day }}</strong></div>
-                <div class="card-body">
-                    {% for item in items %}
-                        {% set ws = item.workshop %}
-                        <div class="calendar-event event-{{ ws.activity_type|lower }}">
-                            <div class="calendar-title mb-1 fw-semibold">{{ ws.activity_type }}</div>
-                            <div class="calendar-time mb-1">{{ item.time_range }}</div>
-                            <div class="text-muted small mb-2">Signed up: {{ item.signup_names }}</div>
-                            {% if ws.id in attendance_locked_ids %}
-                                <button class="btn btn-secondary btn-sm" disabled>Attendance Taken</button>
-                            {% else %}
-                                <a href="{{ url_for('workshop_attendance', workshop_id=ws.id) }}" class="btn btn-info btn-sm">Take Attendance</a>
-                            {% endif %}
-                        </div>
-                    {% endfor %}
-                </div>
-            </div>
-        {% endfor %}
-    {% else %}
-        <div class="card border-0 shadow-sm rounded-4">
-            <div class="card-body text-muted">No hosted workshops yet.</div>
-        </div>
-    {% endif %}
+    </div>
+    {% endfor %}
+{% else %}
+    <div class="card border-0 shadow-sm rounded-4">
+        <div class="card-body text-muted">No practice sessions posted yet. <a href="{{ url_for('practice_sessions') }}">Post a slot</a></div>
+    </div>
+{% endif %}
+
 {% endif %}
 {% endblock %}

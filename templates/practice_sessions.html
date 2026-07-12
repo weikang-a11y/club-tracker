@@ -53,15 +53,7 @@
                             {% endfor %}
                         </select>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-semibold">Conference</label>
-                        <select name="conference" class="form-select" required>
-                            <option value="">Select conference</option>
-                            {% for conf in conference_order %}
-                                <option value="{{ conf }}">{{ conf }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
+                    <input type="hidden" name="conference" value="{{ active_conf }}">
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Notes <span class="text-muted fw-normal">(optional)</span></label>
                         <input type="text" name="notes" class="form-control" placeholder="e.g. Zoom link or room number">
