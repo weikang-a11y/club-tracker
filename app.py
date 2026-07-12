@@ -54,11 +54,31 @@ TIME_SLOTS = [
 ]
 ACTIVITY_TYPES = ['Roleplay', 'Written Presentation', 'Exam']
 
+# Per-conference requirements split by experience level (non-cumulative)
+# Novice:     VCMC(RP:1,W:1,E:2), SVCDC(RP:1,W:1,E:2), SCDC(RP:2,W:1,E:2)
+# Experienced:VCMC(RP:0,W:1,E:0), SVCDC(RP:1,W:1,E:2), SCDC(RP:1,W:1,E:1)
 EVENT_REQUIREMENTS = {
-    "VCMC": {"roleplay":1, "written":1, "exam":1, "deadline":"2026-11-15"},
-    "SVCDC": {"roleplay":2, "written":2, "exam":1, "deadline":"2027-01-08"},
-    "SCDC": {"roleplay":2, "written":2, "exam":2, "deadline":"2027-02-23"}
+    "N": {  # Novice
+        "VCMC":  {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-11-15"},
+        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
+        "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-02-23"},
+    },
+    "E": {  # Experienced
+        "VCMC":  {"roleplay": 0, "written": 1, "exam": 0, "deadline": "2026-11-15"},
+        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
+        "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2027-02-23"},
+    },
 }
+
+CONFERENCE_ORDER = ["VCMC", "SVCDC", "SCDC"]
+CONFERENCE_DEADLINES = {
+    "VCMC":  "2026-11-15",
+    "SVCDC": "2027-01-08",
+    "SCDC":  "2027-02-23",
+}
+
+# Email that receives practice log completion notifications
+PRACTICE_LOG_EMAIL = os.getenv("PRACTICE_LOG_EMAIL", "mentorship@vchsdeca.org")
 
 # Attendance thresholds by experience level
 AH_THRESHOLD = 0.80   # 80% for all members
@@ -177,9 +197,87 @@ class MentorPod(db.Model):
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
 
+
+class PracticeSession(db.Model):
+    """A practice slot posted by an officer for their pod members to sign up for."""
+    __tablename__ = 'practice_session'
+    id = db.Column(db.Integer, primary_key=True)
+    officer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    session_date = db.Column(db.Date, nullable=False)
+    session_time = db.Column(db.String(5), nullable=False)
+    practice_type = db.Column(db.String(30), nullable=False)
+    conference = db.Column(db.String(10), nullable=False)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    officer = db.relationship('User', foreign_keys=[officer_id], backref='posted_sessions')
+    member = db.relationship('User', foreign_keys=[member_id], backref='signed_up_sessions')
+
+
+class PracticeLog(db.Model):
+    """Completion record submitted by officer after a practice session."""
+    __tablename__ = 'practice_log'
+    id = db.Column(db.Integer, primary_key=True)
+    practice_session_id = db.Column(db.Integer, db.ForeignKey('practice_session.id'), nullable=True)
+    officer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    commitment_id = db.Column(db.Integer, db.ForeignKey('commitment.id'), nullable=True)
+    practice_type = db.Column(db.String(30), nullable=False)
+    conference = db.Column(db.String(10), nullable=False)
+    session_date = db.Column(db.Date, nullable=False)
+    score = db.Column(db.Float, nullable=True)
+    officer_notes = db.Column(db.Text, nullable=True)
+    feedback = db.Column(db.Text, nullable=True)
+    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
+    officer = db.relationship('User', foreign_keys=[officer_id], backref='submitted_logs')
+    member = db.relationship('User', foreign_keys=[member_id], backref='practice_logs')
+    session = db.relationship('PracticeSession', backref='log')
+
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
+
+# ── Commitment helpers ───────────────────────────────────────────────────────
+
+def get_active_conference():
+    """Return the current active conference based on today's date."""
+    today = datetime.now(LOCAL_TZ).date()
+    for conf in CONFERENCE_ORDER:
+        deadline = datetime.strptime(CONFERENCE_DEADLINES[conf], "%Y-%m-%d").date()
+        if today <= deadline:
+            return conf
+    return "SCDC"  # after all deadlines, default to last
+
+
+def ensure_commitments(member):
+    """Auto-create commitment rows for all three conferences if they don't exist."""
+    pod = MentorPod.query.filter_by(member_id=member.id).first()
+    level = pod.experience_level if pod else 'N'
+    reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
+    created = False
+    for conf, rule in reqs.items():
+        existing = Commitment.query.filter_by(member_name=member.username, event=conf).first()
+        if not existing:
+            c = Commitment(
+                member_name=member.username,
+                event=conf,
+                required_roleplay=rule["roleplay"],
+                required_written=rule["written"],
+                required_exam=rule["exam"],
+                remaining_roleplay=rule["roleplay"],
+                remaining_written=rule["written"],
+                remaining_exam=rule["exam"],
+                deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
+            )
+            db.session.add(c)
+            created = True
+    if created:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
 
 # ── Attendance helper ─────────────────────────────────────────────────────────
 
@@ -361,6 +459,11 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
+    # Migrate: ensure commitment rows exist for all members
+    # (safe to run multiple times — ensure_commitments is idempotent)
+    for member in User.query.filter_by(role='member').all():
+        ensure_commitments(member)
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def friendly_slot(dt):
@@ -526,9 +629,14 @@ def dashboard():
             })
 
     else:
-        commitments = Commitment.query.filter_by(member_name=current_user.username).all()
+        # Use the active conference commitment only
+        active_conf = get_active_conference()
+        ensure_commitments(current_user)
+        commitments = Commitment.query.filter_by(
+            member_name=current_user.username, event=active_conf).all()
+        all_commitments = Commitment.query.filter_by(member_name=current_user.username).order_by(Commitment.deadline).all()
         workshops = current_user.workshops.options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
-        created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+        created_workshops = []
 
         if commitments:
             c = commitments[0]
@@ -539,24 +647,25 @@ def dashboard():
                 'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A',
                 'event': c.event
             }
-            officer = c.user
-            officer_id = officer.id if officer else None
-            actual_attended = 0
-            manual_count = 0
-            if officer_id:
-                actual_attended = db.session.query(workshop_signups).filter_by(user_id=current_user.id, attended=True).join(Workshop).filter(Workshop.officer_id == officer_id).count()
-                ga = GeneralAttendance.query.filter_by(officer_id=officer_id, member_name=current_user.username).first()
-                manual_count = ga.manual_count if ga else 0
 
-            total_attended = actual_attended + manual_count
-            total_signed = len(current_user.workshops.all())
-            attendance_summary = {
-                'signed': total_signed,
-                'attended': total_attended,
-                'rate': round((total_attended / 18 * 100) if 18 > 0 else 0.0, 1)
-            }
+        # Workshop attendance summary (kept for AH/WS section)
+        pod = MentorPod.query.filter_by(member_id=current_user.id).first()
+        officer_id = pod.mentor_id if pod else None
+        actual_attended = 0
+        manual_count = 0
+        if officer_id:
+            actual_attended = db.session.query(workshop_signups).filter_by(user_id=current_user.id, attended=True).join(Workshop).filter(Workshop.officer_id == officer_id).count()
+            ga = GeneralAttendance.query.filter_by(officer_id=officer_id, member_name=current_user.username).first()
+            manual_count = ga.manual_count if ga else 0
+        total_attended = actual_attended + manual_count
+        total_signed = len(current_user.workshops.all())
+        attendance_summary = {
+            'signed': total_signed,
+            'attended': total_attended,
+            'rate': round((total_attended / 18 * 100) if 18 > 0 else 0.0, 1)
+        }
 
-        # NEW: AH/WS stats for member's own dashboard
+        # AH/WS stats for member's own dashboard
         member_stats = get_attendance_stats(current_user)
 
     for ws in workshops:
@@ -574,6 +683,7 @@ def dashboard():
 
     signed_times = [(w.time, w.time + timedelta(minutes=20)) for w in my_signups] if current_user.role == 'member' else []
 
+    active_conf = get_active_conference() if current_user.role == 'member' else None
     return render_template('dashboard.html',
         commitments=commitments,
         progress_summary=progress_summary,
@@ -589,6 +699,9 @@ def dashboard():
         attendance_locked_ids=attendance_locked_ids,
         ah_ws_data=ah_ws_data,
         member_stats=member_stats,
+        active_conf=active_conf,
+        all_commitments=all_commitments if current_user.role == 'member' else [],
+        conference_order=CONFERENCE_ORDER,
     )
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -618,9 +731,11 @@ def login():
         user = User.query.filter_by(username=form.username.data.strip()).first()
         if user and check_password_hash(user.password, form.password.data):
             login_user(user)
-            # NEW: redirect to change password if flagged
             if user.must_change_password:
                 return redirect(url_for('change_password'))
+            # Auto-create commitment rows for members on login
+            if user.role == 'member':
+                ensure_commitments(user)
             return redirect(url_for('dashboard'))
         flash('Invalid username or password. Please try again.', 'danger')
     return render_template('login.html', form=form)
@@ -662,47 +777,6 @@ def settings():
         flash('Settings updated.', 'success')
         return redirect(url_for('settings'))
     return render_template('settings.html')
-
-@app.route('/add_commitment', methods=['GET', 'POST'])
-@login_required
-def add_commitment():
-    if current_user.role != 'officer':
-        flash('Only officers can add commitments.', 'danger')
-        return redirect(url_for('dashboard'))
-    form = CommitmentForm()
-    if form.validate_on_submit():
-        member_name = form.member_name.data.strip()
-        event = form.event.data
-        rule = EVENT_REQUIREMENTS[event]
-        commit = Commitment(
-            member_name=member_name,
-            event=event,
-            required_roleplay=rule["roleplay"],
-            required_written=rule["written"],
-            required_exam=rule["exam"],
-            remaining_roleplay=rule["roleplay"],
-            remaining_written=rule["written"],
-            remaining_exam=rule["exam"],
-            deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
-            user_id=current_user.id)
-        db.session.add(commit)
-        db.session.commit()
-        flash('Commitment added.', 'success')
-        return redirect(url_for('add_commitment'))
-    commitments = Commitment.query.filter_by(user_id=current_user.id).order_by(Commitment.deadline).all()
-    return render_template('add_commitment.html', form=form, commitments=commitments)
-
-@app.route('/delete_commitment/<int:commitment_id>', methods=['POST'])
-@login_required
-def delete_commitment(commitment_id):
-    commitment = Commitment.query.get_or_404(commitment_id)
-    if current_user.role != 'officer' or commitment.user_id != current_user.id:
-        flash('You are not allowed to delete this commitment.', 'danger')
-        return redirect(url_for('dashboard'))
-    db.session.delete(commitment)
-    db.session.commit()
-    flash('Commitment deleted.', 'success')
-    return redirect(url_for('add_commitment'))
 
 @app.route('/add_workshop', methods=['GET', 'POST'])
 @login_required
@@ -897,6 +971,208 @@ def increment_general_attendance():
     db.session.commit()
     flash('Attendance was added successfully.', 'success')
     return redirect(request.referrer or url_for('dashboard'))
+
+# ── Practice Session routes ──────────────────────────────────────────────────
+
+@app.route('/practice_sessions', methods=['GET', 'POST'])
+@login_required
+def practice_sessions():
+    """Officer: post and manage practice slots. Member: view and sign up."""
+    if current_user.role == 'officer':
+        # POST: create a new practice session slot
+        if request.method == 'POST':
+            action = request.form.get('action')
+            if action == 'create':
+                ps = PracticeSession(
+                    officer_id=current_user.id,
+                    session_date=datetime.strptime(request.form['session_date'], '%Y-%m-%d').date(),
+                    session_time=request.form['session_time'],
+                    practice_type=request.form['practice_type'],
+                    conference=request.form['conference'],
+                    notes=request.form.get('notes', '').strip() or None,
+                )
+                db.session.add(ps)
+                db.session.commit()
+                flash('Practice slot posted.', 'success')
+            elif action == 'delete':
+                ps_id = int(request.form['session_id'])
+                ps = PracticeSession.query.get_or_404(ps_id)
+                if ps.officer_id != current_user.id:
+                    flash('Not authorized.', 'danger')
+                else:
+                    db.session.delete(ps)
+                    db.session.commit()
+                    flash('Practice slot removed.', 'success')
+            return redirect(url_for('practice_sessions'))
+
+        # GET: show officer's posted slots
+        my_sessions = PracticeSession.query.filter_by(officer_id=current_user.id).order_by(
+            PracticeSession.session_date, PracticeSession.session_time).all()
+        # Pod members for the log form
+        pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
+        pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
+        pod_member_users = [u for u in pod_member_users if u]
+        return render_template('practice_sessions.html',
+            my_sessions=my_sessions,
+            pod_member_users=pod_member_users,
+            conference_order=CONFERENCE_ORDER,
+            activity_types=ACTIVITY_TYPES,
+            time_slots=TIME_SLOTS,
+        )
+    else:
+        # Member view: show open slots from their officer
+        pod = MentorPod.query.filter_by(member_id=current_user.id).first()
+        open_sessions = []
+        signed_up = []
+        officer = None
+        active_conf = get_active_conference()
+        active_commitment = Commitment.query.filter_by(
+            member_name=current_user.username, event=active_conf).first()
+        if pod:
+            officer = db.session.get(User, pod.mentor_id)
+            open_sessions = PracticeSession.query.filter_by(
+                officer_id=pod.mentor_id, member_id=None).order_by(
+                PracticeSession.session_date, PracticeSession.session_time).all()
+            signed_up = PracticeSession.query.filter_by(
+                officer_id=pod.mentor_id, member_id=current_user.id).order_by(
+                PracticeSession.session_date).all()
+        return render_template('practice_sessions.html',
+            open_sessions=open_sessions,
+            signed_up=signed_up,
+            officer=officer,
+            active_conf=active_conf,
+            active_commitment=active_commitment,
+            conference_order=CONFERENCE_ORDER,
+        )
+
+
+@app.route('/practice_sessions/signup/<int:session_id>', methods=['POST'])
+@login_required
+def practice_session_signup(session_id):
+    if current_user.role != 'member':
+        flash('Only members can sign up for practice sessions.', 'danger')
+        return redirect(url_for('practice_sessions'))
+    ps = PracticeSession.query.get_or_404(session_id)
+    if ps.member_id is not None:
+        flash('This slot is already taken.', 'warning')
+        return redirect(url_for('practice_sessions'))
+    ps.member_id = current_user.id
+    db.session.commit()
+    flash('Signed up for practice session.', 'success')
+    return redirect(url_for('practice_sessions'))
+
+
+@app.route('/practice_sessions/cancel/<int:session_id>', methods=['POST'])
+@login_required
+def practice_session_cancel(session_id):
+    if current_user.role != 'member':
+        flash('Only members can cancel.', 'danger')
+        return redirect(url_for('practice_sessions'))
+    ps = PracticeSession.query.get_or_404(session_id)
+    if ps.member_id != current_user.id:
+        flash('You are not signed up for this slot.', 'warning')
+        return redirect(url_for('practice_sessions'))
+    ps.member_id = None
+    db.session.commit()
+    flash('Cancelled sign-up.', 'success')
+    return redirect(url_for('practice_sessions'))
+
+
+@app.route('/practice_log/submit', methods=['GET', 'POST'])
+@login_required
+def submit_practice_log():
+    """Officer submits a completion form after a practice session."""
+    if current_user.role != 'officer':
+        flash('Only officers can submit practice logs.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
+    pod_member_users = sorted(
+        [db.session.get(User, pm.member_id) for pm in pod_members if db.session.get(User, pm.member_id)],
+        key=lambda u: u.username.lower()
+    )
+
+    if request.method == 'POST':
+        member_username = request.form.get('member_username', '').strip()
+        practice_type = request.form.get('practice_type', '')
+        conference = request.form.get('conference', '')
+        session_date_str = request.form.get('session_date', '')
+        score_str = request.form.get('score', '').strip()
+        officer_notes = request.form.get('officer_notes', '').strip()
+        feedback = request.form.get('feedback', '').strip()
+
+        member = User.query.filter_by(username=member_username).first()
+        if not member:
+            flash('Member not found.', 'danger')
+            return redirect(url_for('submit_practice_log'))
+
+        try:
+            session_date = datetime.strptime(session_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            flash('Invalid date.', 'danger')
+            return redirect(url_for('submit_practice_log'))
+
+        score = float(score_str) if score_str else None
+
+        # Find matching commitment and decrement
+        commitment = Commitment.query.filter_by(
+            member_name=member.username, event=conference).first()
+        if commitment:
+            if practice_type == 'Roleplay' and commitment.remaining_roleplay > 0:
+                commitment.remaining_roleplay -= 1
+            elif practice_type == 'Written Presentation' and commitment.remaining_written > 0:
+                commitment.remaining_written -= 1
+            elif practice_type == 'Exam' and commitment.remaining_exam > 0:
+                commitment.remaining_exam -= 1
+            db.session.add(commitment)
+
+        # Create log record
+        log = PracticeLog(
+            officer_id=current_user.id,
+            member_id=member.id,
+            commitment_id=commitment.id if commitment else None,
+            practice_type=practice_type,
+            conference=conference,
+            session_date=session_date,
+            score=score,
+            officer_notes=officer_notes or None,
+            feedback=feedback or None,
+        )
+        db.session.add(log)
+        db.session.commit()
+
+        # Send email notification
+        type_label = practice_type
+        score_line = f"Score: {score}" if score is not None else "Score: N/A"
+        email_body = f"""
+<h3>Practice Log Submitted</h3>
+<p><strong>Officer:</strong> {current_user.username}</p>
+<p><strong>Member:</strong> {member.username}</p>
+<p><strong>Type:</strong> {type_label}</p>
+<p><strong>Conference:</strong> {conference}</p>
+<p><strong>Date:</strong> {session_date.strftime('%Y-%m-%d')}</p>
+<p><strong>{score_line}</strong></p>
+<p><strong>Officer Notes:</strong> {officer_notes or '—'}</p>
+<p><strong>Feedback:</strong> {feedback or '—'}</p>
+"""
+        send_email(PRACTICE_LOG_EMAIL, f"[DECA] Practice Log: {member.username} – {type_label} ({conference})", email_body)
+
+        flash(f'Practice log submitted for {member.username}.', 'success')
+        return redirect(url_for('practice_sessions'))
+
+    # GET: show the form
+    prefill_member = request.args.get('member', '')
+    prefill_type = request.args.get('type', '')
+    prefill_conf = request.args.get('conf', get_active_conference())
+    return render_template('practice_log_form.html',
+        pod_member_users=pod_member_users,
+        activity_types=ACTIVITY_TYPES,
+        conference_order=CONFERENCE_ORDER,
+        prefill_member=prefill_member,
+        prefill_type=prefill_type,
+        prefill_conf=prefill_conf,
+    )
+
 
 @app.route('/reports')
 @login_required

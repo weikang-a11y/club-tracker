@@ -15,6 +15,100 @@
 </div>
 
 {% if active_tab == 'attendance' %}
+    {# ── All-Hands Attendance ───────────────────────────────────── #}
+    {% if ah_ws_data %}
+    <div class="card mb-4 border-0 shadow-sm rounded-4">
+        <div class="card-header bg-white border-bottom p-4">
+            <h4 class="mb-1">All-Hands Attendance</h4>
+            <p class="text-muted mb-0">AH threshold: 80% for all members</p>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Member</th>
+                            <th>Pod</th>
+                            <th>Level</th>
+                            <th>AH Attended</th>
+                            <th>AH Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in ah_ws_data %}
+                        <tr>
+                            <td class="fw-semibold">{{ row.member.username }}</td>
+                            <td>{{ row.pod_number }}</td>
+                            <td>
+                                <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
+                                    {{ 'Novice' if row.level == 'N' else 'Experienced' }}
+                                </span>
+                            </td>
+                            <td>{{ row.ah_sum|int }} / {{ row.ah_total }}</td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
+                                        <div class="progress-bar {{ 'bg-danger' if row.ah_rate < 80 else 'bg-success' }}"
+                                             style="width: {{ row.ah_rate }}%"></div>
+                                    </div>
+                                    <small class="text-nowrap">{{ row.ah_rate }}%</small>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    {# ── Workshop Attendance ────────────────────────────────────── #}
+    <div class="card mb-4 border-0 shadow-sm rounded-4">
+        <div class="card-header bg-white border-bottom p-4">
+            <h4 class="mb-1">Workshop Attendance</h4>
+            <p class="text-muted mb-0">WS threshold: 75% Novice / 25% Experienced</p>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Member</th>
+                            <th>Pod</th>
+                            <th>Level</th>
+                            <th>WS Attended</th>
+                            <th>WS Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in ah_ws_data %}
+                        <tr>
+                            <td class="fw-semibold">{{ row.member.username }}</td>
+                            <td>{{ row.pod_number }}</td>
+                            <td>
+                                <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
+                                    {{ 'Novice' if row.level == 'N' else 'Experienced' }}
+                                </span>
+                            </td>
+                            <td>{{ row.ws_sum|int }} / {{ row.ws_total }}</td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
+                                        <div class="progress-bar {{ 'bg-danger' if row.ws_rate < row.ws_threshold_pct else 'bg-success' }}"
+                                             style="width: {{ row.ws_rate }}%"></div>
+                                    </div>
+                                    <small class="text-nowrap">{{ row.ws_rate }}%</small>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     {% if reports_data %}
         <div class="row g-3">
             {% for data in reports_data %}

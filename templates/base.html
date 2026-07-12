@@ -145,11 +145,11 @@
                     <nav class="nav flex-column">
                         <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">Dashboard</a>
                         {% if current_user.role == 'officer' %}
-                            <a class="nav-link {% if request.endpoint == 'add_commitment' %}active{% endif %}" href="{{ url_for('add_commitment') }}">Assign Commitment</a>
+                            <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
                             <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab', 'attendance') == 'attendance' %}active{% endif %}" href="{{ url_for('reports', tab='attendance') }}">Attendance Reports</a>
                             <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}" href="{{ url_for('reports', tab='calendar') }}">Calendar</a>
 			{% else %}
-			    <a class="nav-link {% if request.endpoint == 'add_workshop' %}active{% endif %}" href="{{ url_for('add_workshop') }}">Workshop</a>
+			    <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
 			    <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
 			{% endif %}
                         {% if current_user.is_admin %}

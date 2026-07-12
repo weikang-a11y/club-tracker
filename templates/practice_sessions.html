@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}Practice Sessions{% endblock %}
+{% block content %}
+
+<div class="card page-header-card mb-4">
+    <div class="card-body p-4">
+        <h2 class="mb-1">Practice Sessions</h2>
+        <p class="text-muted mb-0">
+            {% if current_user.role == 'officer' %}
+                Post available practice slots for your pod members to sign up for.
+            {% else %}
+                Sign up for a practice session with your mentor officer.
+            {% endif %}
+        </p>
+    </div>
+</div>
+
+{% if current_user.role == 'officer' %}
+{# ═══════════════════════════════════════════════════
+   OFFICER VIEW
+   ═══════════════════════════════════════════════════ #}
+
+<div class="row g-4">
+
+    {# ── Post a new slot ─────────────────────────────── #}
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white p-4 border-bottom-0">
+                <h5 class="mb-0 fw-bold">Post a Practice Slot</h5>
+            </div>
+            <div class="card-body p-4 pt-2">
+                <form method="POST">
+                    <input type="hidden" name="action" value="create">
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Date</label>
+                        <input type="date" name="session_date" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Time Slot</label>
+                        <select name="session_time" class="form-select" required>
+                            <option value="">Select a time</option>
+                            {% for value, label in time_slots %}
+                                <option value="{{ value }}">{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Practice Type</label>
+                        <select name="practice_type" class="form-select" required>
+                            <option value="">Select type</option>
+                            {% for t in activity_types %}
+                                <option value="{{ t }}">{{ t }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Conference</label>
+                        <select name="conference" class="form-select" required>
+                            <option value="">Select conference</option>
+                            {% for conf in conference_order %}
+                                <option value="{{ conf }}">{{ conf }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Notes <span class="text-muted fw-normal">(optional)</span></label>
+                        <input type="text" name="notes" class="form-control" placeholder="e.g. Zoom link or room number">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Post Slot</button>
+                </form>
+            </div>
+        </div>
+
+        {# ── Log a Completion ──────────────────────── #}
+        <div class="card border-0 shadow-sm rounded-4 mt-4">
+            <div class="card-header bg-white p-4 border-bottom-0">
+                <h5 class="mb-0 fw-bold">Log a Completed Practice</h5>
+                <p class="text-muted small mb-0 mt-1">Fill this out after a session to mark the member's commitment as complete.</p>
+            </div>
+            <div class="card-body p-4 pt-2">
+                <a href="{{ url_for('submit_practice_log') }}" class="btn btn-success w-100">
+                    <i class="bi bi-pencil-square me-2"></i>Open Practice Log Form
+                </a>
+            </div>
+        </div>
+    </div>
+
+    {# ── My posted slots (schedule) ───────────────────── #}
+    <div class="col-lg-7">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white p-4 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-bold">My Posted Slots</h5>
+                <span class="badge bg-primary-subtle text-primary rounded-pill px-3">{{ my_sessions|length }} total</span>
+            </div>
+            <div class="card-body p-0">
+                {% if my_sessions %}
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Date</th>
+                                <th>Time</th>
+                                <th>Type</th>
+                                <th>Conference</th>
+                                <th>Signed Up</th>
+                                <th>Notes</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for s in my_sessions %}
+                            <tr>
+                                <td>{{ s.session_date.strftime('%m/%d') }}</td>
+                                <td class="text-nowrap">
+                                    {% set time_map = {'15:00': '3:00 pm', '15:20': '3:20 pm', '15:40': '3:40 pm'} %}
+                                    {{ time_map.get(s.session_time, s.session_time) }}
+                                </td>
+                                <td>
+                                    <span class="badge
+                                        {% if s.practice_type == 'Roleplay' %}bg-primary
+                                        {% elif s.practice_type == 'Written Presentation' %}bg-success
+                                        {% else %}bg-warning text-dark{% endif %}">
+                                        {{ s.practice_type }}
+                                    </span>
+                                </td>
+                                <td>{{ s.conference }}</td>
+                                <td>
+                                    {% if s.member %}
+                                        <span class="fw-semibold text-success">{{ s.member.username }}</span>
+                                        <a href="{{ url_for('submit_practice_log', member=s.member.username, type=s.practice_type, conf=s.conference) }}"
+                                           class="btn btn-sm btn-outline-success ms-1">Log</a>
+                                    {% else %}
+                                        <span class="text-muted">Open</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-muted small">{{ s.notes or '—' }}</td>
+                                <td>
+                                    {% if not s.member %}
+                                    <form method="POST" class="js-confirm-form d-inline">
+                                        <input type="hidden" name="action" value="delete">
+                                        <input type="hidden" name="session_id" value="{{ s.id }}">
+                                        <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
+                                            data-confirm-title="Remove Slot"
+                                            data-confirm-message="Remove this open practice slot?"
+                                            data-confirm-btn-text="Remove"
+                                            data-confirm-btn-class="btn-danger">Remove</button>
+                                    </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="card-body text-muted">No practice slots posted yet.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% else %}
+{# ═══════════════════════════════════════════════════
+   MEMBER VIEW
+   ═══════════════════════════════════════════════════ #}
+
+{# ── Active commitment summary ───────────────────── #}
+{% if active_commitment %}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+    <div class="card-body p-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+            <div>
+                <h5 class="mb-0">{{ active_conf }} Commitment Progress</h5>
+                <p class="text-muted small mb-0">Deadline: {{ active_commitment.deadline.strftime('%Y-%m-%d') if active_commitment.deadline else 'N/A' }}</p>
+            </div>
+            <span class="badge bg-info-subtle text-info rounded-pill px-3">Active Conference</span>
+        </div>
+        <div class="row g-3">
+            {% set rp_done = active_commitment.required_roleplay - active_commitment.remaining_roleplay %}
+            {% set wr_done = active_commitment.required_written - active_commitment.remaining_written %}
+            {% set ex_done = active_commitment.required_exam - active_commitment.remaining_exam %}
+            <div class="col-md-4">
+                <div class="border rounded-4 p-3 text-center">
+                    <div class="text-muted small mb-1">Roleplay</div>
+                    <div class="fs-4 fw-bold {{ 'text-success' if active_commitment.remaining_roleplay == 0 else 'text-primary' }}">
+                        {{ rp_done }}/{{ active_commitment.required_roleplay }}
+                    </div>
+                    <div class="progress mt-2" style="height:6px;">
+                        <div class="progress-bar {{ 'bg-success' if active_commitment.remaining_roleplay == 0 else '' }}"
+                             style="width:{{ (rp_done / active_commitment.required_roleplay * 100) if active_commitment.required_roleplay > 0 else 100 }}%"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="border rounded-4 p-3 text-center">
+                    <div class="text-muted small mb-1">Written</div>
+                    <div class="fs-4 fw-bold {{ 'text-success' if active_commitment.remaining_written == 0 else 'text-primary' }}">
+                        {{ wr_done }}/{{ active_commitment.required_written }}
+                    </div>
+                    <div class="progress mt-2" style="height:6px;">
+                        <div class="progress-bar {{ 'bg-success' if active_commitment.remaining_written == 0 else '' }}"
+                             style="width:{{ (wr_done / active_commitment.required_written * 100) if active_commitment.required_written > 0 else 100 }}%"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="border rounded-4 p-3 text-center">
+                    <div class="text-muted small mb-1">Exam</div>
+                    <div class="fs-4 fw-bold {{ 'text-success' if active_commitment.remaining_exam == 0 else 'text-primary' }}">
+                        {{ ex_done }}/{{ active_commitment.required_exam }}
+                    </div>
+                    <div class="progress mt-2" style="height:6px;">
+                        <div class="progress-bar {{ 'bg-success' if active_commitment.remaining_exam == 0 else '' }}"
+                             style="width:{{ (ex_done / active_commitment.required_exam * 100) if active_commitment.required_exam > 0 else 100 }}%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+    {# ── Open slots ─────────────────────────────────── #}
+    <div class="col-lg-7">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white p-4">
+                <h5 class="mb-0 fw-bold">Available Practice Slots</h5>
+                <p class="text-muted small mb-0 mt-1">
+                    {% if officer %}From {{ officer.username }}{% else %}No mentor officer assigned yet.{% endif %}
+                </p>
+            </div>
+            <div class="card-body p-0">
+                {% if open_sessions %}
+                <div class="vstack gap-0">
+                    {% for s in open_sessions %}
+                    <div class="d-flex align-items-center justify-content-between gap-3 px-4 py-3 border-bottom">
+                        <div>
+                            <div class="fw-semibold">{{ s.session_date.strftime('%a, %b %-d') }}</div>
+                            {% set time_map = {'15:00': '3:00 pm', '15:20': '3:20 pm', '15:40': '3:40 pm'} %}
+                            <div class="text-muted small">{{ time_map.get(s.session_time, s.session_time) }}</div>
+                            {% if s.notes %}<div class="text-muted small">{{ s.notes }}</div>{% endif %}
+                        </div>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge
+                                {% if s.practice_type == 'Roleplay' %}bg-primary
+                                {% elif s.practice_type == 'Written Presentation' %}bg-success
+                                {% else %}bg-warning text-dark{% endif %}">
+                                {{ s.practice_type }}
+                            </span>
+                            <span class="badge bg-secondary-subtle text-secondary">{{ s.conference }}</span>
+                            <form method="POST" action="{{ url_for('practice_session_signup', session_id=s.id) }}" class="js-confirm-form">
+                                <button type="button" class="btn btn-sm btn-primary js-open-confirm"
+                                    data-confirm-title="Sign Up"
+                                    data-confirm-message="Sign up for this {{ s.practice_type }} session on {{ s.session_date.strftime('%b %-d') }}?"
+                                    data-confirm-btn-text="Sign Up"
+                                    data-confirm-btn-class="btn-primary">Sign Up</button>
+                            </form>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="card-body text-muted">No open practice slots available right now.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {# ── My signed up sessions ──────────────────────── #}
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white p-4">
+                <h5 class="mb-0 fw-bold">My Upcoming Sessions</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if signed_up %}
+                <div class="vstack gap-0">
+                    {% for s in signed_up %}
+                    <div class="d-flex align-items-center justify-content-between gap-3 px-4 py-3 border-bottom">
+                        <div>
+                            <div class="fw-semibold">{{ s.session_date.strftime('%a, %b %-d') }}</div>
+                            {% set time_map = {'15:00': '3:00 pm', '15:20': '3:20 pm', '15:40': '3:40 pm'} %}
+                            <div class="text-muted small">{{ time_map.get(s.session_time, s.session_time) }}</div>
+                            <span class="badge
+                                {% if s.practice_type == 'Roleplay' %}bg-primary
+                                {% elif s.practice_type == 'Written Presentation' %}bg-success
+                                {% else %}bg-warning text-dark{% endif %} mt-1">
+                                {{ s.practice_type }}
+                            </span>
+                            <span class="badge bg-secondary-subtle text-secondary mt-1">{{ s.conference }}</span>
+                        </div>
+                        <form method="POST" action="{{ url_for('practice_session_cancel', session_id=s.id) }}" class="js-confirm-form">
+                            <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
+                                data-confirm-title="Cancel Sign-Up"
+                                data-confirm-message="Cancel your sign-up for this {{ s.practice_type }} session?"
+                                data-confirm-btn-text="Cancel Sign-Up"
+                                data-confirm-btn-class="btn-danger">Cancel</button>
+                        </form>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="card-body text-muted">You haven't signed up for any practice sessions yet.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endif %}
+{% endblock %}
