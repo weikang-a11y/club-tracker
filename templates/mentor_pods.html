@@ -1,32 +1,96 @@
 {% extends "base.html" %}
 
+
 {% block title %}Mentor Pods{% endblock %}
+
 
 {% block content %}
 
-<div style="
-    background:#eef3f8;
-    padding:12px 18px;
-    border-radius:10px;
-    margin-bottom:10px;
-">
+
+<div style="background:#eef3f8; padding:12px 18px; border-radius:10px; margin-bottom:10px;">
     <h2 style="margin:0;">Mentor Pod Management</h2>
 </div>
 
-<div style="
-    background:#eef3f8;
-    padding:12px 18px;
-    border-radius:10px;
-    margin-bottom:20px;
-">
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+    <div class="alert alert-{{ category }} py-2">{{ message }}</div>
+  {% endfor %}
+{% endwith %}
+
+
+{# ── Add New Pod ─────────────────────────────────────────────── #}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+    <div class="card-header bg-white border-bottom p-3">
+        <h4 class="mb-0">Add Mentor Pod</h4>
+    </div>
+    <div class="card-body p-4">
+        <form method="POST" action="{{ url_for('mentor_pods') }}">
+            {{ form.hidden_tag() }}
+            <div class="row g-3 align-items-end">
+                <div class="col-md-2">
+                    {{ form.pod_number.label(class="form-label") }}
+                    {{ form.pod_number(class="form-control") }}
+                </div>
+                <div class="col-md-2">
+                    {{ form.member_id.label(class="form-label") }}
+                    {{ form.member_id(class="form-select") }}
+                </div>
+                <div class="col-md-2">
+                    {{ form.mentor_id.label(class="form-label") }}
+                    {{ form.mentor_id(class="form-select") }}
+                </div>
+                <div class="col-md-2">
+                    {{ form.experience_level.label(class="form-label") }}
+                    {{ form.experience_level(class="form-select") }}
+                </div>
+                <div class="col-md-2">
+                    {{ form.event.label(class="form-label") }}
+                    {{ form.event(class="form-control", placeholder="e.g. IMC, ESB, BMOR") }}
+                </div>
+                <div class="col-md-2">
+                    {{ form.is_competing.label(class="form-label") }}
+                    {{ form.is_competing(class="form-select") }}
+                </div>
+            </div>
+            <div class="row mt-3">
+                <div class="col-md-2">
+                    {{ form.submit(class="btn btn-primary w-100") }}
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+
+<div style="background:#eef3f8; padding:12px 18px; border-radius:10px; margin-bottom:20px;">
     <h2 style="margin:0;">Mentor Groups</h2>
 </div>
 
-<div style="display:flex; flex-wrap:wrap; gap:20px;">
+
+<div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
+    <div>
+        <label for="mentorGroupFilterSelect" class="form-label small mb-1">Filter mentor groups by mentor:</label>
+        <select id="mentorGroupFilterSelect" class="form-select w-auto" onchange="filterMentorGroups()">
+            <option value="">All Mentors</option>
+            {% for mentor, members in grouped_pods.items() %}
+                {% if mentor %}
+                    <option value="{{ mentor.username }}">{{ mentor.username }}</option>
+                {% endif %}
+            {% endfor %}
+        </select>
+    </div>
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetMentorGroupFilter()">Clear</button>
+</div>
+
+
+<div id="mentorGroupsGrid" style="display:flex; flex-wrap:wrap; gap:20px;">
+
 
 {% for mentor, members in grouped_pods.items() %}
 
-<div style="
+
+<div class="mentor-group-card" data-mentor="{{ mentor.username if mentor else 'No Mentor' }}" style="
     width:320px;
     border-radius:12px;
     overflow:hidden;
@@ -34,27 +98,49 @@
     background:white;
 ">
 
+
     <!-- Pod Header -->
     <div style="
         background:#6c8ebf;
         color:white;
-        padding:12px;
+        padding:14px 12px;
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:8px;
     ">
 
-        <div style="font-size:18px; font-weight:bold;">
-            Pod #{{ members[0].pod_number }}
+
+        <div>
+            <div style="font-size:16px; font-weight:600; line-height:1.2;">
+                Mentor: {{ mentor.username if mentor else "No Mentor" }}
+            </div>
+            <div style="margin-top:4px; font-size:13px; opacity:0.95;">
+                Pod #{{ members[0].pod_number }}
+            </div>
         </div>
 
-        <div style="margin-top:4px;">
-            Mentor: {{ mentor.username if mentor else "No Mentor" }}
-        </div>
+
+        {% if mentor %}
+        <form method="POST"
+              action="{{ url_for('delete_pod_group', mentor_id=mentor.id, pod_number=members[0].pod_number) }}"
+              onsubmit="return confirm('Delete Pod #{{ members[0].pod_number }} entirely? This removes all {{ members|length }} member(s) from this pod, but it does not delete their user accounts.');">
+            <button type="submit" class="btn btn-sm btn-outline-light" title="Delete this entire pod">
+                Delete Pod
+            </button>
+        </form>
+        {% endif %}
+
 
     </div>
+
 
     <!-- Members -->
     <div style="padding:10px;">
 
+
         {% for pod in members %}
+
 
         <div style="
             padding:8px;
@@ -63,116 +149,329 @@
             background:#f8f9fa;
         ">
 
-            <strong>{{ pod.member.username }}</strong><br>
 
+            <strong>{{ pod.member.username }}</strong><br>
             {% if pod.experience_level == "N" %}
-                <span style="color:#198754;">Novice</span>
+                <span class="badge bg-primary">Novice</span>
             {% else %}
-                <span style="color:#fd7e14;">Experienced</span>
+                <span class="badge bg-success">Experienced</span>
             {% endif %}
+            &nbsp;
+            {% if pod.member.is_competing %}
+                <span class="badge bg-warning text-dark">Competing</span>
+            {% else %}
+                <span class="badge bg-secondary">Non-Compete</span>
+            {% endif %}
+            &nbsp;
+            <span class="badge bg-info text-dark">{{ pod.event or 'No Event' }}</span>
+
 
         </div>
 
+
         {% endfor %}
+
 
     </div>
 
+
 </div>
+
 
 {% endfor %}
 
+
 </div>
+
 
 <hr style="margin:30px 0;">
 
-<div style="
-    background:#eef3f8;
-    padding:12px 18px;
-    border-radius:10px;
-    margin-bottom:10px;
-">
+
+<div style="background:#eef3f8; padding:12px 18px; border-radius:10px; margin-bottom:10px;">
     <h2 style="margin:0;">All Members</h2>
 </div>
 
-<p style="
-    color:#666;
-    margin-bottom:15px;
-    font-size:14px;
-">
-    Use this table to reassign members to different mentors. Changes are saved when you click the Save button.
+
+<p style="color:#666; margin-bottom:15px; font-size:14px;">
+    Use this table to reassign members to different mentors, update their event, or update their competing status. Changes are saved when you click the Save button.
 </p>
 
-<table class="table table-striped">
-    <thead>
-        <tr>
-            <th>Member</th>
-            <th>Mentor</th>
-            <th>Pod #</th>
-            <th>Level</th>
-            <th>Actions</th>
-        </tr>
-    </thead>
 
-    <tbody>
+<div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
+    <div>
+        <label for="memberFilterTypeSelect" class="form-label small mb-1">Filter by:</label>
+        <select id="memberFilterTypeSelect" class="form-select w-auto" onchange="updateMemberFilterInput()">
+            <option value="">All Members</option>
+            <option value="mentor">Mentor</option>
+            <option value="pod">Pod #</option>
+            <option value="level">Level</option>
+            <option value="event">Event</option>
+        </select>
+    </div>
 
-    {% for pod in pods %}
-    <tr>
 
-        <td>{{ pod.member.username }}</td>
+    <div id="memberFilterValueContainer" style="display:none;">
+        <label for="memberFilterValueSelect" class="form-label small mb-1">Select:</label>
+        <select id="memberFilterValueSelect" class="form-select w-auto" onchange="applyMemberFilter()">
+            <option value="">All</option>
+        </select>
+    </div>
 
-        <td>{{ pod.mentor.username }}</td>
 
-        <td>{{ pod.pod_number }}</td>
+    <div id="memberPodFilterContainer" style="display:none;">
+        <label for="memberPodFilterInput" class="form-label small mb-1">Pod #:</label>
+        <input id="memberPodFilterInput" type="number" class="form-control w-auto" min="0" oninput="applyMemberFilter()" placeholder="Enter pod #">
+    </div>
 
-        <td>
-            {{ "Novice" if pod.experience_level == "N" else "Experienced" }}
-        </td>
 
-        <td>
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetMemberFilter()">Clear Filters</button>
+</div>
 
-            <form method="POST"
-                  action="{{ url_for('edit_pod', pod_id=pod.id) }}"
-                  style="display:inline;">
 
-                <select name="mentor_id">
+<table class="table table-striped" id="allMembersTable">
+<thead>
+<tr>
+<th>Member</th>
+<th>Mentor</th>
+<th>Pod #</th>
+<th>Level</th>
+<th>Event</th>
+<th>Status</th>
+<th style="min-width:300px;">Actions</th>
+</tr>
+</thead>
 
-                    {% for mentor in form.mentor_id.choices %}
 
-                    <option value="{{ mentor[0] }}"
-                        {% if mentor[0] == pod.mentor_id %}selected{% endif %}>
+<tbody>
 
-                        {{ mentor[1] }}
 
-                    </option>
+{% for pod in pods %}
+<tr data-mentor="{{ pod.mentor.username if pod.mentor else '' }}"
+    data-pod="{{ pod.pod_number }}"
+    data-level="{{ pod.experience_level }}"
+    data-event="{{ pod.event or '' }}">
 
-                    {% endfor %}
 
-                </select>
+    <td>{{ pod.member.username }}</td>
 
-                <button type="submit"
-                        class="btn btn-sm btn-primary">
-                    Save
-                </button>
 
-            </form>
+    <td>{{ pod.mentor.username if pod.mentor else 'No Mentor' }}</td>
 
-            <form method="POST"
-                  action="{{ url_for('delete_pod', pod_id=pod.id) }}"
-                  style="display:inline;">
 
-                <button type="submit"
-                        class="btn btn-sm btn-danger">
-                    Delete
-                </button>
+    <td>{{ pod.pod_number }}</td>
 
-            </form>
 
-        </td>
+    <td>
+        {% if pod.experience_level == "N" %}
+            <span class="badge bg-primary px-3 py-2">Novice</span>
+        {% else %}
+            <span class="badge bg-success px-3 py-2">Experienced</span>
+        {% endif %}
+    </td>
 
-    </tr>
-    {% endfor %}
 
-    </tbody>
+    <td>{{ pod.event or 'N/A' }}</td>
+
+
+    <td>
+        {% if pod.member.is_competing %}
+            <span class="badge bg-warning text-dark">Competing</span>
+        {% else %}
+            <span class="badge bg-secondary">Non-Compete</span>
+        {% endif %}
+    </td>
+
+
+    <td style="white-space:nowrap;">
+        <form method="POST"
+              action="{{ url_for('edit_pod', pod_id=pod.id) }}"
+              style="display:inline-flex; gap:4px; align-items:center; flex-wrap:nowrap; white-space:nowrap;">
+
+
+            <input type="hidden" name="pod_number" value="{{ pod.pod_number }}">
+            <input type="hidden" name="member_id" value="{{ pod.member_id }}">
+            <input type="hidden" name="year_in_deca" value="{{ pod.year_in_deca or '' }}">
+            <input type="hidden" name="experience_level" value="{{ pod.experience_level }}">
+
+
+            <select name="mentor_id" class="form-select form-select-sm" style="width:95px;" title="Mentor">
+                {% for mentor in form.mentor_id.choices %}
+                <option value="{{ mentor[0] }}" {% if mentor[0] == pod.mentor_id %}selected{% endif %}>
+                    {{ mentor[1] }}
+                </option>
+                {% endfor %}
+            </select>
+
+
+            <input type="text"
+                   name="event"
+                   class="form-control form-control-sm"
+                   style="width:65px;"
+                   value="{{ pod.event or '' }}"
+                   placeholder="Event"
+                   title="Event">
+
+
+            <select name="is_competing" class="form-select form-select-sm" style="width:105px;" title="Competing status">
+                <option value="yes" {% if pod.member.is_competing %}selected{% endif %}>Competing</option>
+                <option value="no" {% if not pod.member.is_competing %}selected{% endif %}>Non-Compete</option>
+            </select>
+
+
+            <button type="submit" class="btn btn-sm btn-primary px-2">Save</button>
+        </form>
+
+
+    </td>
+
+
+</tr>
+{% endfor %}
+
+
+</tbody>
 </table>
 
+
+<script>
+function filterMentorGroups() {
+    const selectedMentor = document.getElementById('mentorGroupFilterSelect').value;
+    const cards = Array.from(document.querySelectorAll('.mentor-group-card'));
+
+
+    cards.forEach(card => {
+        const mentor = card.dataset.mentor || '';
+        const show = !selectedMentor || mentor === selectedMentor;
+        card.style.display = show ? 'block' : 'none';
+    });
+}
+
+
+function resetMentorGroupFilter() {
+    document.getElementById('mentorGroupFilterSelect').value = '';
+    filterMentorGroups();
+}
+
+
+function updateMemberFilterInput() {
+    const filterType = document.getElementById('memberFilterTypeSelect').value;
+    const valueContainer = document.getElementById('memberFilterValueContainer');
+    const valueSelect = document.getElementById('memberFilterValueSelect');
+    const podContainer = document.getElementById('memberPodFilterContainer');
+    const podInput = document.getElementById('memberPodFilterInput');
+
+
+    valueSelect.innerHTML = '<option value="">All</option>';
+    podInput.value = '';
+
+
+    if (!filterType) {
+        valueContainer.style.display = 'none';
+        podContainer.style.display = 'none';
+        applyMemberFilter();
+        return;
+    }
+
+
+    if (filterType === 'pod') {
+        valueContainer.style.display = 'none';
+        podContainer.style.display = 'block';
+        applyMemberFilter();
+        return;
+    }
+
+
+    podContainer.style.display = 'none';
+    valueContainer.style.display = 'block';
+
+
+    const table = document.getElementById('allMembersTable');
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    const values = new Set();
+
+
+    rows.forEach(row => {
+        let value = '';
+        if (filterType === 'mentor') {
+            value = row.dataset.mentor;
+        } else if (filterType === 'level') {
+            value = row.dataset.level;
+        } else if (filterType === 'event') {
+            value = row.dataset.event;
+        }
+        if (value) values.add(value);
+    });
+
+
+    const labelMap = {
+        level: {
+            N: 'Novice',
+            E: 'Experienced'
+        }
+    };
+
+
+    Array.from(values).sort().forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = (labelMap[filterType] && labelMap[filterType][value]) || value;
+        valueSelect.appendChild(option);
+    });
+
+
+    applyMemberFilter();
+}
+
+
+function applyMemberFilter() {
+    const filterType = document.getElementById('memberFilterTypeSelect').value;
+    const filterValue = document.getElementById('memberFilterValueSelect').value;
+    const podValue = document.getElementById('memberPodFilterInput').value.trim();
+    const table = document.getElementById('allMembersTable');
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+
+
+    rows.forEach(row => {
+        let show = true;
+
+
+        if (filterType === 'pod' && podValue) {
+            show = row.dataset.pod === podValue;
+        } else if (filterType && filterValue) {
+            let rowValue = '';
+            if (filterType === 'mentor') {
+                rowValue = row.dataset.mentor;
+            } else if (filterType === 'level') {
+                rowValue = row.dataset.level;
+            } else if (filterType === 'event') {
+                rowValue = row.dataset.event;
+            }
+            show = rowValue === filterValue;
+        }
+
+
+        row.style.display = show ? 'table-row' : 'none';
+    });
+}
+
+
+function resetMemberFilter() {
+    document.getElementById('memberFilterTypeSelect').value = '';
+    document.getElementById('memberFilterValueSelect').value = '';
+    document.getElementById('memberPodFilterInput').value = '';
+    document.getElementById('memberFilterValueContainer').style.display = 'none';
+    document.getElementById('memberPodFilterContainer').style.display = 'none';
+
+
+    const table = document.getElementById('allMembersTable');
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    rows.forEach(row => {
+        row.style.display = 'table-row';
+    });
+}
+</script>
+
+
 {% endblock %}
+
+

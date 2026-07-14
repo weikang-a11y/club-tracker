@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Written Progress{% endblock %}
+{% block content %}
+
+
+<div class="card page-header-card mb-4">
+  <div class="card-body p-4">
+    <h2 class="mb-1">Written Progress</h2>
+    <p class="lead mb-0">Track completion of written-page deadlines by event.</p>
+
+
+    <div class="mt-3 p-3 bg-light rounded">
+      <strong><i class="fas fa-info-circle"></i> Status Information:</strong>
+      <ul class="mb-0 mt-2" style="font-size: 0.95rem;">
+        <li>
+          <span class="badge bg-success">✓ On Track</span>
+          - Member has completed all required roleplay, written presentation, and exam activities by their deadline date
+        </li>
+        <li>
+          <span class="badge bg-danger">⚠ At Risk</span>
+          - Member has incomplete roleplay, written presentation, or exam requirements AND the deadline date has already passed
+        </li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+    <div class="alert alert-{{ category }} py-2">{{ message }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
+  <div>
+    <label for="filterTypeSelect" class="form-label small mb-1">Filter by:</label>
+    <select id="filterTypeSelect" class="form-select w-auto" onchange="updateFilterOptions()">
+      <option value="">All Members</option>
+      <option value="status">Status</option>
+      <option value="level">Experience Level</option>
+      <option value="mentor">Mentor</option>
+      <option value="event">Event</option>
+    </select>
+  </div>
+
+  <div id="filterValueContainer" style="display: none;">
+    <label for="filterValueSelect" class="form-label small mb-1">Select:</label>
+    <select id="filterValueSelect" class="form-select w-auto" onchange="applyFilters()">
+      <option value="">All</option>
+    </select>
+  </div>
+
+  <div class="ms-auto">
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetFilters()">Clear Filters</button>
+  </div>
+</div>
+
+{% if grouped_rows %}
+  {% for event, event_rows in grouped_rows.items() %}
+    {% set items = event_items.get(event, []) %}
+    {% if items %}
+      <div class="mb-5 event-section" data-event-section="{{ event }}">
+        <h3 class="mb-3">{{ event }}</h3>
+
+        <div class="card border-0 shadow-sm rounded-4 mb-4">
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-hover table-sm mb-0 align-middle checklist-table" data-event="{{ event }}">
+                <thead class="table-light">
+                  <tr>
+                    <th>Member</th>
+                    <th>Status</th>
+                    <th>Mentor</th>
+                    <th>Level</th>
+                    <th colspan="{{ items|length }}" class="text-center">Items</th>
+                  </tr>
+                  <tr class="table-light" style="border-top: none;">
+                    <th colspan="4"></th>
+                    {% for item_name in items %}
+                      <th class="text-center small" style="min-width:90px;">
+                        <div>{{ item_name }}</div>
+                        {% if event_deadlines.get(event, {}).get(item_name) %}
+                          <div class="text-muted fw-normal">{{ event_deadlines[event][item_name] }}</div>
+                        {% endif %}
+                      </th>
+                    {% endfor %}
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in event_rows %}
+                    <tr class="{{ 'table-danger' if row.status == 'at_risk' else '' }}"
+                        data-status="{{ row.status }}"
+                        data-level="{{ row.level }}"
+                        data-mentor="{{ row.mentor_name }}"
+                        data-event="{{ event }}">
+                      <td class="fw-semibold">{{ row.member.username }}</td>
+                      <td>
+                        {% if row.status == 'at_risk' %}
+                          <span class="badge bg-danger">At Risk</span>
+                        {% else %}
+                          <span class="badge bg-success">On Track</span>
+                        {% endif %}
+                      </td>
+                      <td>{{ row.mentor_name }}</td>
+                      <td>
+                        <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
+                          {{ 'Novice' if row.level == 'N' else 'Experienced' }}
+                        </span>
+                      </td>
+
+                      {% for item_name in items %}
+                        <td class="text-center">
+                          <input
+                            type="checkbox"
+                            class="form-check-input checklist-toggle"
+                            data-user-id="{{ row.member.id }}"
+                            data-event="{{ event }}"
+                            data-item-name="{{ item_name }}"
+                            {% if row.checklists.get(event, {}).get(item_name, False) %}checked{% endif %}
+                          >
+                        </td>
+                      {% endfor %}
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  {% endfor %}
+{% else %}
+  <div class="alert alert-warning">
+    No written checklist data was found. Run <code>python3 import_from_spreadsheet.py "FINAL MDP Deadline Tracking.xlsx"</code>, then reload this page.
+  </div>
+{% endif %}
+
+<script>
+document.querySelectorAll('.checklist-toggle').forEach(checkbox => {
+  checkbox.addEventListener('change', function() {
+    const previousChecked = !this.checked;
+    const formData = new FormData();
+    formData.set('user_id', this.dataset.userId);
+    formData.set('event', this.dataset.event);
+    formData.set('item_name', this.dataset.itemName);
+    formData.set('completed', this.checked ? '1' : '0');
+
+    fetch('{{ url_for("toggle_checklist_item") }}', {
+      method: 'POST',
+      body: formData
+    })
+    .then(response => response.json().then(data => ({ ok: response.ok, data })))
+    .then(({ ok, data }) => {
+      if (!ok || !data.success) {
+        throw new Error(data.message || 'Error updating checklist item.');
+      }
+      this.checked = Boolean(data.completed);
+    })
+    .catch(error => {
+      this.checked = previousChecked;
+      alert(error.message || 'Error updating checklist item. Please try again.');
+    });
+  });
+});
+
+function updateFilterOptions() {
+  const filterType = document.getElementById('filterTypeSelect').value;
+  const filterValueContainer = document.getElementById('filterValueContainer');
+  const filterValueSelect = document.getElementById('filterValueSelect');
+
+  filterValueSelect.innerHTML = '<option value="">All</option>';
+
+  if (!filterType) {
+    filterValueContainer.style.display = 'none';
+    applyFilters();
+    return;
+  }
+
+  filterValueContainer.style.display = 'block';
+
+  const values = new Set();
+  document.querySelectorAll('.checklist-table tbody tr[data-status]').forEach(row => {
+    let value = '';
+    if (filterType === 'status') value = row.dataset.status;
+    if (filterType === 'level') value = row.dataset.level;
+    if (filterType === 'mentor') value = row.dataset.mentor;
+    if (filterType === 'event') value = row.dataset.event;
+    if (value) values.add(value);
+  });
+
+  const valueMap = {
+    status: { on_track: 'On Track', at_risk: 'At Risk' },
+    level: { N: 'Novice', E: 'Experienced' },
+    mentor: {},
+    event: {}
+  };
+
+  Array.from(values).sort().forEach(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = valueMap[filterType][value] || value;
+    filterValueSelect.appendChild(option);
+  });
+}
+
+function applyFilters() {
+  const filterType = document.getElementById('filterTypeSelect').value;
+  const filterValue = document.getElementById('filterValueSelect').value;
+
+  document.querySelectorAll('.checklist-table tbody tr[data-status]').forEach(row => {
+    let show = true;
+    if (filterType && filterValue) {
+      let rowValue = '';
+      if (filterType === 'status') rowValue = row.dataset.status;
+      if (filterType === 'level') rowValue = row.dataset.level;
+      if (filterType === 'mentor') rowValue = row.dataset.mentor;
+      if (filterType === 'event') rowValue = row.dataset.event;
+      show = rowValue === filterValue;
+    }
+    row.style.display = show ? 'table-row' : 'none';
+  });
+
+  updateEventSectionVisibility();
+}
+
+function updateEventSectionVisibility() {
+  document.querySelectorAll('.event-section').forEach(section => {
+    const visibleRows = Array.from(section.querySelectorAll('tbody tr[data-status]'))
+      .filter(row => row.style.display !== 'none');
+    section.style.display = visibleRows.length ? '' : 'none';
+  });
+}
+
+function resetFilters() {
+  document.getElementById('filterTypeSelect').value = '';
+  document.getElementById('filterValueSelect').value = '';
+  document.getElementById('filterValueContainer').style.display = 'none';
+
+  document.querySelectorAll('.checklist-table tbody tr[data-status]').forEach(row => {
+    row.style.display = 'table-row';
+  });
+
+  document.querySelectorAll('.event-section').forEach(section => {
+    section.style.display = '';
+  });
+}
+</script>
+{% endblock %}
+
+

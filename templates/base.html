@@ -175,7 +175,10 @@
                             </a>
                             <a class="nav-link {% if request.endpoint == 'mentee_progress_page' %}active{% endif %}" 
                             href="{{ url_for('mentee_progress_page') }}">
-                                Mentee Progress
+                                Member Commitments
+                            </a>
+                           <a class="nav-link" href="{{ url_for('checklist_completion') }}">
+                            Written Progress
                             </a>
                         {% endif %}
                     </nav>
