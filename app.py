@@ -24,6 +24,7 @@ import pandas as pd
 from collections import defaultdict
 
 
+
 load_dotenv()
 
 
@@ -1098,11 +1099,6 @@ def login():
         user = User.query.filter_by(username=form.username.data.strip()).first()
         if user and check_password_hash(user.password, form.password.data):
             
-            print("===== LOGIN DEBUG =====")
-            print("Username:", user.username)
-            print("Role:", user.role)
-            print("is_admin:", user.is_admin)
-            print("=======================")
             
             login_user(user)
 
@@ -2233,7 +2229,7 @@ def checklist_completion():
             'mentor_name': get_mentor_name(member),
             'level': level,
             'event': event,
-            'status': get_commitment_status(member),
+            'status': 'on_track' if all(checklist_by_event[event].values()) else 'at_risk',
             'checklists': checklist_by_event,
         }
         rows.append(row)
