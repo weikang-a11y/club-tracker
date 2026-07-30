@@ -15,6 +15,9 @@
 <div class="card border-0 shadow-sm rounded-4">
 <div class="card-body p-4">
 <form method="POST" action="{{ url_for('submit_practice_log') }}" id="practice-log-form">
+    {% if prefill_session_id %}
+    <input type="hidden" name="practice_session_id" value="{{ prefill_session_id }}">
+    {% endif %}
 
     <div class="mb-3">
         <label class="form-label fw-semibold">Member</label>
@@ -173,9 +176,9 @@ function updateFormFields() {
 
     // Show and enable the right section
     let targetId = null;
-    if (val === 'Roleplay') targetId = 'fields-roleplay';
+    if (val === 'In-Person Roleplay' || val === 'ICPrep Roleplay') targetId = 'fields-roleplay';
     else if (val === 'Written Presentation') targetId = 'fields-written';
-    else if (val === 'Exam') targetId = 'fields-exam';
+    else if (val === 'Paper Exam' || val === 'ICPrep Exam') targetId = 'fields-exam';
 
     if (targetId) {
         const section = document.getElementById(targetId);

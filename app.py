@@ -52,20 +52,38 @@ TIME_SLOTS = [
     ("15:20", "3:20 - 3:40 pm"),
     ("15:40", "3:40 - 4:00 pm"),
 ]
-ACTIVITY_TYPES = ['Roleplay', 'Written Presentation', 'Exam']
+ACTIVITY_TYPES = [
+    'In-Person Roleplay',
+    'ICPrep Roleplay',
+    'Written Presentation',
+    'Paper Exam',
+    'ICPrep Exam',
+]
+# Map practice types to commitment buckets
+ROLEPLAY_TYPES = {'In-Person Roleplay', 'ICPrep Roleplay'}
+EXAM_TYPES     = {'Paper Exam', 'ICPrep Exam'}
+ICPREP_TYPES   = {'ICPrep Roleplay', 'ICPrep Exam'}
+WRITTEN_TYPES  = {'Written Presentation'}
+
+# Annual ICPrep minimums per level
+ICPREP_TARGETS = {
+    'N': {'roleplay': 2, 'exam': 2},
+    'E': {'roleplay': 1, 'exam': 1},
+}
 
 # Per-conference requirements split by experience level (non-cumulative)
-# Novice:     VCMC(RP:1,W:1,E:2), SVCDC(RP:1,W:1,E:2), SCDC(RP:2,W:1,E:2)
-# Experienced:VCMC(RP:0,W:1,E:0), SVCDC(RP:1,W:1,E:2), SCDC(RP:1,W:1,E:1)
+# Novice:     VCMC(RP:2,W:1,E:2), SVCDC(RP:1,W:1,E:2), SCDC(RP:2,W:1,E:2)
+# Experienced:VCMC(RP:0,W:1,E:0), SVCDC(RP:2,W:1,E:2), SCDC(RP:1,W:1,E:1)
+# RP/Exam counts include both in-person and ICPrep (members choose which to use for ICPrep quota)
 EVENT_REQUIREMENTS = {
     "N": {  # Novice
-        "VCMC":  {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-11-15"},
+        "VCMC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-11-15"},
         "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
         "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-02-23"},
     },
     "E": {  # Experienced
         "VCMC":  {"roleplay": 0, "written": 1, "exam": 0, "deadline": "2026-11-15"},
-        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
+        "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-01-08"},
         "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2027-02-23"},
     },
 }
@@ -210,8 +228,51 @@ class PracticeSession(db.Model):
     member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    log_submitted = db.Column(db.Boolean, default=False)  # True after officer logs completion
     officer = db.relationship('User', foreign_keys=[officer_id], backref='posted_sessions')
     member = db.relationship('User', foreign_keys=[member_id], backref='signed_up_sessions')
+
+
+class AnnualICPrepTracker(db.Model):
+    """Tracks annual ICPrep completion totals per member (across all conferences)."""
+    __tablename__ = 'annual_icprep_tracker'
+    id = db.Column(db.Integer, primary_key=True)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True)
+    icprep_rp_completed = db.Column(db.Integer, default=0, nullable=False)
+    icprep_exam_completed = db.Column(db.Integer, default=0, nullable=False)
+    member = db.relationship('User', backref=db.backref('icprep_tracker', uselist=False))
+
+
+class ExamUpload(db.Model):
+    """Paper exam upload submitted by a member for officer review."""
+    __tablename__ = 'exam_upload'
+    id = db.Column(db.Integer, primary_key=True)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    conference = db.Column(db.String(10), nullable=False)
+    cloudinary_url = db.Column(db.String(500), nullable=False)
+    cloudinary_public_id = db.Column(db.String(200), nullable=False)
+    notes = db.Column(db.Text, nullable=True)       # member notes (e.g. which exam)
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    reviewed = db.Column(db.Boolean, default=False)
+    reviewed_at = db.Column(db.DateTime, nullable=True)
+    reviewer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    commitment_id = db.Column(db.Integer, db.ForeignKey('commitment.id'), nullable=True)
+    credited = db.Column(db.Boolean, default=False)  # officer marks credit after review
+    member = db.relationship('User', foreign_keys=[member_id], backref='exam_uploads')
+    reviewer = db.relationship('User', foreign_keys=[reviewer_id])
+
+
+class ICPrepWebhookLog(db.Model):
+    """Raw log of every inbound ICPrep webhook event."""
+    __tablename__ = 'icprep_webhook_log'
+    id = db.Column(db.Integer, primary_key=True)
+    received_at = db.Column(db.DateTime, default=datetime.utcnow)
+    payload = db.Column(db.Text)          # raw JSON string
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    activity_type = db.Column(db.String(30), nullable=True)  # 'ICPrep Roleplay' or 'ICPrep Exam'
+    processed = db.Column(db.Boolean, default=False)
+    error = db.Column(db.Text, nullable=True)
+    member = db.relationship('User', backref='icprep_webhook_logs')
 
 
 class PracticeLog(db.Model):
@@ -251,7 +312,7 @@ def get_active_conference():
 
 
 def ensure_commitments(member):
-    """Auto-create commitment rows for all three conferences if they don't exist."""
+    """Auto-create commitment rows and ICPrep tracker for all conferences if missing."""
     pod = MentorPod.query.filter_by(member_id=member.id).first()
     level = pod.experience_level if pod else 'N'
     reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
@@ -259,7 +320,7 @@ def ensure_commitments(member):
     for conf, rule in reqs.items():
         existing = Commitment.query.filter_by(member_name=member.username, event=conf).first()
         if not existing:
-            c = Commitment(
+            com = Commitment(
                 member_name=member.username,
                 event=conf,
                 required_roleplay=rule["roleplay"],
@@ -270,13 +331,36 @@ def ensure_commitments(member):
                 remaining_exam=rule["exam"],
                 deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
             )
-            db.session.add(c)
+            db.session.add(com)
             created = True
+    # Ensure annual ICPrep tracker exists
+    if not AnnualICPrepTracker.query.filter_by(member_id=member.id).first():
+        db.session.add(AnnualICPrepTracker(member_id=member.id))
+        created = True
     if created:
         try:
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+
+def get_icprep_status(member):
+    """Return ICPrep completion counts and targets for a member."""
+    pod = MentorPod.query.filter_by(member_id=member.id).first()
+    level = pod.experience_level if pod else 'N'
+    targets = ICPREP_TARGETS.get(level, ICPREP_TARGETS['N'])
+    tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
+    rp_done = tracker.icprep_rp_completed if tracker else 0
+    ex_done = tracker.icprep_exam_completed if tracker else 0
+    return {
+        'rp_done': rp_done,
+        'rp_target': targets['roleplay'],
+        'rp_met': rp_done >= targets['roleplay'],
+        'exam_done': ex_done,
+        'exam_target': targets['exam'],
+        'exam_met': ex_done >= targets['exam'],
+        'all_met': rp_done >= targets['roleplay'] and ex_done >= targets['exam'],
+    }
 
 
 # ── Attendance helper ─────────────────────────────────────────────────────────
@@ -463,6 +547,48 @@ with app.app_context():
     # (safe to run multiple times — ensure_commitments is idempotent)
     for member in User.query.filter_by(role='member').all():
         ensure_commitments(member)
+
+    # Migrate: add log_submitted column to practice_session if missing
+    ps_cols = [col[1] for col in db.session.execute(sql_text("PRAGMA table_info(practice_session)")).fetchall()] if db.engine.dialect.name == 'sqlite' else []
+    if db.engine.dialect.name == 'sqlite' and 'log_submitted' not in ps_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE practice_session ADD COLUMN log_submitted BOOLEAN DEFAULT FALSE'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    elif db.engine.dialect.name != 'sqlite':
+        try:
+            db.session.execute(sql_text('ALTER TABLE practice_session ADD COLUMN IF NOT EXISTS log_submitted BOOLEAN DEFAULT FALSE'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    # Migrate: fix existing commitment rows whose required counts don't match current matrix
+    for member in User.query.filter_by(role='member').all():
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        level = pod.experience_level if pod else 'N'
+        reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
+        for conf, rule in reqs.items():
+            com = Commitment.query.filter_by(member_name=member.username, event=conf).first()
+            if com:
+                # Only update required counts; adjust remaining proportionally
+                old_req_rp = com.required_roleplay
+                old_req_ex = com.required_exam
+                old_req_wr = com.required_written
+                completed_rp = old_req_rp - com.remaining_roleplay
+                completed_ex = old_req_ex - com.remaining_exam
+                completed_wr = old_req_wr - com.remaining_written
+                com.required_roleplay = rule["roleplay"]
+                com.required_written  = rule["written"]
+                com.required_exam     = rule["exam"]
+                com.remaining_roleplay = max(0, rule["roleplay"] - completed_rp)
+                com.remaining_written  = max(0, rule["written"]  - completed_wr)
+                com.remaining_exam     = max(0, rule["exam"]     - completed_ex)
+                db.session.add(com)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -972,6 +1098,26 @@ def increment_general_attendance():
     flash('Attendance was added successfully.', 'success')
     return redirect(request.referrer or url_for('dashboard'))
 
+# ── Member Commitments route ─────────────────────────────────────────────────
+
+@app.route('/my_commitments')
+@login_required
+def member_commitments():
+    if current_user.role != 'member':
+        return redirect(url_for('dashboard'))
+    ensure_commitments(current_user)
+    active_conf = get_active_conference()
+    all_commitments = Commitment.query.filter_by(member_name=current_user.username).all()
+    all_commitments_map = {com.event: com for com in all_commitments}
+    icprep_status = get_icprep_status(current_user)
+    return render_template('member_commitments.html',
+        all_commitments_map=all_commitments_map,
+        conference_order=CONFERENCE_ORDER,
+        active_conf=active_conf,
+        icprep_status=icprep_status,
+    )
+
+
 # ── Practice Session routes ──────────────────────────────────────────────────
 
 @app.route('/practice_sessions', methods=['GET', 'POST'])
@@ -1037,6 +1183,7 @@ def practice_sessions():
             signed_up = PracticeSession.query.filter_by(
                 officer_id=pod.mentor_id, member_id=current_user.id).order_by(
                 PracticeSession.session_date).all()
+        icprep_status = get_icprep_status(current_user)
         return render_template('practice_sessions.html',
             open_sessions=open_sessions,
             signed_up=signed_up,
@@ -1044,6 +1191,7 @@ def practice_sessions():
             active_conf=active_conf,
             active_commitment=active_commitment,
             conference_order=CONFERENCE_ORDER,
+            icprep_status=icprep_status,
         )
 
 
@@ -1115,17 +1263,28 @@ def submit_practice_log():
 
         score = float(score_str) if score_str else None
 
-        # Find matching commitment and decrement
+        # Find matching commitment and decrement based on type bucket
         commitment = Commitment.query.filter_by(
             member_name=member.username, event=conference).first()
         if commitment:
-            if practice_type == 'Roleplay' and commitment.remaining_roleplay > 0:
+            if practice_type in ROLEPLAY_TYPES and commitment.remaining_roleplay > 0:
                 commitment.remaining_roleplay -= 1
-            elif practice_type == 'Written Presentation' and commitment.remaining_written > 0:
+            elif practice_type in WRITTEN_TYPES and commitment.remaining_written > 0:
                 commitment.remaining_written -= 1
-            elif practice_type == 'Exam' and commitment.remaining_exam > 0:
+            elif practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
                 commitment.remaining_exam -= 1
             db.session.add(commitment)
+
+        # If ICPrep type, also increment annual ICPrep tracker
+        if practice_type in ICPREP_TYPES:
+            ensure_commitments(member)  # guarantees tracker exists
+            tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
+            if tracker:
+                if practice_type == 'ICPrep Roleplay':
+                    tracker.icprep_rp_completed += 1
+                elif practice_type == 'ICPrep Exam':
+                    tracker.icprep_exam_completed += 1
+                db.session.add(tracker)
 
         # Create log record
         log = PracticeLog(
@@ -1140,6 +1299,15 @@ def submit_practice_log():
             feedback=feedback or None,
         )
         db.session.add(log)
+
+        # Mark the linked practice session as logged if submitted from calendar
+        session_id = request.form.get('practice_session_id')
+        if session_id:
+            ps = db.session.get(PracticeSession, int(session_id))
+            if ps and ps.officer_id == current_user.id:
+                ps.log_submitted = True
+                db.session.add(ps)
+
         db.session.commit()
 
         # Send email notification
@@ -1165,6 +1333,7 @@ def submit_practice_log():
     prefill_member = request.args.get('member', '')
     prefill_type = request.args.get('type', '')
     prefill_conf = request.args.get('conf', get_active_conference())
+    prefill_session_id = request.args.get('session_id', '')
     return render_template('practice_log_form.html',
         pod_member_users=pod_member_users,
         activity_types=ACTIVITY_TYPES,
@@ -1172,6 +1341,7 @@ def submit_practice_log():
         prefill_member=prefill_member,
         prefill_type=prefill_type,
         prefill_conf=prefill_conf,
+        prefill_session_id=prefill_session_id,
     )
 
 
@@ -1245,6 +1415,216 @@ def reports():
         calendar_groups=calendar_groups,
         ah_ws_data=ah_ws_data,
     )
+
+
+# ── ICPrep Webhook ───────────────────────────────────────────────────────────
+
+@app.route('/webhook/icprep', methods=['POST'])
+def icprep_webhook():
+    """Placeholder webhook endpoint for ICPrep completions.
+    Expected payload (TBD with ICPrep):
+      { "member_username": "...", "activity_type": "ICPrep Roleplay"|"ICPrep Exam",
+        "conference": "VCMC"|"SVCDC"|"SCDC", "score": 0.0, "secret": "..." }
+    """
+    import json as _json
+    ICPREP_WEBHOOK_SECRET = os.getenv('ICPREP_WEBHOOK_SECRET', 'changeme')
+    raw = request.get_data(as_text=True)
+    log = ICPrepWebhookLog(payload=raw)
+
+    try:
+        data = request.get_json(force=True) or {}
+        # Verify shared secret
+        if data.get('secret') != ICPREP_WEBHOOK_SECRET:
+            log.error = 'Invalid secret'
+            db.session.add(log)
+            db.session.commit()
+            return {'error': 'Unauthorized'}, 401
+
+        member_username = data.get('member_username', '').strip()
+        activity_type = data.get('activity_type', '')
+        conference = data.get('conference', '')
+
+        member = User.query.filter_by(username=member_username, role='member').first()
+        if not member:
+            log.error = f'Member not found: {member_username}'
+            db.session.add(log)
+            db.session.commit()
+            return {'error': 'Member not found'}, 404
+
+        log.member_id = member.id
+        log.activity_type = activity_type
+
+        if activity_type not in ICPREP_TYPES:
+            log.error = f'Unknown activity_type: {activity_type}'
+            db.session.add(log)
+            db.session.commit()
+            return {'error': 'Unknown activity_type'}, 400
+
+        # Decrement conference commitment
+        ensure_commitments(member)
+        commitment = Commitment.query.filter_by(
+            member_name=member.username, event=conference).first()
+        if commitment:
+            if activity_type == 'ICPrep Roleplay' and commitment.remaining_roleplay > 0:
+                commitment.remaining_roleplay -= 1
+            elif activity_type == 'ICPrep Exam' and commitment.remaining_exam > 0:
+                commitment.remaining_exam -= 1
+            db.session.add(commitment)
+
+        # Increment annual ICPrep tracker
+        tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
+        if tracker:
+            if activity_type == 'ICPrep Roleplay':
+                tracker.icprep_rp_completed += 1
+            elif activity_type == 'ICPrep Exam':
+                tracker.icprep_exam_completed += 1
+            db.session.add(tracker)
+
+        log.processed = True
+        db.session.add(log)
+        db.session.commit()
+        return {'status': 'ok', 'member': member_username, 'type': activity_type}, 200
+
+    except Exception as e:
+        log.error = str(e)
+        db.session.add(log)
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return {'error': 'Internal error'}, 500
+
+
+# ── Exam Upload routes ────────────────────────────────────────────────────────
+
+def get_cloudinary():
+    """Lazy-import and configure cloudinary."""
+    import cloudinary
+    import cloudinary.uploader
+    cloudinary.config(
+        cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
+        api_key=os.getenv('CLOUDINARY_API_KEY'),
+        api_secret=os.getenv('CLOUDINARY_API_SECRET'),
+        secure=True,
+    )
+    return cloudinary
+
+
+@app.route('/exam_uploads', methods=['GET', 'POST'])
+@login_required
+def exam_uploads():
+    """Member: upload paper exam. Officer: view and review pod uploads."""
+    if current_user.role == 'member':
+        if request.method == 'POST':
+            file = request.files.get('exam_file')
+            conference = request.form.get('conference', '').strip()
+            notes = request.form.get('notes', '').strip()
+
+            if not file or file.filename == '':
+                flash('Please select a file to upload.', 'danger')
+                return redirect(url_for('exam_uploads'))
+            if not conference:
+                flash('Please select a conference.', 'danger')
+                return redirect(url_for('exam_uploads'))
+
+            allowed = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'heic', 'webp'}
+            ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+            if ext not in allowed:
+                flash('File type not allowed. Please upload an image or PDF.', 'danger')
+                return redirect(url_for('exam_uploads'))
+
+            try:
+                cld = get_cloudinary()
+                result = cld.uploader.upload(
+                    file,
+                    folder=f'deca_tracker/exams/{current_user.username}',
+                    resource_type='auto',
+                )
+                upload = ExamUpload(
+                    member_id=current_user.id,
+                    conference=conference,
+                    cloudinary_url=result['secure_url'],
+                    cloudinary_public_id=result['public_id'],
+                    notes=notes or None,
+                )
+                db.session.add(upload)
+
+                # In-app notification: find officer and notify via flash on their next load
+                # (stored as a simple DB notification row via send_email to officer)
+                pod = MentorPod.query.filter_by(member_id=current_user.id).first()
+                if pod:
+                    officer = db.session.get(User, pod.mentor_id)
+                    if officer and officer.email:
+                        send_email(
+                            officer.email,
+                            f'[DECA] Exam Upload: {current_user.username} ({conference})',
+                            f'<p>{current_user.username} uploaded a paper exam for <strong>{conference}</strong>.</p>'
+                            f'<p>Notes: {notes or "None"}</p>'
+                            f'<p><a href="{result["secure_url"]}">View exam</a></p>'
+                            f'<p>Please review and mark as credited on the DECA Tracker.</p>'
+                        )
+
+                db.session.commit()
+                flash('Exam uploaded successfully. Your officer has been notified.', 'success')
+            except Exception as e:
+                db.session.rollback()
+                flash(f'Upload failed: {str(e)}', 'danger')
+
+            return redirect(url_for('exam_uploads'))
+
+        # GET: show member's own uploads
+        active_conf = get_active_conference()
+        my_uploads = ExamUpload.query.filter_by(member_id=current_user.id).order_by(
+            ExamUpload.uploaded_at.desc()).all()
+        return render_template('exam_uploads.html',
+            my_uploads=my_uploads,
+            conference_order=CONFERENCE_ORDER,
+            active_conf=active_conf,
+        )
+
+    else:  # officer
+        # Show all pod member exam uploads
+        pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
+        pod_member_ids = [pm.member_id for pm in pod_members]
+        uploads = ExamUpload.query.filter(
+            ExamUpload.member_id.in_(pod_member_ids)
+        ).order_by(ExamUpload.uploaded_at.desc()).all()
+        return render_template('exam_uploads.html',
+            uploads=uploads,
+            conference_order=CONFERENCE_ORDER,
+        )
+
+
+@app.route('/exam_uploads/review/<int:upload_id>', methods=['POST'])
+@login_required
+def review_exam_upload(upload_id):
+    """Officer marks an exam upload as reviewed and optionally credits it."""
+    if current_user.role != 'officer':
+        flash('Only officers can review exam uploads.', 'danger')
+        return redirect(url_for('exam_uploads'))
+    upload = ExamUpload.query.get_or_404(upload_id)
+    action = request.form.get('action', 'review')  # 'review' or 'credit'
+
+    upload.reviewed = True
+    upload.reviewed_at = datetime.utcnow()
+    upload.reviewer_id = current_user.id
+
+    if action == 'credit':
+        upload.credited = True
+        # Decrement the member's exam commitment for the conference
+        commitment = Commitment.query.filter_by(
+            member_name=upload.member.username, event=upload.conference).first()
+        if commitment and commitment.remaining_exam > 0:
+            commitment.remaining_exam -= 1
+            db.session.add(commitment)
+        upload.commitment_id = commitment.id if commitment else None
+        flash(f'Exam credited for {upload.member.username} ({upload.conference}).', 'success')
+    else:
+        flash(f'Exam marked as reviewed for {upload.member.username}.', 'success')
+
+    db.session.add(upload)
+    db.session.commit()
+    return redirect(url_for('exam_uploads'))
 
 
 # ── Admin routes ─────────────────────────────────────────────────────────────
