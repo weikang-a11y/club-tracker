@@ -1,27 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Written Progress{% endblock %}
 {% block content %}
-
+<style>
+  .grade-cell { min-width: 76px; white-space: nowrap; }
+  .status-help { max-width: 980px; }
+</style>
 
 <div class="card page-header-card mb-4">
   <div class="card-body p-4">
     <h2 class="mb-1">Written Progress</h2>
-    <p class="lead mb-0">Track completion of written-page deadlines by event.</p>
-
-
-    <div class="mt-3 p-3 bg-light rounded">
-      <strong><i class="fas fa-info-circle"></i> Status Information:</strong>
-      <ul class="mb-0 mt-2" style="font-size: 0.95rem;">
-        <li>
-          <span class="badge bg-success">✓ On Track</span>
-          - Member has completed all required items
-        </li>
-        <li>
-          <span class="badge bg-danger">⚠ At Risk</span>
-          - Member has one or more items not completed
-        </li>
-      </ul>
-    </div>
+    <p class="lead mb-0">Track written deadlines and conference grades by event.</p>
   </div>
 </div>
 
@@ -30,6 +18,72 @@
     <div class="alert alert-{{ category }} py-2">{{ message }}</div>
   {% endfor %}
 {% endwith %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card summary-card light-blue h-100">
+      <div class="card-body">
+        <div class="text-muted">Members Tracked</div>
+        <div class="display-6">{{ written_stats.total_members }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card summary-card h-100 {{ 'bg-success text-white' if written_stats.complete_count == written_stats.total_members and written_stats.total_members > 0 else 'light-blue' }}">
+      <div class="card-body">
+        <div class="{{ 'text-white-50' if written_stats.complete_count == written_stats.total_members and written_stats.total_members > 0 else 'text-muted' }}">Written Complete</div>
+        <div class="display-6">{{ written_stats.complete_count }}</div>
+        <div class="small {{ 'text-white-50' if written_stats.complete_count == written_stats.total_members and written_stats.total_members > 0 else 'text-muted' }} mt-1">All required written items complete</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card summary-card h-100 {{ 'bg-warning text-dark' if written_stats.needs_attention_count > 0 else 'light-blue' }}">
+      <div class="card-body">
+        <div class="{{ 'text-dark' if written_stats.needs_attention_count > 0 else 'text-muted' }}">Needs Attention</div>
+        <div class="display-6">{{ written_stats.needs_attention_count }}</div>
+        <div class="small {{ 'text-dark' if written_stats.needs_attention_count > 0 else 'text-muted' }} mt-1">Incomplete, but not overdue</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card summary-card h-100 {{ 'bg-danger text-white' if written_stats.overdue_count > 0 else 'light-blue' }}">
+      <div class="card-body">
+        <div class="{{ 'text-white-50' if written_stats.overdue_count > 0 else 'text-muted' }}">Overdue</div>
+        <div class="display-6">{{ written_stats.overdue_count }}</div>
+        <div class="small {{ 'text-white-50' if written_stats.overdue_count > 0 else 'text-muted' }} mt-1">Past-due written items</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card border-0 shadow-sm rounded-4 mb-4 status-help">
+  <div class="card-body">
+    <div class="mt-3 p-3 bg-light rounded">
+      <strong><i class="fas fa-info-circle"></i> Status Information:</strong>
+      <ul class="mb-0 mt-2" style="font-size: 0.95rem;">
+        <li class="mb-2">
+          <span class="badge bg-success">✓ Complete</span>
+          - Member has completed all required items.
+        </li>
+        <li class="mb-2">
+          <span class="badge bg-warning text-dark">⚠ Needs Attention</span>
+          - One or more items are incomplete, but no known deadline has passed.
+        </li>
+        <li>
+          <span class="badge bg-danger">⚠ Overdue</span>
+          - One or more incomplete items had a deadline before {{ report_date.strftime('%b %d, %Y') }}.
+        </li>
+      </ul>
+    </div>
+
+    <div class="small text-muted mt-3">
+      Month/day-only deadlines are currently interpreted as the
+      <strong>{{ written_academic_year_label }}</strong> academic year.
+      Full dates keep the year stored in the database.
+    </div>
+  </div>
+</div>
 
 <div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
   <div>
@@ -72,15 +126,20 @@
                     <th>Status</th>
                     <th>Mentor</th>
                     <th>Level</th>
-                    <th colspan="{{ items|length }}" class="text-center">Items</th>
+                    <th class="text-center grade-cell">VCMC Grade</th>
+                    <th class="text-center grade-cell">SVCDC Grade</th>
+                    <th class="text-center grade-cell">SCDC Grade</th>
+                    <th colspan="{{ items|length }}" class="text-center">Written Items</th>
                   </tr>
                   <tr class="table-light" style="border-top: none;">
-                    <th colspan="4"></th>
+                    <th colspan="7"></th>
                     {% for item_name in items %}
-                      <th class="text-center small" style="min-width:90px;">
+                      <th class="text-center small" style="min-width:100px;">
                         <div>{{ item_name }}</div>
                         {% if event_deadlines.get(event, {}).get(item_name) %}
                           <div class="text-muted fw-normal">{{ event_deadlines[event][item_name] }}</div>
+                        {% else %}
+                          <div class="text-muted fw-normal">No deadline loaded</div>
                         {% endif %}
                       </th>
                     {% endfor %}
@@ -88,17 +147,19 @@
                 </thead>
                 <tbody>
                   {% for row in event_rows %}
-                    <tr class="{{ 'table-danger' if row.status == 'at_risk' else '' }}"
+                    <tr class="{{ 'table-danger' if row.status == 'overdue' else ('table-warning' if row.status == 'needs_attention' else '') }}"
                         data-status="{{ row.status }}"
                         data-level="{{ row.level }}"
                         data-mentor="{{ row.mentor_name }}"
                         data-event="{{ event }}">
                       <td class="fw-semibold">{{ row.member.username }}</td>
                       <td>
-                        {% if row.status == 'at_risk' %}
-                          <span class="badge bg-danger">At Risk</span>
+                        {% if row.status == 'overdue' %}
+                          <span class="badge bg-danger">Overdue</span>
+                        {% elif row.status == 'needs_attention' %}
+                          <span class="badge bg-warning text-dark">Needs Attention</span>
                         {% else %}
-                          <span class="badge bg-success">On Track</span>
+                          <span class="badge bg-success">Complete</span>
                         {% endif %}
                       </td>
                       <td>{{ row.mentor_name }}</td>
@@ -107,6 +168,9 @@
                           {{ 'Novice' if row.level == 'N' else 'Experienced' }}
                         </span>
                       </td>
+                      <td class="text-center grade-cell">{{ row.grades.get('VCMC') or '—' }}</td>
+                      <td class="text-center grade-cell">{{ row.grades.get('SVCDC') or '—' }}</td>
+                      <td class="text-center grade-cell">{{ row.grades.get('SCDC') or '—' }}</td>
 
                       {% for item_name in items %}
                         <td class="text-center">
@@ -116,6 +180,7 @@
                             data-user-id="{{ row.member.id }}"
                             data-event="{{ event }}"
                             data-item-name="{{ item_name }}"
+                            aria-label="{{ row.member.username }}: {{ item_name }}"
                             {% if row.checklists.get(event, {}).get(item_name, False) %}checked{% endif %}
                           >
                         </td>
@@ -132,7 +197,7 @@
   {% endfor %}
 {% else %}
   <div class="alert alert-warning">
-    No written checklist data was found. Run <code>python3 import_from_spreadsheet.py "FINAL MDP Deadline Tracking.xlsx"</code>, then reload this page.
+    No written checklist data was found. Run the spreadsheet import, then reload this page.
   </div>
 {% endif %}
 
@@ -156,6 +221,7 @@ document.querySelectorAll('.checklist-toggle').forEach(checkbox => {
         throw new Error(data.message || 'Error updating checklist item.');
       }
       this.checked = Boolean(data.completed);
+      window.location.reload();
     })
     .catch(error => {
       this.checked = previousChecked;
@@ -190,7 +256,11 @@ function updateFilterOptions() {
   });
 
   const valueMap = {
-    status: { on_track: 'On Track', at_risk: 'At Risk' },
+    status: {
+      complete: 'Complete',
+      needs_attention: 'Needs Attention',
+      overdue: 'Overdue'
+    },
     level: { N: 'Novice', E: 'Experienced' },
     mentor: {},
     event: {}
@@ -247,3 +317,5 @@ function resetFilters() {
 }
 </script>
 {% endblock %}
+
+

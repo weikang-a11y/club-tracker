@@ -1,3 +1,12 @@
+try:
+    import truststore
+except ImportError as exc:
+    raise RuntimeError(
+        "Missing dependency 'truststore'. Run: python -m pip install truststore requests"
+    ) from exc
+
+truststore.inject_into_ssl()
+
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
@@ -10,26 +19,29 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
 from sqlalchemy.pool import NullPool
 from apscheduler.schedulers.background import BackgroundScheduler
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
-from itsdangerous import URLSafeTimedSerializer
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
 import os
 import re
+import hashlib
+import hmac
+import requests
 from flask import jsonify
 import pandas as pd
 from collections import defaultdict
-
-
 
 load_dotenv()
 
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
+
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    raise RuntimeError('SECRET_KEY must be set in the environment.')
+app.config['SECRET_KEY'] = SECRET_KEY
 
 
 
@@ -52,7 +64,9 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 
 FROM_EMAIL = os.getenv("FROM_EMAIL")
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+FROM_NAME = os.getenv("FROM_NAME", "DECA Tracker")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+BREVO_EMAIL_ENDPOINT = "https://api.brevo.com/v3/smtp/email"
 
 
 db = SQLAlchemy(app)
@@ -406,15 +420,28 @@ class LoginForm(FlaskForm):
     submit = SubmitField('Login')
 
 
-class ChangePasswordForm(FlaskForm):
-    new_password = PasswordField('New Password', [DataRequired(), Length(min=6)])
+class SetPasswordForm(FlaskForm):
+    new_password = PasswordField('New Password', [DataRequired(), Length(min=8, max=128)])
     confirm_password = PasswordField('Confirm Password', [DataRequired()])
-    submit = SubmitField('Set Password')
+    submit = SubmitField('Save Password')
 
+    def validate_new_password(self, field):
+        password = field.data or ''
+        if not re.search(r'[A-Z]', password):
+            raise ValidationError('Include at least one uppercase letter.')
+        if not re.search(r'[a-z]', password):
+            raise ValidationError('Include at least one lowercase letter.')
+        if not re.search(r'\d', password):
+            raise ValidationError('Include at least one number.')
 
     def validate_confirm_password(self, field):
         if field.data != self.new_password.data:
             raise ValidationError('Passwords do not match.')
+
+
+class ForgotPasswordForm(FlaskForm):
+    email = StringField('Email', [DataRequired(), Length(max=120)])
+    submit = SubmitField('Send Reset Link')
 
 
 class CommitmentForm(FlaskForm):
@@ -652,31 +679,154 @@ def validate_workshop_slot(workshop_time, officer_id, exclude_workshop_id=None):
     return None
 
 
-def generate_reset_token(email):
-    s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-    return s.dumps(email, salt='password-reset')
+PASSWORD_RESET_SALT = 'password-reset-v2'
+PASSWORD_RESET_MAX_AGE_SECONDS = 3600
 
 
-def verify_reset_token(token, expiration=3600):
-    s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+def _password_fingerprint(user):
+    return hashlib.sha256(user.password.encode('utf-8')).hexdigest()
+
+
+def generate_reset_token(user):
+    serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+    payload = {
+        'user_id': user.id,
+        'password_fingerprint': _password_fingerprint(user),
+    }
+    return serializer.dumps(payload, salt=PASSWORD_RESET_SALT)
+
+
+def verify_reset_token(token, expiration=PASSWORD_RESET_MAX_AGE_SECONDS):
+    serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
     try:
-        email = s.loads(token, salt='password-reset', max_age=expiration)
-    except Exception:
+        payload = serializer.loads(
+            token,
+            salt=PASSWORD_RESET_SALT,
+            max_age=expiration,
+        )
+    except (SignatureExpired, BadSignature, TypeError, ValueError):
         return None
-    return email
+
+    user_id = payload.get('user_id') if isinstance(payload, dict) else None
+    expected_fingerprint = (
+        payload.get('password_fingerprint') if isinstance(payload, dict) else None
+    )
+    if not user_id or not expected_fingerprint:
+        return None
+
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return None
+
+    if not hmac.compare_digest(
+        expected_fingerprint,
+        _password_fingerprint(user),
+    ):
+        return None
+
+    return user
 
 
 def send_email(to_email, subject, html_content):
-    if not SENDGRID_API_KEY or not FROM_EMAIL or not to_email:
+    """Send one transactional email through Brevo's REST API.
+
+    Required environment variables:
+      BREVO_API_KEY: Brevo API key with transactional email access
+      FROM_EMAIL: verified Brevo sender email address
+
+    Optional environment variable:
+      FROM_NAME: display name shown to recipients
+    """
+    if not BREVO_API_KEY:
+        app.logger.error('Email not sent: BREVO_API_KEY is missing.')
         return False
+
+    if not FROM_EMAIL:
+        app.logger.error('Email not sent: FROM_EMAIL is missing.')
+        return False
+
+    if not to_email:
+        app.logger.error('Email not sent: recipient email is missing.')
+        return False
+
+    payload = {
+        'sender': {
+            'name': FROM_NAME,
+            'email': FROM_EMAIL,
+        },
+        'to': [
+            {
+                'email': to_email,
+            }
+        ],
+        'subject': subject,
+        'htmlContent': html_content,
+    }
+
+    headers = {
+        'accept': 'application/json',
+        'api-key': BREVO_API_KEY,
+        'content-type': 'application/json',
+    }
+
     try:
-        message = Mail(from_email=FROM_EMAIL, to_emails=to_email, subject=subject, html_content=html_content)
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
-        response = sg.send(message)
-        return True
-    except Exception as e:
-        print("SEND_EMAIL error:", e)
+        response = requests.post(
+            BREVO_EMAIL_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=20,
+        )
+    except requests.RequestException:
+        app.logger.exception(
+            'Brevo request failed while sending email to %s.',
+            to_email,
+        )
         return False
+
+    if response.status_code == 201:
+        try:
+            message_id = response.json().get('messageId', 'unknown')
+        except ValueError:
+            message_id = 'unknown'
+
+        app.logger.info(
+            'Brevo accepted email for %s; message id=%s.',
+            to_email,
+            message_id,
+        )
+        return True
+
+    # Brevo's response body is useful for diagnosing invalid API keys,
+    # unverified senders, and malformed recipient addresses. Keep the API
+    # key out of logs; it is never included in this message.
+    response_body = response.text[:1000]
+    app.logger.error(
+        'Brevo rejected email for %s: HTTP %s: %s',
+        to_email,
+        response.status_code,
+        response_body,
+    )
+    return False
+
+
+def send_password_reset_email(user):
+    if not user.email:
+        return False
+
+    token = generate_reset_token(user)
+    reset_url = url_for('reset_password', token=token, _external=True)
+    html_content = f"""
+        <p>A password reset was requested for your account.</p>
+        <p><a href="{reset_url}">Reset your password</a></p>
+        <p>This link expires in 1 hour and can be used only until the password changes.</p>
+        <p>If you did not request this, you can ignore this email.</p>
+    """
+    return send_email(user.email, 'Reset your password', html_content)
 
 
 def send_email_reminder(user, workshop):
@@ -766,14 +916,307 @@ def get_commitment_status(user):
 
 
 def get_commitments_incomplete(user):
-    """True if the member has any commitment (any conference) with
-    unfinished roleplay/written/exam requirements. Distinct from
-    get_commitment_status(), which is about missed deadlines specifically."""
+    """True if the member has any unfinished conference commitment."""
     commitments = Commitment.query.filter_by(user_id=user.id).all()
     return any(
         (c.remaining_roleplay + c.remaining_written + c.remaining_exam) > 0
         for c in commitments
     ) if commitments else False
+
+
+def _members_visible_to_current_user():
+    """Return the members an admin or officer is allowed to report on."""
+    if current_user.is_admin:
+        return User.query.filter_by(role='member').order_by(User.username).all()
+
+    pod_member_ids = [
+        pm.member_id
+        for pm in MentorPod.query.filter_by(mentor_id=current_user.id).all()
+    ]
+    if not pod_member_ids:
+        return []
+
+    return (
+        User.query.filter(User.id.in_(pod_member_ids))
+        .order_by(User.username)
+        .all()
+    )
+
+
+def _written_academic_start_year(today=None):
+    """Return the starting year used for month/day-only written deadlines.
+
+    Set WRITTEN_ACADEMIC_START_YEAR in .env when imported deadlines do not
+    contain a year. For example, use 2025 for the 2025-26 school year.
+    Full dates such as 2025-11-15 always keep their explicit year.
+    """
+    today = today or datetime.now(LOCAL_TZ).date()
+    configured = os.getenv('WRITTEN_ACADEMIC_START_YEAR', '').strip()
+
+    if configured:
+        try:
+            year = int(configured)
+        except ValueError as exc:
+            raise RuntimeError(
+                'WRITTEN_ACADEMIC_START_YEAR must be a four-digit year, '
+                'for example 2025.'
+            ) from exc
+
+        if year < 2000 or year > 2100:
+            raise RuntimeError(
+                'WRITTEN_ACADEMIC_START_YEAR must be between 2000 and 2100.'
+            )
+        return year
+
+    return today.year if today.month >= 7 else today.year - 1
+
+
+def _parse_written_deadline(value, today=None):
+    """Parse imported written-page deadlines.
+
+    Imported checklist deadlines may be full dates such as 2025-10-30 or
+    month/day values such as 10/30. Month/day-only values use the academic
+    year selected by WRITTEN_ACADEMIC_START_YEAR.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if hasattr(value, 'year') and hasattr(value, 'month') and hasattr(value, 'day'):
+        try:
+            return value
+        except Exception:
+            pass
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%b %d, %Y', '%B %d, %Y'):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+
+    month_day_match = re.search(r'(?<!\d)(\d{1,2})/(\d{1,2})(?!/\d)', raw)
+    if not month_day_match:
+        return None
+
+    month = int(month_day_match.group(1))
+    day = int(month_day_match.group(2))
+    today = today or datetime.now(LOCAL_TZ).date()
+
+    academic_start_year = _written_academic_start_year(today=today)
+    year = academic_start_year if month >= 7 else academic_start_year + 1
+
+    try:
+        return datetime(year, month, day).date()
+    except ValueError:
+        return None
+
+
+def _written_status(item_names, completed_by_item, deadlines_by_item, today=None):
+    """Classify one member's written checklist without conflating incomplete
+    future work with an already-missed deadline.
+    """
+    today = today or datetime.now(LOCAL_TZ).date()
+    missing_items = []
+    overdue_items = []
+
+    for item_name in item_names:
+        if completed_by_item.get(item_name, False):
+            continue
+
+        deadline_text = deadlines_by_item.get(item_name)
+        deadline_date = _parse_written_deadline(deadline_text, today=today)
+        item = {
+            'name': item_name,
+            'deadline_text': deadline_text,
+            'deadline_date': deadline_date,
+        }
+        missing_items.append(item)
+
+        if deadline_date and deadline_date < today:
+            overdue_items.append(item)
+
+    if overdue_items:
+        status = 'overdue'
+        status_label = 'Overdue'
+    elif missing_items:
+        status = 'needs_attention'
+        status_label = 'Needs Attention'
+    else:
+        status = 'complete'
+        status_label = 'Complete'
+
+    return {
+        'status': status,
+        'status_label': status_label,
+        'missing_items': missing_items,
+        'overdue_items': overdue_items,
+        'complete': not missing_items,
+        'deadline_safe': not overdue_items,
+    }
+
+
+def _conference_summary_for_user(user, today=None):
+    """Return grades, completion, and overdue conference requirements."""
+    today = today or datetime.now(LOCAL_TZ).date()
+    commitments = Commitment.query.filter_by(user_id=user.id).all()
+    commitments_by_event = {c.event: c for c in commitments}
+
+    grades = {}
+    incomplete_reasons = []
+    overdue_reasons = []
+    conferences = {}
+
+    for conference in ('VCMC', 'SVCDC', 'SCDC'):
+        commitment = commitments_by_event.get(conference)
+        if not commitment:
+            grades[conference] = None
+            conferences[conference] = None
+            continue
+
+        grades[conference] = commitment.grade
+        missing_parts = []
+        if commitment.remaining_roleplay:
+            missing_parts.append(f'{commitment.remaining_roleplay} roleplay')
+        if commitment.remaining_written:
+            missing_parts.append(f'{commitment.remaining_written} written')
+        if commitment.remaining_exam:
+            missing_parts.append(f'{commitment.remaining_exam} exam')
+
+        remaining = (
+            commitment.remaining_roleplay
+            + commitment.remaining_written
+            + commitment.remaining_exam
+        )
+        complete = remaining == 0
+        description = f"{conference}: " + ', '.join(missing_parts) if missing_parts else None
+
+        if description:
+            incomplete_reasons.append(description)
+            if commitment.deadline and commitment.deadline < today:
+                overdue_reasons.append(description)
+
+        conferences[conference] = {
+            'grade': commitment.grade,
+            'deadline': commitment.deadline,
+            'complete': complete,
+            'remaining_roleplay': commitment.remaining_roleplay,
+            'remaining_written': commitment.remaining_written,
+            'remaining_exam': commitment.remaining_exam,
+        }
+
+    return {
+        'grades': grades,
+        'conferences': conferences,
+        'incomplete_reasons': incomplete_reasons,
+        'overdue_reasons': overdue_reasons,
+        'incomplete': bool(incomplete_reasons),
+        'overdue': bool(overdue_reasons),
+    }
+
+
+def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
+    """Build the complete, printable risk report.
+
+    Severity rules:
+      * at_risk: missed attendance threshold with actual attendance records,
+        an overdue conference requirement, or an overdue written item.
+      * needs_attention: incomplete work exists, but its deadline has not passed.
+      * on_track: no attendance problem and no incomplete tracked work.
+    """
+    today = today or datetime.now(LOCAL_TZ).date()
+    rows = []
+
+    for member in members:
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        event = (pod.event or '').strip() if pod else ''
+        level = pod.experience_level if pod else 'N'
+
+        attendance = get_attendance_stats(member)
+        attendance_reasons = []
+        if attendance['ah_total'] > 0 and attendance['ah_rate'] < AH_THRESHOLD * 100:
+            attendance_reasons.append(
+                f"AH attendance {attendance['ah_rate']}% (requires {AH_THRESHOLD * 100:.0f}%)"
+            )
+        if attendance['ws_total'] > 0 and attendance['ws_rate'] < attendance['ws_threshold_pct']:
+            attendance_reasons.append(
+                f"WS attendance {attendance['ws_rate']}% (requires {attendance['ws_threshold_pct']:.0f}%)"
+            )
+
+        conference = _conference_summary_for_user(member, today=today)
+
+        item_names = event_items.get(event, [])
+        completed_by_item = {
+            item.item_name: bool(item.completed)
+            for item in ChecklistItem.query.filter_by(
+                user_id=member.id,
+                event=event,
+            ).all()
+        }
+        written = _written_status(
+            item_names,
+            completed_by_item,
+            event_deadlines.get(event, {}),
+            today=today,
+        ) if item_names else {
+            'status': 'not_tracked',
+            'status_label': 'Not Tracked',
+            'missing_items': [],
+            'overdue_items': [],
+            'complete': True,
+            'deadline_safe': True,
+        }
+
+        hard_risk_reasons = list(attendance_reasons)
+        hard_risk_reasons.extend(conference['overdue_reasons'])
+        hard_risk_reasons.extend(
+            f"Written overdue: {item['name']}"
+            + (f" ({item['deadline_text']})" if item['deadline_text'] else '')
+            for item in written['overdue_items']
+        )
+
+        attention_reasons = []
+        attention_reasons.extend(conference['incomplete_reasons'])
+        attention_reasons.extend(
+            f"Written incomplete: {item['name']}"
+            + (f" ({item['deadline_text']})" if item['deadline_text'] else '')
+            for item in written['missing_items']
+        )
+
+        if hard_risk_reasons:
+            status = 'at_risk'
+            status_label = 'At Risk'
+        elif attention_reasons:
+            status = 'needs_attention'
+            status_label = 'Needs Attention'
+        else:
+            status = 'on_track'
+            status_label = 'On Track'
+
+        rows.append({
+            'member': member,
+            'mentor_name': get_mentor_name(member),
+            'event': event or 'Unassigned',
+            'level': level,
+            'status': status,
+            'status_label': status_label,
+            'hard_risk_reasons': hard_risk_reasons,
+            'attention_reasons': attention_reasons,
+            'all_reasons': hard_risk_reasons + [
+                reason for reason in attention_reasons if reason not in hard_risk_reasons
+            ],
+            'attendance': attendance,
+            'grades': conference['grades'],
+            'conference': conference,
+            'written': written,
+        })
+
+    return rows
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -1116,58 +1559,82 @@ def login():
 @app.route('/change-password', methods=['GET', 'POST'])
 @login_required
 def change_password():
-    form = ChangePasswordForm()
+    form = SetPasswordForm()
     if form.validate_on_submit():
         current_user.password = generate_password_hash(form.new_password.data)
         current_user.must_change_password = False
         db.session.commit()
-        flash('Password updated successfully. Welcome!', 'success')
+        flash('Your password has been updated.', 'success')
         return redirect(url_for('dashboard'))
-    return render_template('change_password.html', form=form)
+
+    return render_template(
+        'set_password.html',
+        form=form,
+        page_title='Change Password',
+        page_description='Choose a new password for your account.',
+        submit_label='Change Password',
+        show_login_link=False,
+    )
 
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        user = User.query.filter_by(username=username).first()
-        if user and user.email:
-            token = generate_reset_token(user.email)
-            reset_url = url_for('reset_password', token=token, _external=True)
-            send_email(
-                user.email,
-                'Password Reset Request',
-                f'Click <a href="{reset_url}">here</a> to reset your password. This link expires in 1 hour.'
+
+    form = ForgotPasswordForm()
+    if form.validate_on_submit():
+        email = form.email.data.strip().lower()
+        user = User.query.filter(
+            db.func.lower(User.email) == email
+        ).first()
+
+        # Always show the same response so this page does not reveal which
+        # email addresses have accounts.
+        if user and not send_password_reset_email(user):
+            app.logger.error(
+                'Reset email failed for user id %s.',
+                user.id,
             )
-            flash('If that username has an email on file, you will receive a reset link shortly.', 'info')
-        elif user and not user.email:
-            flash('That account has no email address on file. Please contact an admin to reset your password.', 'warning')
-        else:
-            flash('Username not found.', 'danger')
-        return redirect(url_for('login'))
-    return render_template('forgot_password.html')
+
+        flash(
+            'If an account matches that email, a reset link has been sent.',
+            'info',
+        )
+        return redirect(url_for('forgot_password'))
+
+    return render_template('forgot_password.html', form=form)
 
 
 @app.route('/reset-password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
-    if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
-    email = verify_reset_token(token)
-    if not email:
-        flash('The reset link is invalid or has expired.', 'danger')
+    user = verify_reset_token(token)
+    if not user:
+        flash('This password reset link is invalid or has expired.', 'danger')
         return redirect(url_for('forgot_password'))
-    form = ChangePasswordForm()
+
+    form = SetPasswordForm()
     if form.validate_on_submit():
-        user = User.query.filter_by(email=email).first()
-        if user:
-            user.password = generate_password_hash(form.new_password.data)
-            user.must_change_password = False
-            db.session.commit()
-            flash('Your password has been reset. Please log in.', 'success')
-            return redirect(url_for('login'))
-    return render_template('reset_password.html', form=form)
+        user.password = generate_password_hash(form.new_password.data)
+        user.must_change_password = False
+        db.session.commit()
+
+        # The fingerprint embedded in the token no longer matches, so the
+        # same reset link cannot be reused.
+        if current_user.is_authenticated:
+            logout_user()
+
+        flash('Your password has been reset. You can now sign in.', 'success')
+        return redirect(url_for('login'))
+
+    return render_template(
+        'set_password.html',
+        form=form,
+        page_title='Reset Password',
+        page_description=f'Choose a new password for {user.username}.',
+        submit_label='Reset Password',
+        show_login_link=True,
+    )
 
 
 @app.route('/logout')
@@ -1184,7 +1651,23 @@ def settings():
         flash('Only members can access settings.', 'danger')
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
-        current_user.email = request.form.get('email', '').strip() or None
+        email = request.form.get('email', '').strip().lower()
+        if not email:
+            flash('An email address is required for account recovery.', 'danger')
+            return render_template('settings.html')
+        if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email):
+            flash('Enter a valid email address.', 'danger')
+            return render_template('settings.html')
+
+        email_owner = User.query.filter(
+            db.func.lower(User.email) == email,
+            User.id != current_user.id,
+        ).first()
+        if email_owner:
+            flash('That email address is already assigned to another account.', 'danger')
+            return render_template('settings.html')
+
+        current_user.email = email
         current_user.phone = request.form.get('phone', '').strip() or None
         current_user.notify_enabled = bool(request.form.get('notify_enabled'))
         remind_val = request.form.get('remind_minutes_before', '60').strip()
@@ -1744,10 +2227,12 @@ def admin_toggle_competing(user_id):
 @admin_required
 def admin_reset_password(user_id):
     user = User.query.get_or_404(user_id)
-    user.password = generate_password_hash('DECA2026!')
-    user.must_change_password = True
-    db.session.commit()
-    flash(f'Password reset to DECA2026! for "{user.username}".', 'success')
+    if not user.email:
+        flash(f'"{user.username}" does not have an email address.', 'danger')
+    elif send_password_reset_email(user):
+        flash(f'A password reset link was sent to {user.email}.', 'success')
+    else:
+        flash('The reset email could not be sent. Check the email configuration.', 'danger')
     return redirect(url_for('admin_panel'))
 
 
@@ -2173,68 +2658,67 @@ def checklist_completion():
         flash('Only officers/admins can view this.', 'danger')
         return redirect(url_for('dashboard'))
 
-
-    if current_user.is_admin:
-        members = User.query.filter_by(role='member').order_by(User.username).all()
-    else:
-        pod_member_ids = [
-            pm.member_id
-            for pm in MentorPod.query.filter_by(mentor_id=current_user.id).all()
-        ]
-        members = (
-            User.query.filter(User.id.in_(pod_member_ids))
-            .order_by(User.username)
-            .all()
-            if pod_member_ids else []
-        )
-
-
+    members = _members_visible_to_current_user()
     event_items, event_deadlines = get_written_checklist_catalog()
-
+    today = datetime.now(LOCAL_TZ).date()
 
     rows = []
     grouped_rows = defaultdict(list)
-
 
     for member in members:
         pod = MentorPod.query.filter_by(member_id=member.id).first()
         level = pod.experience_level if pod else 'N'
         event = (pod.event or '').strip() if pod else ''
 
-
         if not event or event not in event_items:
             continue
 
-
-        checklist_by_event = defaultdict(dict)
-        checklist_by_event[event] = {
-            item_name: False
-            for item_name in event_items.get(event, [])
-        }
-
+        item_names = event_items.get(event, [])
+        completed_by_item = {item_name: False for item_name in item_names}
 
         checklist_items = ChecklistItem.query.filter_by(
             user_id=member.id,
-            event=event
+            event=event,
         ).all()
+        for item in checklist_items:
+            if item.item_name in completed_by_item:
+                completed_by_item[item.item_name] = bool(item.completed)
 
-
-        for ci in checklist_items:
-            if ci.item_name in checklist_by_event[event]:
-                checklist_by_event[event][ci.item_name] = bool(ci.completed)
-
+        written = _written_status(
+            item_names,
+            completed_by_item,
+            event_deadlines.get(event, {}),
+            today=today,
+        )
+        conference = _conference_summary_for_user(member, today=today)
 
         row = {
             'member': member,
             'mentor_name': get_mentor_name(member),
             'level': level,
             'event': event,
-            'status': 'on_track' if all(checklist_by_event[event].values()) else 'at_risk',
-            'checklists': checklist_by_event,
+            'status': written['status'],
+            'status_label': written['status_label'],
+            'checklists': {event: completed_by_item},
+            'missing_items': written['missing_items'],
+            'overdue_items': written['overdue_items'],
+            'deadline_safe': written['deadline_safe'],
+            'grades': conference['grades'],
         }
         rows.append(row)
         grouped_rows[event].append(row)
 
+    written_stats = {
+        'total_members': len(rows),
+        'complete_count': sum(1 for row in rows if row['status'] == 'complete'),
+        'needs_attention_count': sum(
+            1 for row in rows if row['status'] == 'needs_attention'
+        ),
+        'overdue_count': sum(1 for row in rows if row['status'] == 'overdue'),
+        'deadline_safe_count': sum(1 for row in rows if row['deadline_safe']),
+    }
+
+    academic_start_year = _written_academic_start_year(today=today)
 
     return render_template(
         'checklist.html',
@@ -2242,6 +2726,55 @@ def checklist_completion():
         grouped_rows=dict(grouped_rows),
         event_items=event_items,
         event_deadlines=event_deadlines,
+        written_stats=written_stats,
+        report_date=today,
+        written_academic_year_label=(
+            f"{academic_start_year}-{str(academic_start_year + 1)[-2:]}"
+        ),
+    )
+
+
+@app.route('/at-risk-report')
+@login_required
+def at_risk_report():
+    if current_user.role != 'officer' and not current_user.is_admin:
+        flash('Only officers/admins can view this.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    members = _members_visible_to_current_user()
+    event_items, event_deadlines = get_written_checklist_catalog()
+    today = datetime.now(LOCAL_TZ).date()
+    all_rows = build_mentee_risk_report(
+        members,
+        event_items,
+        event_deadlines,
+        today=today,
+    )
+
+    report_rows = [row for row in all_rows if row['status'] != 'on_track']
+    report_rows.sort(
+        key=lambda row: (
+            0 if row['status'] == 'at_risk' else 1,
+            row['mentor_name'].lower(),
+            row['member'].username.lower(),
+        )
+    )
+
+    summary = {
+        'total_members': len(all_rows),
+        'at_risk_count': sum(1 for row in all_rows if row['status'] == 'at_risk'),
+        'needs_attention_count': sum(
+            1 for row in all_rows if row['status'] == 'needs_attention'
+        ),
+        'on_track_count': sum(1 for row in all_rows if row['status'] == 'on_track'),
+        'actionable_count': len(report_rows),
+    }
+
+    return render_template(
+        'at_risk_report.html',
+        rows=report_rows,
+        summary=summary,
+        report_date=today,
     )
 
 
@@ -2256,7 +2789,4 @@ if not scheduler.running:
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-
-
 
