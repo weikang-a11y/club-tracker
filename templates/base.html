@@ -139,26 +139,47 @@
             <div class="col-lg-auto">
                 <aside class="sidebar">
                     <div class="brand border-bottom pb-3 mb-3 text-uppercase">DECA Tracker</div>
-                    <div class="role-chip">{{ 'Officer' if current_user.role == 'officer' else 'Member' }}</div>
+                    <div class="role-chip">
+                        {% if current_user.is_admin %}
+                            Admin
+                        {% elif current_user.role == 'officer' %}
+                            Officer
+                        {% else %}
+                            Member
+                        {% endif %}
+                    </div>
                     <div class="small text-white-50 mt-2 mb-4">{{ current_user.username }}</div>
 
                     <nav class="nav flex-column">
                         <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">Dashboard</a>
-                        {% if current_user.role == 'officer' %}
-                            <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
-                            <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab', 'commitment') == 'commitment' %}active{% endif %}" href="{{ url_for('reports', tab='commitment') }}">Commitment Reports</a>
-                            <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}" href="{{ url_for('reports', tab='calendar') }}">Calendar</a>
-                            <a class="nav-link {% if request.endpoint == 'exam_uploads' %}active{% endif %}" href="{{ url_for('exam_uploads') }}">Exam Uploads</a>
-			{% else %}
-			    <a class="nav-link {% if request.endpoint == 'member_commitments' %}active{% endif %}" href="{{ url_for('member_commitments') }}">My Commitments</a>
-			    <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
-			    <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
-			{% endif %}
+
                         {% if current_user.is_admin %}
+                            <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
                             <hr class="border-secondary my-2">
                             <a class="nav-link {% if request.endpoint == 'admin_panel' %}active{% endif %}" href="{{ url_for('admin_panel') }}">
                                 ⚙ Admin Panel
                             </a>
+                            <a class="nav-link {% if request.endpoint == 'view_logs' %}active{% endif %}" href="{{ url_for('view_logs') }}">
+                                MDP Changes
+                            </a>
+                            <a class="nav-link {% if request.endpoint == 'mentor_pods' %}active{% endif %}" href="{{ url_for('mentor_pods') }}">
+                                Mentor Pods
+                            </a>
+                            <a class="nav-link {% if request.endpoint == 'admin_member_commitments' %}active{% endif %}" href="{{ url_for('admin_member_commitments') }}">
+                                Member Commitments
+                            </a>
+                            <a class="nav-link {% if request.endpoint == 'checklist_completion' %}active{% endif %}" href="{{ url_for('checklist_completion') }}">
+                                Written Progress
+                            </a>
+                        {% elif current_user.role == 'officer' %}
+                            <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
+                            <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab', 'commitment') == 'commitment' %}active{% endif %}" href="{{ url_for('reports', tab='commitment') }}">Commitment Reports</a>
+                            <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}" href="{{ url_for('reports', tab='calendar') }}">Calendar</a>
+                            <a class="nav-link {% if request.endpoint == 'exam_uploads' %}active{% endif %}" href="{{ url_for('exam_uploads') }}">Exam Uploads</a>
+                        {% else %}
+                            <a class="nav-link {% if request.endpoint == 'my_commitments' %}active{% endif %}" href="{{ url_for('my_commitments') }}">My Commitments</a>
+                            <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
+                            <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
                         {% endif %}
                     </nav>
 

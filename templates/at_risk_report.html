@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}Mentee Risk Report{% endblock %}
+{% block content %}
+<style>
+  .summary-number { font-size: 1.9rem; font-weight: 700; line-height: 1; }
+  .reason-list { margin-bottom: 0; padding-left: 1.1rem; }
+  .report-table { font-size: .9rem; }
+  @media print {
+    @page { size: landscape; margin: 0.45in; }
+    .no-print, nav, footer { display: none !important; }
+    .container, .container-fluid { max-width: none !important; width: 100% !important; }
+    .card { box-shadow: none !important; }
+    .report-table { font-size: 8.5pt; }
+    .report-table th, .report-table td { padding: 4px !important; }
+    a { color: inherit !important; text-decoration: none !important; }
+  }
+</style>
+
+<div class="card page-header-card mb-4">
+  <div class="card-body p-4 d-flex flex-wrap gap-3 justify-content-between align-items-center">
+    <div>
+      <h2 class="mb-1">Overall Mentee Risk Report</h2>
+      <p class="lead mb-0">Generated {{ report_date.strftime('%B %d, %Y') }}</p>
+    </div>
+    <div class="d-flex gap-2 no-print">
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+      <button type="button" class="btn btn-primary" onclick="window.print()">Print Report</button>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">Members Reviewed</div>
+      <div class="summary-number">{{ summary.total_members }}</div>
+    </div></div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">At Risk</div>
+      <div class="summary-number text-danger">{{ summary.at_risk_count }}</div>
+    </div></div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">Needs Attention</div>
+      <div class="summary-number text-warning">{{ summary.needs_attention_count }}</div>
+    </div></div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">On Track</div>
+      <div class="summary-number text-success">{{ summary.on_track_count }}</div>
+    </div></div>
+  </div>
+  <div class="col-6 col-lg">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">Shown Below</div>
+      <div class="summary-number" id="reportShownCount">{{ summary.actionable_count }}</div>
+    </div></div>
+  </div>
+</div>
+
+<div class="alert alert-secondary small mb-4">
+  <strong>At Risk</strong> indicates an attendance threshold failure with recorded attendance, an overdue conference requirement, or an overdue written item.
+  <strong>Needs Attention</strong> indicates incomplete future conference/written work, or a recorded conference grade below 100%.
+  Members with no recorded attendance are not automatically marked at risk for a 0% rate.
+</div>
+
+<div class="card border-0 shadow-sm mb-4 no-print">
+  <div class="card-header bg-white border-bottom p-3 d-flex align-items-end gap-2 flex-wrap">
+    <div>
+      <label for="riskFilterTypeSelect" class="form-label small mb-1">Filter by:</label>
+      <select id="riskFilterTypeSelect" class="form-select form-select-sm w-auto" onchange="updateRiskFilterOptions()">
+        <option value="">All Reported Members</option>
+        <option value="status">Status</option>
+        <option value="event">Event</option>
+        <option value="grade">Conference Grade &lt; 100%</option>
+        <option value="attendance">Attendance Below Requirement</option>
+        <option value="mentor">Mentor</option>
+      </select>
+    </div>
+
+    <div id="riskFilterValueContainer" style="display:none;">
+      <label for="riskFilterValueSelect" class="form-label small mb-1">Select:</label>
+      <select id="riskFilterValueSelect" class="form-select form-select-sm w-auto" onchange="applyRiskFilters()">
+        <option value="">All</option>
+      </select>
+    </div>
+
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetRiskFilters()">Clear</button>
+  </div>
+</div>
+
+{% if rows %}
+<div class="card border-0 shadow-sm">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-bordered table-sm align-middle mb-0 report-table">
+        <thead class="table-light">
+          <tr>
+            <th>Member</th>
+            <th>Mentor</th>
+            <th>Event / Level</th>
+            <th>Status</th>
+            <th>Reasons</th>
+            <th>Attendance</th>
+            <th>VCMC Grade</th>
+            <th>SVCDC Grade</th>
+            <th>SCDC Grade</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="report-data-row {{ 'table-danger' if row.status == 'at_risk' else 'table-warning' }}"
+              data-status="{{ row.status }}"
+              data-events="{{ row.event_keys|join('|') }}"
+              data-mentor="{{ row.mentor_name }}"
+              data-grade-vcmc="{{ row.grades.get('VCMC') if row.grades.get('VCMC') is not none else '' }}"
+              data-grade-svcdc="{{ row.grades.get('SVCDC') if row.grades.get('SVCDC') is not none else '' }}"
+              data-grade-scdc="{{ row.grades.get('SCDC') if row.grades.get('SCDC') is not none else '' }}"
+              data-ah-below="{{ 'true' if row.attendance.ah_total > 0 and row.attendance.ah_rate < 80 else 'false' }}"
+              data-ws-below="{{ 'true' if row.attendance.ws_total > 0 and row.attendance.ws_rate < row.attendance.ws_threshold_pct else 'false' }}">
+            <td class="fw-semibold">{{ row.member.username }}</td>
+            <td>{{ row.mentor_name }}</td>
+            <td>
+              <div>{{ row.event }}</div>
+              <small class="text-muted">{{ 'Novice' if row.level == 'N' else 'Experienced' }}</small>
+            </td>
+            <td>
+              {% if row.status == 'at_risk' %}
+                <span class="badge bg-danger">At Risk</span>
+              {% else %}
+                <span class="badge bg-warning text-dark">Needs Attention</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.hard_risk_reasons %}
+                <div class="fw-semibold text-danger">Immediate:</div>
+                <ul class="reason-list">
+                  {% for reason in row.hard_risk_reasons %}<li>{{ reason }}</li>{% endfor %}
+                </ul>
+              {% endif %}
+              {% set future_reasons = [] %}
+              {% for reason in row.attention_reasons %}
+                {% if reason not in row.hard_risk_reasons %}
+                  {% set _ = future_reasons.append(reason) %}
+                {% endif %}
+              {% endfor %}
+              {% if future_reasons %}
+                <div class="fw-semibold mt-1">Incomplete:</div>
+                <ul class="reason-list">
+                  {% for reason in future_reasons %}<li>{{ reason }}</li>{% endfor %}
+                </ul>
+              {% endif %}
+            </td>
+            <td class="text-nowrap">
+              <div>AH: {{ row.attendance.ah_rate ~ '%' if row.attendance.ah_total > 0 else 'No data' }}</div>
+              <div>WS: {{ row.attendance.ws_rate ~ '%' if row.attendance.ws_total > 0 else 'No data' }}</div>
+            </td>
+            <td class="text-center">{{ row.grades.get('VCMC') or '—' }}</td>
+            <td class="text-center">{{ row.grades.get('SVCDC') or '—' }}</td>
+            <td class="text-center">{{ row.grades.get('SCDC') or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% else %}
+  <div class="alert alert-success">No members currently require attention under the report rules.</div>
+{% endif %}
+
+<div id="riskNoMatches" class="alert alert-info mt-3 no-print" style="display:none;">
+  No report rows match the selected filter.
+</div>
+
+<script>
+function getRiskReportRows() {
+  return Array.from(document.querySelectorAll('.report-data-row'));
+}
+
+function numericGradeBelow100(rawValue) {
+  const normalized = String(rawValue || '').replace('%', '').trim();
+  if (!normalized) return false;
+  const numericValue = Number.parseFloat(normalized);
+  return Number.isFinite(numericValue) && numericValue < 100;
+}
+
+function updateRiskFilterOptions() {
+  const filterType = document.getElementById('riskFilterTypeSelect').value;
+  const valueContainer = document.getElementById('riskFilterValueContainer');
+  const valueSelect = document.getElementById('riskFilterValueSelect');
+
+  valueSelect.innerHTML = '<option value="">All</option>';
+
+  if (!filterType) {
+    valueContainer.style.display = 'none';
+    applyRiskFilters();
+    return;
+  }
+
+  valueContainer.style.display = 'block';
+
+  let options = [];
+  if (filterType === 'status') {
+    options = [
+      ['at_risk', 'At Risk'],
+      ['needs_attention', 'Needs Attention']
+    ];
+  } else if (filterType === 'grade') {
+    options = [
+      ['any', 'Any Conference Grade < 100%'],
+      ['vcmc', 'VCMC Grade < 100%'],
+      ['svcdc', 'SVCDC Grade < 100%'],
+      ['scdc', 'SCDC Grade < 100%']
+    ];
+  } else if (filterType === 'attendance') {
+    options = [
+      ['any', 'AH or WS Below Requirement'],
+      ['ah', 'AH Below 80%'],
+      ['ws', 'WS Below Level Requirement']
+    ];
+  } else if (filterType === 'event') {
+    const values = new Set();
+    getRiskReportRows().forEach(row => {
+      String(row.dataset.events || '')
+        .split('|')
+        .filter(Boolean)
+        .forEach(value => values.add(value));
+    });
+    options = Array.from(values)
+      .sort((a, b) => a.localeCompare(b))
+      .map(value => [value, value]);
+  } else if (filterType === 'mentor') {
+    const values = new Set();
+    getRiskReportRows().forEach(row => {
+      const value = row.dataset.mentor || '';
+      if (value) values.add(value);
+    });
+    options = Array.from(values)
+      .sort((a, b) => a.localeCompare(b))
+      .map(value => [value, value]);
+  }
+
+  options.forEach(([value, label]) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    valueSelect.appendChild(option);
+  });
+}
+
+function rowMatchesRiskFilter(row, filterType, filterValue) {
+  if (!filterType || !filterValue) return true;
+
+  if (filterType === 'status') return row.dataset.status === filterValue;
+  if (filterType === 'event') return String(row.dataset.events || '').split('|').includes(filterValue);
+  if (filterType === 'mentor') return row.dataset.mentor === filterValue;
+
+  if (filterType === 'grade') {
+    const below = {
+      vcmc: numericGradeBelow100(row.dataset.gradeVcmc),
+      svcdc: numericGradeBelow100(row.dataset.gradeSvcdc),
+      scdc: numericGradeBelow100(row.dataset.gradeScdc)
+    };
+    return filterValue === 'any'
+      ? Object.values(below).some(Boolean)
+      : Boolean(below[filterValue]);
+  }
+
+  if (filterType === 'attendance') {
+    const ahBelow = row.dataset.ahBelow === 'true';
+    const wsBelow = row.dataset.wsBelow === 'true';
+    if (filterValue === 'any') return ahBelow || wsBelow;
+    if (filterValue === 'ah') return ahBelow;
+    if (filterValue === 'ws') return wsBelow;
+  }
+
+  return true;
+}
+
+function applyRiskFilters() {
+  const filterType = document.getElementById('riskFilterTypeSelect').value;
+  const filterValue = document.getElementById('riskFilterValueSelect').value;
+  let visibleCount = 0;
+
+  getRiskReportRows().forEach(row => {
+    const show = rowMatchesRiskFilter(row, filterType, filterValue);
+    row.style.display = show ? 'table-row' : 'none';
+    if (show) visibleCount += 1;
+  });
+
+  const shownCount = document.getElementById('reportShownCount');
+  if (shownCount) shownCount.textContent = visibleCount;
+
+  const noMatches = document.getElementById('riskNoMatches');
+  if (noMatches) noMatches.style.display = getRiskReportRows().length > 0 && visibleCount === 0 ? 'block' : 'none';
+}
+
+function resetRiskFilters() {
+  document.getElementById('riskFilterTypeSelect').value = '';
+  document.getElementById('riskFilterValueSelect').value = '';
+  document.getElementById('riskFilterValueContainer').style.display = 'none';
+  applyRiskFilters();
+}
+</script>
+{% endblock %}
