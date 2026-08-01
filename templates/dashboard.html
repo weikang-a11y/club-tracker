@@ -2,9 +2,16 @@
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <div class="card page-header-card mb-4">
-    <div class="card-body p-4">
-        <h2 class="mb-1">Welcome, {{ user.username }}!</h2>
-        <p class="lead mb-0">Role: <strong>{{ 'Officer' if user.role == 'officer' else 'Member' }}</strong></p>
+    <div class="card-body p-4 d-flex flex-wrap gap-3 justify-content-between align-items-center">
+        <div>
+            <h2 class="mb-1">Welcome, {{ user.username }}!</h2>
+            <p class="lead mb-0">Role: <strong>{{ 'Admin' if user.is_admin else ('Officer' if user.role == 'officer' else 'Member') }}</strong></p>
+        </div>
+        {% if user.is_admin %}
+        <a href="{{ url_for('at_risk_report') }}" class="btn btn-outline-danger">
+            <i class="bi bi-exclamation-triangle me-1"></i>Overall Risk Report
+        </a>
+        {% endif %}
     </div>
 </div>
 
@@ -14,122 +21,200 @@
   {% endfor %}
 {% endwith %}
 
-{% if user.role == 'officer' %}
+{% if user.is_admin or user.role == 'officer' %}
+{% set summary = namespace(at_risk=0, incomplete=0) %}
+{% for row in ah_ws_data %}
+    {% if row.at_risk %}{% set summary.at_risk = summary.at_risk + 1 %}{% endif %}
+    {% if row.below_commitments %}{% set summary.incomplete = summary.incomplete + 1 %}{% endif %}
+{% endfor %}
 
-    {# ── Summary cards ─────────────────────────────────────────── #}
-    <div class="row g-3 mb-4">
-        <div class="col-md-4">
-            <div class="card summary-card light-blue">
-                <div class="card-body">
-                    <div class="text-muted">Members in Pod</div>
-                    <div class="display-6">{{ ah_ws_data|length }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card summary-card light-blue">
-                <div class="card-body">
-                    <div class="text-muted">Workshops to Host</div>
-                    <div class="display-6">{{ assigned_workshops|length }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card summary-card {{ 'bg-danger text-white' if ah_ws_data|selectattr('at_risk')|list|length > 0 else 'light-blue' }}">
-                <div class="card-body">
-                    <div class="{{ 'text-white-50' if ah_ws_data|selectattr('at_risk')|list|length > 0 else 'text-muted' }}">At-Risk Members</div>
-                    <div class="display-6">{{ ah_ws_data|selectattr('at_risk')|list|length }}</div>
-                </div>
-            </div>
-        </div>
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card summary-card light-blue h-100"><div class="card-body">
+            <div class="text-muted">{{ dashboard_scope_label }}</div>
+            <div class="display-6">{{ ah_ws_data|length }}</div>
+        </div></div>
     </div>
+    <div class="col-md-4">
+        <div class="card summary-card {{ 'bg-danger text-white' if summary.at_risk else 'light-blue' }} h-100"><div class="card-body">
+            <div class="{{ 'text-white-50' if summary.at_risk else 'text-muted' }}">Attendance At-Risk</div>
+            <div class="display-6">{{ summary.at_risk }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-4">
+        <div class="card summary-card {{ 'bg-warning' if summary.incomplete else 'bg-success text-white' }} h-100"><div class="card-body">
+            <div class="{{ 'text-white-50' if not summary.incomplete else 'text-dark' }}">RP/WR/EX Remaining</div>
+            <div class="display-6">{{ summary.incomplete }}</div>
+        </div></div>
+    </div>
+</div>
 
-    {# ── AH / WS Attendance Table ──────────────────────────────── #}
-    {% if ah_ws_data %}
-    <div class="card mb-4 border-0 shadow-sm rounded-4">
-        <div class="card-header bg-white border-bottom p-4 d-flex justify-content-between align-items-center">
+<div class="card mb-4 border-0 shadow-sm rounded-4">
+    <div class="card-header bg-white border-bottom p-4 d-flex justify-content-between align-items-end flex-wrap gap-3">
+        <div>
+            <h4 class="mb-1">All-Hands &amp; Workshop Attendance</h4>
+            <p class="text-muted mb-0">
+                {% if user.is_admin %}All registered members are shown.{% else %}Only members assigned to your pod are shown.{% endif %}
+                AH threshold: 80%; WS threshold: 75% Novice / 25% Experienced.
+            </p>
+        </div>
+        <div class="d-flex align-items-end gap-2 flex-wrap">
             <div>
-                <h4 class="mb-1">All-Hands &amp; Workshop Attendance</h4>
-                <p class="text-muted mb-0">AH threshold: 80% for all members &nbsp;·&nbsp; WS threshold: 75% Novice / 25% Experienced</p>
+                <label for="ahWsFilterTypeSelect" class="form-label small mb-1">Filter by:</label>
+                <select id="ahWsFilterTypeSelect" class="form-select form-select-sm w-auto" onchange="updateAhWsFilterOptions()">
+                    <option value="">All Members</option>
+                    <option value="attendance">Attendance Status</option>
+                    <option value="commitment">RP/WR/EX Status</option>
+                    <option value="mentor">Mentor</option>
+                    <option value="level">Level</option>
+                    <option value="event">Event</option>
+                </select>
             </div>
-            {% set at_risk_count = ah_ws_data|selectattr('at_risk')|list|length %}
-            {% if at_risk_count > 0 %}
-                <span class="badge bg-danger fs-6">⚠ {{ at_risk_count }} At-Risk</span>
-            {% else %}
-                <span class="badge bg-success fs-6">✓ All On Track</span>
-            {% endif %}
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-hover table-sm mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Member</th>
-                            <th>Pod</th>
-                            <th>Level</th>
-                            <th>AH Attended</th>
-                            <th>AH Rate</th>
-                            <th>WS Attended</th>
-                            <th>WS Rate</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in ah_ws_data %}
-                        <tr class="{{ 'table-danger' if row.at_risk else '' }}">
-                            <td class="fw-semibold">{{ row.member.username }}</td>
-                            <td>{{ row.pod_number }}</td>
-                            <td>
-                                <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
-                                    {{ 'Novice' if row.level == 'N' else 'Experienced' }}
-                                </span>
-                            </td>
-                            <td>{{ row.ah_sum|int }} / {{ row.ah_total }}</td>
-                            <td>
-                                <div class="d-flex align-items-center gap-2">
-                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
-                                        <div class="progress-bar {{ 'bg-danger' if row.ah_rate < 80 else 'bg-success' }}"
-                                             style="width: {{ row.ah_rate }}%"></div>
-                                    </div>
-                                    <small class="text-nowrap">{{ row.ah_rate }}%</small>
-                                </div>
-                            </td>
-                            <td>{{ row.ws_sum|int }} / {{ row.ws_total }}</td>
-                            <td>
-                                <div class="d-flex align-items-center gap-2">
-                                    <div class="progress flex-grow-1" style="height:8px; min-width:60px;">
-                                        <div class="progress-bar {{ 'bg-danger' if row.ws_rate < row.ws_threshold_pct else 'bg-success' }}"
-                                             style="width: {{ row.ws_rate }}%"></div>
-                                    </div>
-                                    <small class="text-nowrap">{{ row.ws_rate }}%</small>
-                                </div>
-                            </td>
-                            <td>
-                                {% if row.at_risk %}
-                                    <span class="badge bg-danger" title="{{ row.risk_reasons|join(', ') }}">⚠ At-Risk</span>
-                                {% else %}
-                                    <span class="badge bg-success">✓ On Track</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% if row.at_risk %}
-                        <tr class="table-danger">
-                            <td colspan="8" class="ps-4 text-danger small py-1">
-                                <i class="bi bi-exclamation-circle me-1"></i>{{ row.risk_reasons|join(' · ') }}
-                            </td>
-                        </tr>
-                        {% endif %}
-                        {% endfor %}
-                    </tbody>
-                </table>
+            <div id="ahWsFilterValueContainer" style="display:none;">
+                <label for="ahWsFilterValueSelect" class="form-label small mb-1">Select:</label>
+                <select id="ahWsFilterValueSelect" class="form-select form-select-sm w-auto" onchange="applyAhWsFilters()">
+                    <option value="">All</option>
+                </select>
             </div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetAhWsFilters()">Clear</button>
         </div>
     </div>
-    {% endif %}
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0 align-middle" id="ahWsTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>Member</th>
+                        <th>Attendance</th>
+                        <th>RP/WR/EX</th>
+                        <th>Mentor</th>
+                        <th>Pod</th>
+                        <th>Level</th>
+                        <th>Event</th>
+                        <th>AH Present</th>
+                        <th>AH Excused</th>
+                        <th>AH Total</th>
+                        <th>WS Present</th>
+                        <th>WS Excused</th>
+                        <th>WS Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in ah_ws_data %}
+                    <tr class="{{ 'table-danger' if row.at_risk else ('table-warning' if row.below_commitments else '') }}"
+                        data-ahws-main-row="true"
+                        data-attendance="{{ 'at_risk' if row.at_risk else 'on_track' }}"
+                        data-commitment="{{ 'incomplete' if row.below_commitments else 'complete' }}"
+                        data-mentor="{{ row.mentor_name }}"
+                        data-level="{{ row.level }}"
+                        data-event="{{ row.event or '' }}">
+                        <td class="fw-semibold">{{ row.member.username }}</td>
+                        <td>
+                            {% if row.at_risk %}<span class="badge bg-danger">⚠ At Risk</span>
+                            {% else %}<span class="badge bg-success">✓ On Track</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if row.below_commitments %}<span class="badge bg-warning text-dark">Remaining</span>
+                            {% else %}<span class="badge bg-success">✓ Done</span>{% endif %}
+                        </td>
+                        <td>{{ row.mentor_name }}</td>
+                        <td>{{ row.pod_number if row.pod_number is not none else '—' }}</td>
+                        <td><span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">{{ 'Novice' if row.level == 'N' else 'Experienced' }}</span></td>
+                        <td>{{ row.event }}</td>
+                        <td>{{ row.ah_present }} <small class="text-muted">({{ row.ah_rate }}%)</small></td>
+                        <td>{{ row.ah_excused }}</td>
+                        <td>{{ row.ah_total }}</td>
+                        <td>{{ row.ws_present }} <small class="text-muted">({{ row.ws_rate }}%)</small></td>
+                        <td>{{ row.ws_excused }}</td>
+                        <td>{{ row.ws_total }}</td>
+                    </tr>
+                    {% if row.at_risk %}
+                    <tr class="table-danger" data-ahws-detail-row="true"><td colspan="13" class="small text-danger ps-4 py-1">{{ row.risk_reasons|join(' · ') }}</td></tr>
+                    {% endif %}
+                    {% else %}
+                    <tr><td colspan="13" class="text-muted text-center py-4">No members are available for this dashboard.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 
 
+<script>
+function getAhWsRowGroups() {
+    const table = document.getElementById('ahWsTable');
+    if (!table) return [];
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    const groups = [];
 
+    for (let i = 0; i < rows.length; i++) {
+        const mainRow = rows[i];
+        if (mainRow.hasAttribute('data-ahws-detail-row')) continue;
 
+        const detailRow = rows[i + 1] && rows[i + 1].hasAttribute('data-ahws-detail-row')
+            ? rows[i + 1]
+            : null;
+        groups.push({ mainRow, detailRow });
+        if (detailRow) i++;
+    }
+    return groups;
+}
+
+function updateAhWsFilterOptions() {
+    const filterType = document.getElementById('ahWsFilterTypeSelect').value;
+    const filterValueContainer = document.getElementById('ahWsFilterValueContainer');
+    const filterValueSelect = document.getElementById('ahWsFilterValueSelect');
+    filterValueSelect.innerHTML = '<option value="">All</option>';
+
+    if (!filterType) {
+        filterValueContainer.style.display = 'none';
+        applyAhWsFilters();
+        return;
+    }
+
+    filterValueContainer.style.display = 'block';
+    const values = new Set();
+    getAhWsRowGroups().forEach(group => {
+        const value = group.mainRow.dataset[filterType] || '';
+        if (value) values.add(value);
+    });
+
+    const valueMap = {
+        attendance: { on_track: 'On Track', at_risk: 'At Risk' },
+        commitment: { complete: 'Complete', incomplete: 'Remaining' },
+        level: { N: 'Novice', E: 'Experienced' },
+        mentor: {},
+        event: {}
+    };
+
+    Array.from(values).sort((a, b) => a.localeCompare(b)).forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = valueMap[filterType]?.[value] || value;
+        filterValueSelect.appendChild(option);
+    });
+}
+
+function applyAhWsFilters() {
+    const filterType = document.getElementById('ahWsFilterTypeSelect').value;
+    const filterValue = document.getElementById('ahWsFilterValueSelect').value;
+
+    getAhWsRowGroups().forEach(group => {
+        const show = !(filterType && filterValue)
+            || (group.mainRow.dataset[filterType] || '') === filterValue;
+        group.mainRow.style.display = show ? 'table-row' : 'none';
+        if (group.detailRow) group.detailRow.style.display = show ? 'table-row' : 'none';
+    });
+}
+
+function resetAhWsFilters() {
+    document.getElementById('ahWsFilterTypeSelect').value = '';
+    document.getElementById('ahWsFilterValueSelect').value = '';
+    document.getElementById('ahWsFilterValueContainer').style.display = 'none';
+    applyAhWsFilters();
+}
+</script>
 
 {% else %}
 {# ════════════════════════════════════════════════════════════

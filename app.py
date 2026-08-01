@@ -1,4 +1,11 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+try:
+    import truststore
+except ImportError:
+    truststore = None
+else:
+    truststore.inject_into_ssl()
+
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -10,18 +17,28 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
 from sqlalchemy.pool import NullPool
 from apscheduler.schedulers.background import BackgroundScheduler
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
+import hashlib
+import hmac
 import os
+import re
+import requests
+from collections import defaultdict
 
 load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
+
+# Set SECRET_KEY in .env in production. The fallback keeps existing local
+# friend2 installations bootable while they migrate their environment.
+app.config['SECRET_KEY'] = os.getenv(
+    'SECRET_KEY',
+    'super-secret-key-change-me-98765',
+)
 
 # Database config with Railway/Postgres support + local SQLite fallback
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -41,7 +58,9 @@ else:
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 FROM_EMAIL = os.getenv("FROM_EMAIL")
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+FROM_NAME = os.getenv("FROM_NAME", "DECA Tracker")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+BREVO_EMAIL_ENDPOINT = "https://api.brevo.com/v3/smtp/email"
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -95,6 +114,16 @@ CONFERENCE_DEADLINES = {
     "SCDC":  "2027-02-23",
 }
 
+# Competitive-event labels used by mentor-pod administration.
+EVENT_TABS = ['BOR', 'EIP', 'EFB', 'EIB', 'ESB', 'IBP', 'IMC', 'PM', 'PSE', 'NA']
+
+# Fallback catalog. Imported ChecklistRequirement rows drive Written Progress.
+CHECKLIST_ITEMS = {
+    "VCMC": ["Exec Summary", "Registration Form"],
+    "SVCDC": ["Exec Summary", "Written Statement", "Registration Form"],
+    "SCDC": ["Exec Summary", "Written Statement", "Registration Form", "Judge Sign-up"],
+}
+
 # Email that receives practice log completion notifications
 PRACTICE_LOG_EMAIL = os.getenv("PRACTICE_LOG_EMAIL", "mentorship@vchsdeca.org")
 
@@ -118,6 +147,7 @@ class User(UserMixin, db.Model):
     remind_minutes_before = db.Column(db.Integer, default=60)
     must_change_password = db.Column(db.Boolean, default=False)
     is_admin = db.Column(db.Boolean, default=False)
+    is_competing = db.Column(db.Boolean, default=True)
 
 class Commitment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -130,6 +160,7 @@ class Commitment(db.Model):
     remaining_written = db.Column(db.Integer, default=0)
     remaining_exam = db.Column(db.Integer, default=0)
     deadline = db.Column(db.Date)
+    grade = db.Column(db.String(10))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     user = db.relationship('User', backref='added_commitments')
 
@@ -214,6 +245,52 @@ class MentorPod(db.Model):
     year_in_deca = db.Column(db.String(20))
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
+    event = db.Column(db.String(20))
+
+
+class MentorPodEditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    action = db.Column(db.String(50), nullable=False)
+    details = db.Column(db.String(255))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    actor = db.relationship('User', foreign_keys=[actor_id])
+    member = db.relationship('User', foreign_keys=[member_id])
+
+
+class MDPAuditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    target_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    action = db.Column(db.String(50), nullable=False)
+    category = db.Column(db.String(50), nullable=False)
+    details = db.Column(db.String(255))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    actor = db.relationship('User', foreign_keys=[actor_id])
+    target_user = db.relationship('User', foreign_keys=[target_user_id])
+
+
+class ChecklistItem(db.Model):
+    """Per-member written-progress item."""
+    __tablename__ = 'checklist_item'
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'event', 'item_name', name='uq_checklist_item'),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    event = db.Column(db.String(20), nullable=False)
+    item_name = db.Column(db.String(50), nullable=False)
+    completed = db.Column(db.Boolean, default=False)
+    user = db.relationship('User', backref='checklist_items')
+
+
+class ChecklistRequirement(db.Model):
+    __tablename__ = 'checklist_requirement'
+    id = db.Column(db.Integer, primary_key=True)
+    event = db.Column(db.String(50), nullable=False)
+    item_name = db.Column(db.String(100), nullable=False)
+    deadline = db.Column(db.String(20))
 
 
 class PracticeSession(db.Model):
@@ -330,8 +407,31 @@ def ensure_commitments(member):
                 remaining_written=rule["written"],
                 remaining_exam=rule["exam"],
                 deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
+                user_id=member.id,
             )
             db.session.add(com)
+            created = True
+        else:
+            existing.user_id = member.id
+            existing.member_name = member.username
+            if existing.deadline is None:
+                existing.deadline = datetime.strptime(
+                    rule["deadline"], "%Y-%m-%d"
+                ).date()
+            # Some legacy/import-created rows contained 0/0/0 requirements.
+            # Repair only that empty state so legitimate completion data is preserved.
+            if (
+                existing.required_roleplay == 0
+                and existing.required_written == 0
+                and existing.required_exam == 0
+            ):
+                existing.required_roleplay = rule["roleplay"]
+                existing.required_written = rule["written"]
+                existing.required_exam = rule["exam"]
+                existing.remaining_roleplay = rule["roleplay"]
+                existing.remaining_written = rule["written"]
+                existing.remaining_exam = rule["exam"]
+            db.session.add(existing)
             created = True
     # Ensure annual ICPrep tracker exists
     if not AnnualICPrepTracker.query.filter_by(member_id=member.id).first():
@@ -366,44 +466,56 @@ def get_icprep_status(member):
 # ── Attendance helper ─────────────────────────────────────────────────────────
 
 def get_attendance_stats(user):
-    """Return AH rate, WS rate, and at-risk flag for a member."""
+    """Return detailed AH/WS attendance counts, rates, and risk status."""
     ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
     ws_records = WSAttendance.query.filter_by(user_id=user.id).all()
 
-    total_ah = len(ah_records)
-    total_ws = len(ws_records)
+    ah_present = sum(1 for row in ah_records if row.value == 1.0)
+    ah_excused = sum(1 for row in ah_records if row.value == 0.5)
+    ah_absent = sum(1 for row in ah_records if row.value == 0.0)
+    ws_present = sum(1 for row in ws_records if row.value == 1.0)
+    ws_excused = sum(1 for row in ws_records if row.value == 0.5)
+    ws_absent = sum(1 for row in ws_records if row.value == 0.0)
 
-    ah_sum = sum(r.value for r in ah_records)
-    ws_sum = sum(r.value for r in ws_records)
+    # Excused absences remain visible and count as scheduled sessions, but they
+    # are not counted as present in the attendance percentage.
+    ah_total = ah_present + ah_excused + ah_absent
+    ws_total = ws_present + ws_excused + ws_absent
+    ah_rate = round((ah_present / ah_total) * 100, 1) if ah_total else 0.0
+    ws_rate = round((ws_present / ws_total) * 100, 1) if ws_total else 0.0
 
-    ah_rate = round((ah_sum / total_ah) * 100, 1) if total_ah > 0 else 0.0
-    ws_rate = round((ws_sum / total_ws) * 100, 1) if total_ws > 0 else 0.0
-
-    # Get experience level from pod
     pod = MentorPod.query.filter_by(member_id=user.id).first()
-    level = pod.experience_level if pod else 'N'
+    level = pod.experience_level if pod and pod.experience_level else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
     ah_ok = ah_rate >= (AH_THRESHOLD * 100)
     ws_ok = ws_rate >= ws_threshold_pct
-
-    at_risk = not ah_ok or not ws_ok
     risk_reasons = []
     if not ah_ok:
-        risk_reasons.append(f"AH attendance {ah_rate}% < {AH_THRESHOLD*100:.0f}% required")
+        risk_reasons.append(
+            f"AH attendance {ah_rate}% < {AH_THRESHOLD * 100:.0f}% required"
+        )
     if not ws_ok:
-        risk_reasons.append(f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required")
+        risk_reasons.append(
+            f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required"
+        )
 
     return {
-        'ah_total': total_ah,
-        'ah_sum': ah_sum,
+        'ah_total': ah_total,
+        'ah_present': ah_present,
+        'ah_excused': ah_excused,
+        'ah_absent': ah_absent,
+        'ah_sum': ah_present,
         'ah_rate': ah_rate,
-        'ws_total': total_ws,
-        'ws_sum': ws_sum,
+        'ws_total': ws_total,
+        'ws_present': ws_present,
+        'ws_excused': ws_excused,
+        'ws_absent': ws_absent,
+        'ws_sum': ws_present,
         'ws_rate': ws_rate,
         'level': level,
         'ws_threshold_pct': ws_threshold_pct,
-        'at_risk': at_risk,
+        'at_risk': not ah_ok or not ws_ok,
         'risk_reasons': risk_reasons,
     }
 
@@ -412,7 +524,7 @@ def get_attendance_stats(user):
 class RegisterForm(FlaskForm):
     username = StringField('Username', [DataRequired(), Length(min=3)])
     password = PasswordField('Password', [DataRequired(), Length(min=6)])
-    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member')], default='')
+    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member'), ('admin', 'Admin')], default='')
     submit = SubmitField('Register')
 
     def validate_role(self, field):
@@ -424,14 +536,31 @@ class LoginForm(FlaskForm):
     password = PasswordField('Password', [DataRequired()])
     submit = SubmitField('Login')
 
-class ChangePasswordForm(FlaskForm):
-    new_password = PasswordField('New Password', [DataRequired(), Length(min=6)])
+class SetPasswordForm(FlaskForm):
+    new_password = PasswordField(
+        'New Password',
+        [DataRequired(), Length(min=8, max=128)],
+    )
     confirm_password = PasswordField('Confirm Password', [DataRequired()])
-    submit = SubmitField('Set Password')
+    submit = SubmitField('Save Password')
+
+    def validate_new_password(self, field):
+        password = field.data or ''
+        if not re.search(r'[A-Z]', password):
+            raise ValidationError('Include at least one uppercase letter.')
+        if not re.search(r'[a-z]', password):
+            raise ValidationError('Include at least one lowercase letter.')
+        if not re.search(r'\d', password):
+            raise ValidationError('Include at least one number.')
 
     def validate_confirm_password(self, field):
         if field.data != self.new_password.data:
             raise ValidationError('Passwords do not match.')
+
+
+class ForgotPasswordForm(FlaskForm):
+    email = StringField('Email', [DataRequired(), Length(max=120)])
+    submit = SubmitField('Send Reset Link')
 
 class CommitmentForm(FlaskForm):
     member_name = StringField('Member Name', [DataRequired()])
@@ -464,6 +593,23 @@ class WorkshopForm(FlaskForm):
     def validate_officer_id(self, field):
         if not field.data:
             raise ValidationError('Please select an officer.')
+
+
+class MentorPodForm(FlaskForm):
+    pod_number = IntegerField('Pod Number', validators=[DataRequired()])
+    member_id = SelectField('Member', coerce=int, validators=[DataRequired()])
+    mentor_id = SelectField('Mentor', coerce=int, validators=[DataRequired()])
+    experience_level = SelectField(
+        'Level', choices=[('N', 'Novice'), ('E', 'Experienced')]
+    )
+    event = StringField('Event', validators=[DataRequired(), Length(max=20)])
+    is_competing = SelectField(
+        'Competing',
+        choices=[('yes', 'Competing'), ('no', 'Non-Compete')],
+        default='yes',
+    )
+    submit = SubmitField('Save')
+
 
 # ── Schema migration ──────────────────────────────────────────────────────────
 
@@ -523,6 +669,22 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
+
+    if 'is_competing' not in user_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN is_competing BOOLEAN DEFAULT TRUE'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    mentor_pod_cols = {c['name'] for c in db.inspect(db.engine).get_columns('mentor_pod')}
+    if 'event' not in mentor_pod_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE mentor_pod ADD COLUMN event VARCHAR(20)'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
     commitment_cols = {c['name'] for c in db.inspect(db.engine).get_columns('commitment')}
 
     if 'event' not in commitment_cols:
@@ -531,6 +693,23 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    if 'grade' not in commitment_cols:
+        try:
+            db.session.execute(sql_text('ALTER TABLE commitment ADD COLUMN grade VARCHAR(10)'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    # Older friend2 rows were sometimes created without the member user_id.
+    # Normalize ownership from the stable member_name field.
+    for member in User.query.filter_by(role='member').all():
+        for commitment in Commitment.query.filter_by(member_name=member.username).all():
+            commitment.user_id = member.id
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
     # Backfill missing creator signups for existing workshops
     for ws in Workshop.query.all():
@@ -563,28 +742,37 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
-    # Migrate: fix existing commitment rows whose required counts don't match current matrix
+    # Repair only legacy commitment rows that contain no requirement data.
+    # Nonzero values may have come from the spreadsheet/database import and
+    # must not be overwritten by the default matrix on every startup.
     for member in User.query.filter_by(role='member').all():
         pod = MentorPod.query.filter_by(member_id=member.id).first()
-        level = pod.experience_level if pod else 'N'
+        level = pod.experience_level if pod and pod.experience_level else 'N'
         reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
         for conf, rule in reqs.items():
-            com = Commitment.query.filter_by(member_name=member.username, event=conf).first()
-            if com:
-                # Only update required counts; adjust remaining proportionally
-                old_req_rp = com.required_roleplay
-                old_req_ex = com.required_exam
-                old_req_wr = com.required_written
-                completed_rp = old_req_rp - com.remaining_roleplay
-                completed_ex = old_req_ex - com.remaining_exam
-                completed_wr = old_req_wr - com.remaining_written
-                com.required_roleplay = rule["roleplay"]
-                com.required_written  = rule["written"]
-                com.required_exam     = rule["exam"]
-                com.remaining_roleplay = max(0, rule["roleplay"] - completed_rp)
-                com.remaining_written  = max(0, rule["written"]  - completed_wr)
-                com.remaining_exam     = max(0, rule["exam"]     - completed_ex)
-                db.session.add(com)
+            commitment = Commitment.query.filter_by(
+                member_name=member.username,
+                event=conf,
+            ).first()
+            if not commitment:
+                continue
+            commitment.user_id = member.id
+            if commitment.deadline is None:
+                commitment.deadline = datetime.strptime(
+                    rule['deadline'], '%Y-%m-%d'
+                ).date()
+            if (
+                commitment.required_roleplay == 0
+                and commitment.required_written == 0
+                and commitment.required_exam == 0
+            ):
+                commitment.required_roleplay = rule['roleplay']
+                commitment.required_written = rule['written']
+                commitment.required_exam = rule['exam']
+                commitment.remaining_roleplay = rule['roleplay']
+                commitment.remaining_written = rule['written']
+                commitment.remaining_exam = rule['exam']
+            db.session.add(commitment)
     try:
         db.session.commit()
     except Exception:
@@ -631,17 +819,131 @@ def validate_workshop_slot(workshop_time, officer_id, exclude_workshop_id=None):
         return "This officer already has a workshop booked for that date and time slot. Please choose a different time or officer."
     return None
 
-def send_email(to_email, subject, html_content):
-    if not SENDGRID_API_KEY or not FROM_EMAIL or not to_email:
-        return False
+PASSWORD_RESET_SALT = 'password-reset-v2'
+PASSWORD_RESET_MAX_AGE_SECONDS = 3600
+
+
+def _password_fingerprint(user):
+    return hashlib.sha256(user.password.encode('utf-8')).hexdigest()
+
+
+def generate_reset_token(user):
+    serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+    payload = {
+        'user_id': user.id,
+        'password_fingerprint': _password_fingerprint(user),
+    }
+    return serializer.dumps(payload, salt=PASSWORD_RESET_SALT)
+
+
+def verify_reset_token(token, expiration=PASSWORD_RESET_MAX_AGE_SECONDS):
+    serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
     try:
-        message = Mail(from_email=FROM_EMAIL, to_emails=to_email, subject=subject, html_content=html_content)
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
-        response = sg.send(message)
-        return True
-    except Exception as e:
-        print("SEND_EMAIL error:", e)
+        payload = serializer.loads(
+            token,
+            salt=PASSWORD_RESET_SALT,
+            max_age=expiration,
+        )
+    except (SignatureExpired, BadSignature, TypeError, ValueError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    user_id = payload.get('user_id')
+    expected_fingerprint = payload.get('password_fingerprint')
+    if not user_id or not expected_fingerprint:
+        return None
+
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return None
+
+    if not hmac.compare_digest(
+        expected_fingerprint,
+        _password_fingerprint(user),
+    ):
+        return None
+
+    return user
+
+
+def send_email(to_email, subject, html_content):
+    if not BREVO_API_KEY:
+        app.logger.error('Email not sent: BREVO_API_KEY is missing.')
         return False
+    if not FROM_EMAIL:
+        app.logger.error('Email not sent: FROM_EMAIL is missing.')
+        return False
+    if not to_email:
+        app.logger.error('Email not sent: recipient email is missing.')
+        return False
+
+    payload = {
+        'sender': {'name': FROM_NAME, 'email': FROM_EMAIL},
+        'to': [{'email': to_email}],
+        'subject': subject,
+        'htmlContent': html_content,
+    }
+    headers = {
+        'accept': 'application/json',
+        'api-key': BREVO_API_KEY,
+        'content-type': 'application/json',
+    }
+
+    try:
+        response = requests.post(
+            BREVO_EMAIL_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=20,
+        )
+    except requests.RequestException:
+        app.logger.exception(
+            'Brevo request failed while sending email to %s.',
+            to_email,
+        )
+        return False
+
+    if response.status_code == 201:
+        try:
+            message_id = response.json().get('messageId', 'unknown')
+        except ValueError:
+            message_id = 'unknown'
+        app.logger.info(
+            'Brevo accepted email for %s; message id=%s.',
+            to_email,
+            message_id,
+        )
+        return True
+
+    app.logger.error(
+        'Brevo rejected email for %s: HTTP %s: %s',
+        to_email,
+        response.status_code,
+        response.text[:1000],
+    )
+    return False
+
+
+def send_password_reset_email(user):
+    if not user.email:
+        return False
+
+    token = generate_reset_token(user)
+    reset_url = url_for('reset_password', token=token, _external=True)
+    html_content = f'''
+        <p>A password reset was requested for your account.</p>
+        <p><a href="{reset_url}">Reset your password</a></p>
+        <p>This link expires in 1 hour and stops working after the password changes.</p>
+        <p>If you did not request this, you can ignore this email.</p>
+    '''
+    return send_email(user.email, 'Reset your password', html_content)
 
 def send_email_reminder(user, workshop):
     local_time_str = utc_to_local(workshop.time).strftime('%Y-%m-%d %I:%M %p')
@@ -686,6 +988,299 @@ def process_workshop_reminders():
             db.session.rollback()
             raise
 
+
+
+def get_mentor_name(user):
+    pod = MentorPod.query.filter_by(member_id=user.id).first()
+    return pod.mentor.username if pod and pod.mentor else 'Unassigned'
+
+
+def log_pod_edit(actor_id, member_id, action, details=""):
+    return MentorPodEditLog(
+        actor_id=actor_id,
+        member_id=member_id,
+        action=action,
+        details=details,
+    )
+
+
+def log_mdp_action(actor_id, action, category, target_user_id=None, details=""):
+    db.session.add(MDPAuditLog(
+        actor_id=actor_id,
+        target_user_id=target_user_id,
+        action=action,
+        category=category,
+        details=details,
+    ))
+
+
+def get_commitment_status(user):
+    commitments = Commitment.query.filter_by(user_id=user.id).all()
+    if not commitments:
+        return 'on_track'
+    today = datetime.now(LOCAL_TZ).date()
+    for commitment in commitments:
+        remaining = (
+            commitment.remaining_roleplay
+            + commitment.remaining_written
+            + commitment.remaining_exam
+        )
+        if remaining > 0 and commitment.deadline and commitment.deadline < today:
+            return 'at_risk'
+    return 'on_track'
+
+
+def get_commitments_incomplete(user):
+    commitments = Commitment.query.filter_by(user_id=user.id).all()
+    return any(
+        (row.remaining_roleplay + row.remaining_written + row.remaining_exam) > 0
+        for row in commitments
+    ) if commitments else False
+
+
+def _members_visible_to_current_user():
+    if current_user.is_admin:
+        return User.query.filter_by(role='member').order_by(User.username).all()
+    pod_member_ids = [
+        row.member_id
+        for row in MentorPod.query.filter_by(mentor_id=current_user.id).all()
+    ]
+    if not pod_member_ids:
+        return []
+    return User.query.filter(User.id.in_(pod_member_ids)).order_by(User.username).all()
+
+
+def _numeric_grade_below_100(value):
+    if value is None:
+        return False
+    normalized = str(value).replace('%', '').strip()
+    if not normalized:
+        return False
+    try:
+        return float(normalized) < 100
+    except ValueError:
+        return False
+
+
+def _written_academic_start_year(today=None):
+    today = today or datetime.now(LOCAL_TZ).date()
+    configured = os.getenv('WRITTEN_ACADEMIC_START_YEAR', '').strip()
+    if configured:
+        try:
+            year = int(configured)
+        except ValueError as exc:
+            raise RuntimeError(
+                'WRITTEN_ACADEMIC_START_YEAR must be a four-digit year, for example 2025.'
+            ) from exc
+        if year < 2000 or year > 2100:
+            raise RuntimeError('WRITTEN_ACADEMIC_START_YEAR must be between 2000 and 2100.')
+        return year
+    return today.year if today.month >= 7 else today.year - 1
+
+
+def _parse_written_deadline(value, today=None):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if hasattr(value, 'year') and hasattr(value, 'month') and hasattr(value, 'day'):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%b %d, %Y', '%B %d, %Y'):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    match = re.search(r'(?<!\d)(\d{1,2})/(\d{1,2})(?!/\d)', raw)
+    if not match:
+        return None
+    month, day = int(match.group(1)), int(match.group(2))
+    today = today or datetime.now(LOCAL_TZ).date()
+    start_year = _written_academic_start_year(today=today)
+    year = start_year if month >= 7 else start_year + 1
+    try:
+        return datetime(year, month, day).date()
+    except ValueError:
+        return None
+
+
+def _written_status(item_names, completed_by_item, deadlines_by_item, today=None):
+    today = today or datetime.now(LOCAL_TZ).date()
+    missing_items = []
+    overdue_items = []
+    for item_name in item_names:
+        if completed_by_item.get(item_name, False):
+            continue
+        deadline_text = deadlines_by_item.get(item_name)
+        deadline_date = _parse_written_deadline(deadline_text, today=today)
+        item = {
+            'name': item_name,
+            'deadline_text': deadline_text,
+            'deadline_date': deadline_date,
+        }
+        missing_items.append(item)
+        if deadline_date and deadline_date < today:
+            overdue_items.append(item)
+    if overdue_items:
+        status, label = 'overdue', 'Overdue'
+    elif missing_items:
+        status, label = 'needs_attention', 'Needs Attention'
+    else:
+        status, label = 'complete', 'Complete'
+    return {
+        'status': status,
+        'status_label': label,
+        'missing_items': missing_items,
+        'overdue_items': overdue_items,
+        'complete': not missing_items,
+        'deadline_safe': not overdue_items,
+    }
+
+
+def get_written_checklist_catalog():
+    requirements = ChecklistRequirement.query.order_by(ChecklistRequirement.id).all()
+    event_items = defaultdict(list)
+    event_deadlines = defaultdict(dict)
+    for requirement in requirements:
+        event = (requirement.event or '').strip()
+        item_name = (requirement.item_name or '').strip()
+        deadline = (requirement.deadline or '').strip() if requirement.deadline else None
+        if not event or not item_name:
+            continue
+        if item_name not in event_items[event]:
+            event_items[event].append(item_name)
+        if deadline:
+            event_deadlines[event][item_name] = deadline
+    return dict(event_items), dict(event_deadlines)
+
+
+def _conference_summary_for_user(user, today=None):
+    today = today or datetime.now(LOCAL_TZ).date()
+    commitments = Commitment.query.filter_by(user_id=user.id).all()
+    if not commitments:
+        commitments = Commitment.query.filter_by(member_name=user.username).all()
+    commitments_by_event = {row.event: row for row in commitments}
+    grades = {}
+    incomplete_reasons = []
+    overdue_reasons = []
+    low_grade_reasons = []
+    conferences = {}
+    for conference in CONFERENCE_ORDER:
+        commitment = commitments_by_event.get(conference)
+        if not commitment:
+            grades[conference] = None
+            conferences[conference] = None
+            continue
+        grades[conference] = commitment.grade
+        missing_parts = []
+        if commitment.remaining_roleplay:
+            missing_parts.append(f'{commitment.remaining_roleplay} roleplay')
+        if commitment.remaining_written:
+            missing_parts.append(f'{commitment.remaining_written} written')
+        if commitment.remaining_exam:
+            missing_parts.append(f'{commitment.remaining_exam} exam')
+        description = f"{conference}: " + ', '.join(missing_parts) if missing_parts else None
+        if description:
+            incomplete_reasons.append(description)
+            if commitment.deadline and commitment.deadline < today:
+                overdue_reasons.append(description)
+        if _numeric_grade_below_100(commitment.grade):
+            low_grade_reasons.append(f'{conference} grade is {commitment.grade} (below 100%)')
+        conferences[conference] = {
+            'grade': commitment.grade,
+            'deadline': commitment.deadline,
+            'complete': not missing_parts,
+            'remaining_roleplay': commitment.remaining_roleplay,
+            'remaining_written': commitment.remaining_written,
+            'remaining_exam': commitment.remaining_exam,
+        }
+    return {
+        'grades': grades,
+        'conferences': conferences,
+        'incomplete_reasons': incomplete_reasons,
+        'overdue_reasons': overdue_reasons,
+        'low_grade_reasons': low_grade_reasons,
+    }
+
+
+def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
+    today = today or datetime.now(LOCAL_TZ).date()
+    rows = []
+    for member in members:
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        event = (pod.event or '').strip() if pod else ''
+        level = pod.experience_level if pod else 'N'
+        attendance = get_attendance_stats(member)
+        attendance_reasons = []
+        if attendance['ah_total'] > 0 and attendance['ah_rate'] < AH_THRESHOLD * 100:
+            attendance_reasons.append(
+                f"AH attendance {attendance['ah_rate']}% (requires {AH_THRESHOLD * 100:.0f}%)"
+            )
+        if attendance['ws_total'] > 0 and attendance['ws_rate'] < attendance['ws_threshold_pct']:
+            attendance_reasons.append(
+                f"WS attendance {attendance['ws_rate']}% (requires {attendance['ws_threshold_pct']:.0f}%)"
+            )
+        conference = _conference_summary_for_user(member, today=today)
+        item_names = event_items.get(event, [])
+        completed = {
+            item.item_name: bool(item.completed)
+            for item in ChecklistItem.query.filter_by(user_id=member.id, event=event).all()
+        }
+        written = _written_status(
+            item_names,
+            completed,
+            event_deadlines.get(event, {}),
+            today=today,
+        ) if item_names else {
+            'status': 'not_tracked',
+            'status_label': 'Not Tracked',
+            'missing_items': [],
+            'overdue_items': [],
+            'complete': True,
+            'deadline_safe': True,
+        }
+        overdue_written_names = {item['name'] for item in written['overdue_items']}
+        hard_risk_reasons = list(attendance_reasons) + list(conference['overdue_reasons'])
+        hard_risk_reasons.extend(
+            'Written overdue: ' + item['name']
+            + (f" ({item['deadline_text']})" if item['deadline_text'] else '')
+            for item in written['overdue_items']
+        )
+        attention_reasons = list(conference['incomplete_reasons'])
+        attention_reasons.extend(conference['low_grade_reasons'])
+        attention_reasons.extend(
+            'Written incomplete: ' + item['name']
+            + (f" ({item['deadline_text']})" if item['deadline_text'] else '')
+            for item in written['missing_items']
+            if item['name'] not in overdue_written_names
+        )
+        if hard_risk_reasons:
+            status, status_label = 'at_risk', 'At Risk'
+        elif attention_reasons:
+            status, status_label = 'needs_attention', 'Needs Attention'
+        else:
+            status, status_label = 'on_track', 'On Track'
+        event_label = event or 'Unassigned'
+        rows.append({
+            'member': member,
+            'mentor_name': get_mentor_name(member),
+            'event': event_label,
+            'event_keys': [event_label],
+            'level': level,
+            'status': status,
+            'status_label': status_label,
+            'hard_risk_reasons': hard_risk_reasons,
+            'attention_reasons': attention_reasons,
+            'attendance': attendance,
+            'grades': conference['grades'],
+            'conference': conference,
+            'written': written,
+        })
+    return rows
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -699,118 +1294,172 @@ def dashboard():
     workshops = []
     created_workshops = []
     attendance_locked_ids = set()
-    ah_ws_data = []      # NEW: AH/WS attendance per member for officer view
-    member_stats = None  # NEW: AH/WS stats for member's own view
+    ah_ws_data = []
+    member_stats = None
+    all_commitments = []
+    dashboard_scope_label = 'Members in Pod'
+    visible_members = []
 
-    if current_user.role == 'officer':
-        commitments = Commitment.query.filter_by(user_id=current_user.id).order_by(Commitment.deadline).all()
-        assigned_workshops = Workshop.query.filter_by(officer_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+    if current_user.is_admin:
+        # Admin is a distinct dashboard scope. Show every member, not only
+        # members assigned to the admin's underlying officer account.
+        dashboard_scope_label = 'All Members'
+        visible_members = User.query.filter_by(role='member').order_by(User.username).all()
+
+    elif current_user.role == 'officer':
+        assigned_workshops = Workshop.query.filter_by(
+            officer_id=current_user.id
+        ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
         workshops = assigned_workshops
-        attendance_locked_ids = {row.workshop_id for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()}
+        attendance_locked_ids = {
+            row.workshop_id
+            for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()
+        }
 
-        # Build member list from pod assignments
-        pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
-        pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
-        pod_member_users = [u for u in pod_member_users if u]
+        pod_rows = MentorPod.query.filter_by(mentor_id=current_user.id).all()
+        visible_members = [db.session.get(User, row.member_id) for row in pod_rows]
+        visible_members = [member for member in visible_members if member]
 
-        # Fall back to commitment-based member names if no pod assignments
-        if not pod_member_users:
-            member_names = {c.member_name for c in commitments}
-            for ws in assigned_workshops:
-                for member in ws.signups:
-                    member_names.add(member.username)
-            pod_member_users = [User.query.filter_by(username=n).first() for n in sorted(member_names)]
-            pod_member_users = [u for u in pod_member_users if u]
+        # Preserve friend2's fallback for officers whose pod rows have not yet
+        # been imported but who already have workshop signups.
+        if not visible_members:
+            member_ids = set()
+            for workshop in assigned_workshops:
+                member_ids.update(member.id for member in workshop.signups)
+            visible_members = [db.session.get(User, user_id) for user_id in member_ids]
+            visible_members = [member for member in visible_members if member]
 
-        # Workshop attendance (existing logic)
-        for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
-            actual_attended = db.session.query(workshop_signups).filter_by(user_id=member.id, attended=True).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
-            ga = GeneralAttendance.query.filter_by(officer_id=current_user.id, member_name=member.username).first()
-            manual_count = ga.manual_count if ga else 0
-            total_attended = actual_attended + manual_count
+        for member in sorted(visible_members, key=lambda row: row.username.lower()):
+            actual_attended = db.session.query(workshop_signups).filter_by(
+                user_id=member.id,
+                attended=True,
+            ).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
+            general = GeneralAttendance.query.filter_by(
+                officer_id=current_user.id,
+                member_name=member.username,
+            ).first()
+            manual_count = general.manual_count if general else 0
             workshop_attendance_data.append({
                 'member_name': member.username,
-                'total_attended': total_attended,
+                'total_attended': actual_attended + manual_count,
                 'manual_count': manual_count,
-                'actual_attended': actual_attended
-            })
-
-        # NEW: AH/WS attendance stats per pod member
-        for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
-            stats = get_attendance_stats(member)
-            pod = MentorPod.query.filter_by(member_id=member.id).first()
-            ah_ws_data.append({
-                'member': member,
-                'pod_number': pod.pod_number if pod else '?',
-                'level': stats['level'],
-                'ah_rate': stats['ah_rate'],
-                'ah_sum': stats['ah_sum'],
-                'ah_total': stats['ah_total'],
-                'ws_rate': stats['ws_rate'],
-                'ws_sum': stats['ws_sum'],
-                'ws_total': stats['ws_total'],
-                'ws_threshold_pct': stats['ws_threshold_pct'],
-                'at_risk': stats['at_risk'],
-                'risk_reasons': stats['risk_reasons'],
+                'actual_attended': actual_attended,
             })
 
     else:
-        # Use the active conference commitment only
+        # Member dashboard.
         active_conf = get_active_conference()
         ensure_commitments(current_user)
         commitments = Commitment.query.filter_by(
-            member_name=current_user.username, event=active_conf).all()
-        all_commitments = Commitment.query.filter_by(member_name=current_user.username).order_by(Commitment.deadline).all()
-        workshops = current_user.workshops.options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
-        created_workshops = []
+            member_name=current_user.username,
+            event=active_conf,
+        ).all()
+        all_commitments = Commitment.query.filter_by(
+            member_name=current_user.username
+        ).order_by(Commitment.deadline).all()
+        workshops = current_user.workshops.options(
+            joinedload(Workshop.officer),
+            joinedload(Workshop.creator),
+        ).order_by(Workshop.time).all()
 
         if commitments:
-            c = commitments[0]
+            commitment = commitments[0]
             progress_summary = {
-                'roleplay': f"{c.required_roleplay - c.remaining_roleplay}/{c.required_roleplay}",
-                'written': f"{c.required_written - c.remaining_written}/{c.required_written}",
-                'exam': f"{c.required_exam - c.remaining_exam}/{c.required_exam}",
-                'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A',
-                'event': c.event
+                'roleplay': (
+                    f"{commitment.required_roleplay - commitment.remaining_roleplay}/"
+                    f"{commitment.required_roleplay}"
+                ),
+                'written': (
+                    f"{commitment.required_written - commitment.remaining_written}/"
+                    f"{commitment.required_written}"
+                ),
+                'exam': (
+                    f"{commitment.required_exam - commitment.remaining_exam}/"
+                    f"{commitment.required_exam}"
+                ),
+                'deadline': (
+                    commitment.deadline.strftime('%Y-%m-%d')
+                    if commitment.deadline else 'N/A'
+                ),
+                'event': commitment.event,
             }
 
-        # Workshop attendance summary (kept for AH/WS section)
         pod = MentorPod.query.filter_by(member_id=current_user.id).first()
         officer_id = pod.mentor_id if pod else None
         actual_attended = 0
         manual_count = 0
         if officer_id:
-            actual_attended = db.session.query(workshop_signups).filter_by(user_id=current_user.id, attended=True).join(Workshop).filter(Workshop.officer_id == officer_id).count()
-            ga = GeneralAttendance.query.filter_by(officer_id=officer_id, member_name=current_user.username).first()
-            manual_count = ga.manual_count if ga else 0
+            actual_attended = db.session.query(workshop_signups).filter_by(
+                user_id=current_user.id,
+                attended=True,
+            ).join(Workshop).filter(Workshop.officer_id == officer_id).count()
+            general = GeneralAttendance.query.filter_by(
+                officer_id=officer_id,
+                member_name=current_user.username,
+            ).first()
+            manual_count = general.manual_count if general else 0
         total_attended = actual_attended + manual_count
-        total_signed = len(current_user.workshops.all())
         attendance_summary = {
-            'signed': total_signed,
+            'signed': len(current_user.workshops.all()),
             'attended': total_attended,
-            'rate': round((total_attended / 18 * 100) if 18 > 0 else 0.0, 1)
+            'rate': round((total_attended / 18) * 100, 1),
         }
-
-        # AH/WS stats for member's own dashboard
         member_stats = get_attendance_stats(current_user)
 
-    for ws in workshops:
-        ws.end_time = ws.time + timedelta(minutes=20)
-    for ws in created_workshops:
-        ws.end_time = ws.time + timedelta(minutes=20)
+    # Admins see every member; officers see their pod/fallback members.
+    if current_user.is_admin or current_user.role == 'officer':
+        for member in sorted(visible_members, key=lambda row: row.username.lower()):
+            ensure_commitments(member)
+            stats = get_attendance_stats(member)
+            pod = MentorPod.query.filter_by(member_id=member.id).first()
+            ah_ws_data.append({
+                'member': member,
+                'pod_number': pod.pod_number if pod else None,
+                'mentor_name': (
+                    pod.mentor.username if pod and pod.mentor else 'Unassigned'
+                ),
+                'event': pod.event if pod and pod.event else 'Unassigned',
+                'level': stats['level'],
+                'ah_rate': stats['ah_rate'],
+                'ah_present': stats['ah_present'],
+                'ah_excused': stats['ah_excused'],
+                'ah_absent': stats['ah_absent'],
+                'ah_sum': stats['ah_sum'],
+                'ah_total': stats['ah_total'],
+                'ws_rate': stats['ws_rate'],
+                'ws_present': stats['ws_present'],
+                'ws_excused': stats['ws_excused'],
+                'ws_absent': stats['ws_absent'],
+                'ws_sum': stats['ws_sum'],
+                'ws_total': stats['ws_total'],
+                'ws_threshold_pct': stats['ws_threshold_pct'],
+                'at_risk': stats['at_risk'],
+                'risk_reasons': stats['risk_reasons'],
+                'below_commitments': get_commitments_incomplete(member),
+            })
 
-    my_signups = current_user.workshops.all() if current_user.role == 'member' else []
-    mentees_workshops = {}
-    if current_user.role == 'officer':
-        mentee_names = {c.member_name for c in commitments}
-        for name in mentee_names:
-            member = User.query.filter_by(username=name).first()
-            mentees_workshops[name] = member.workshops.order_by(Workshop.time).all() if member else []
+    for workshop in workshops:
+        workshop.end_time = workshop.time + timedelta(minutes=20)
+    for workshop in created_workshops:
+        workshop.end_time = workshop.time + timedelta(minutes=20)
 
-    signed_times = [(w.time, w.time + timedelta(minutes=20)) for w in my_signups] if current_user.role == 'member' else []
+    my_signups = (
+        current_user.workshops.all()
+        if current_user.role == 'member' and not current_user.is_admin
+        else []
+    )
+    signed_times = [
+        (workshop.time, workshop.time + timedelta(minutes=20))
+        for workshop in my_signups
+    ]
+    active_conf = (
+        get_active_conference()
+        if current_user.role == 'member' and not current_user.is_admin
+        else None
+    )
 
-    active_conf = get_active_conference() if current_user.role == 'member' else None
-    return render_template('dashboard.html',
+    return render_template(
+        'dashboard.html',
         commitments=commitments,
         progress_summary=progress_summary,
         attendance_summary=attendance_summary,
@@ -818,7 +1467,7 @@ def dashboard():
         workshop_attendance_data=workshop_attendance_data,
         workshops=workshops,
         my_signups=my_signups,
-        mentees_workshops=mentees_workshops,
+        mentees_workshops={},
         signed_times=signed_times,
         user=current_user,
         created_workshops=created_workshops,
@@ -826,8 +1475,9 @@ def dashboard():
         ah_ws_data=ah_ws_data,
         member_stats=member_stats,
         active_conf=active_conf,
-        all_commitments=all_commitments if current_user.role == 'member' else [],
+        all_commitments=all_commitments,
         conference_order=CONFERENCE_ORDER,
+        dashboard_scope_label=dashboard_scope_label,
     )
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -841,7 +1491,13 @@ def register():
             flash('This username is already in use. Please choose a different username.', 'warning')
             return render_template('register.html', form=form)
         hashed_pw = generate_password_hash(form.password.data)
-        user = User(username=form.username.data.strip(), password=hashed_pw, role=form.role.data)
+        selected_role = form.role.data
+        user = User(
+            username=form.username.data.strip(),
+            password=hashed_pw,
+            role='officer' if selected_role == 'admin' else selected_role,
+            is_admin=(selected_role == 'admin'),
+        )
         db.session.add(user)
         db.session.commit()
         flash('Registration successful. Please sign in.', 'success')
@@ -869,14 +1525,74 @@ def login():
 @app.route('/change-password', methods=['GET', 'POST'])
 @login_required
 def change_password():
-    form = ChangePasswordForm()
+    form = SetPasswordForm()
     if form.validate_on_submit():
         current_user.password = generate_password_hash(form.new_password.data)
         current_user.must_change_password = False
         db.session.commit()
-        flash('Password updated successfully. Welcome!', 'success')
+        flash('Your password has been updated.', 'success')
         return redirect(url_for('dashboard'))
-    return render_template('change_password.html', form=form)
+    return render_template(
+        'set_password.html',
+        form=form,
+        page_title='Change Password',
+        page_description='Choose a new password for your account.',
+        submit_label='Change Password',
+        show_login_link=False,
+    )
+
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+
+    form = ForgotPasswordForm()
+    if form.validate_on_submit():
+        email = form.email.data.strip().lower()
+        user = User.query.filter(db.func.lower(User.email) == email).first()
+
+        # Deliberately use the same response whether or not an account exists.
+        if user and not send_password_reset_email(user):
+            app.logger.error('Reset email failed for user id %s.', user.id)
+
+        flash(
+            'If an account matches that email, a reset link has been sent.',
+            'info',
+        )
+        return redirect(url_for('forgot_password'))
+
+    return render_template('forgot_password.html', form=form)
+
+
+@app.route('/reset-password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    user = verify_reset_token(token)
+    if not user:
+        flash('This password reset link is invalid or has expired.', 'danger')
+        return redirect(url_for('forgot_password'))
+
+    form = SetPasswordForm()
+    if form.validate_on_submit():
+        user.password = generate_password_hash(form.new_password.data)
+        user.must_change_password = False
+        db.session.commit()
+
+        if current_user.is_authenticated:
+            logout_user()
+
+        flash('Your password has been reset. You can now sign in.', 'success')
+        return redirect(url_for('login'))
+
+    return render_template(
+        'set_password.html',
+        form=form,
+        page_title='Reset Password',
+        page_description=f'Choose a new password for {user.username}.',
+        submit_label='Reset Password',
+        show_login_link=True,
+    )
+
 
 @app.route('/logout')
 @login_required
@@ -887,8 +1603,8 @@ def logout():
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
-    if current_user.role != 'member':
-        flash('Only members can access settings.', 'danger')
+    if current_user.role != 'member' and not current_user.is_admin:
+        flash('Only members and admins can access settings.', 'danger')
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
         current_user.email = request.form.get('email', '').strip() or None
@@ -1102,15 +1818,15 @@ def increment_general_attendance():
 
 @app.route('/my_commitments')
 @login_required
-def member_commitments():
-    if current_user.role != 'member':
+def my_commitments():
+    if current_user.is_admin or current_user.role != 'member':
         return redirect(url_for('dashboard'))
     ensure_commitments(current_user)
     active_conf = get_active_conference()
     all_commitments = Commitment.query.filter_by(member_name=current_user.username).all()
     all_commitments_map = {com.event: com for com in all_commitments}
     icprep_status = get_icprep_status(current_user)
-    return render_template('member_commitments.html',
+    return render_template('my_commitments.html',
         all_commitments_map=all_commitments_map,
         conference_order=CONFERENCE_ORDER,
         active_conf=active_conf,
@@ -1124,6 +1840,9 @@ def member_commitments():
 @login_required
 def practice_sessions():
     """Officer: post and manage practice slots. Member: view and sign up."""
+    if current_user.is_admin:
+        flash('Practice Sessions are available to officers and members, not admins.', 'info')
+        return redirect(url_for('dashboard'))
     if current_user.role == 'officer':
         # POST: create a new practice session slot
         if request.method == 'POST':
@@ -1627,6 +2346,39 @@ def review_exam_upload(upload_id):
     return redirect(url_for('exam_uploads'))
 
 
+
+
+@app.route('/at-risk-report')
+@login_required
+def at_risk_report():
+    if not current_user.is_admin:
+        flash('Only admins can view the Overall Risk Report.', 'danger')
+        return redirect(url_for('dashboard'))
+    members = _members_visible_to_current_user()
+    event_items, event_deadlines = get_written_checklist_catalog()
+    today = datetime.now(LOCAL_TZ).date()
+    all_rows = build_mentee_risk_report(
+        members, event_items, event_deadlines, today=today
+    )
+    report_rows = [row for row in all_rows if row['status'] != 'on_track']
+    report_rows.sort(key=lambda row: (
+        0 if row['status'] == 'at_risk' else 1,
+        row['mentor_name'].lower(),
+        row['member'].username.lower(),
+    ))
+    summary = {
+        'total_members': len(all_rows),
+        'at_risk_count': sum(row['status'] == 'at_risk' for row in all_rows),
+        'needs_attention_count': sum(row['status'] == 'needs_attention' for row in all_rows),
+        'on_track_count': sum(row['status'] == 'on_track' for row in all_rows),
+        'actionable_count': len(report_rows),
+    }
+    return render_template(
+        'at_risk_report.html', rows=report_rows, summary=summary, report_date=today
+    )
+
+
+
 # ── Admin routes ─────────────────────────────────────────────────────────────
 
 def admin_required(f):
@@ -1679,6 +2431,16 @@ def admin_delete_user(user_id):
     db.session.execute(
         workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
     )
+    ChecklistItem.query.filter_by(user_id=user.id).delete()
+    AnnualICPrepTracker.query.filter_by(member_id=user.id).delete()
+    ExamUpload.query.filter(ExamUpload.member_id == user.id).delete(synchronize_session=False)
+    ICPrepWebhookLog.query.filter(ICPrepWebhookLog.member_id == user.id).delete(synchronize_session=False)
+    PracticeLog.query.filter(
+        (PracticeLog.member_id == user.id) | (PracticeLog.officer_id == user.id)
+    ).delete(synchronize_session=False)
+    PracticeSession.query.filter(
+        (PracticeSession.member_id == user.id) | (PracticeSession.officer_id == user.id)
+    ).delete(synchronize_session=False)
     db.session.delete(user)
     db.session.commit()
     flash(f'User "{username}" deleted successfully.', 'success')
@@ -1726,6 +2488,8 @@ def admin_toggle_admin(user_id):
         flash('You cannot change your own admin status.', 'danger')
         return redirect(url_for('admin_panel'))
     user.is_admin = not user.is_admin
+    if user.is_admin and user.role != 'officer':
+        user.role = 'officer'
     db.session.commit()
     status = 'granted' if user.is_admin else 'removed'
     flash(f'Admin access {status} for "{user.username}".', 'success')
@@ -1737,10 +2501,15 @@ def admin_toggle_admin(user_id):
 @admin_required
 def admin_reset_password(user_id):
     user = User.query.get_or_404(user_id)
-    user.password = generate_password_hash('DECA2026!')
-    user.must_change_password = True
-    db.session.commit()
-    flash(f'Password reset to DECA2026! for "{user.username}".', 'success')
+    if not user.email:
+        flash(
+            f'No email is stored for "{user.username}". Add an email before sending a reset link.',
+            'warning',
+        )
+    elif send_password_reset_email(user):
+        flash(f'Password reset link sent to {user.email}.', 'success')
+    else:
+        flash('The reset email could not be sent. Check the server logs.', 'danger')
     return redirect(url_for('admin_panel'))
 
 
@@ -1759,10 +2528,346 @@ def make_first_admin():
             flash('Incorrect username or password.', 'danger')
             return render_template('make_first_admin.html')
         user.is_admin = True
+        if user.role != 'officer':
+            user.role = 'officer'
         db.session.commit()
         flash(f'"{username}" is now an admin. Please log in and go to /admin.', 'success')
         return redirect(url_for('login'))
     return render_template('make_first_admin.html')
+
+
+@app.route('/admin/logs')
+@login_required
+@admin_required
+def view_logs():
+    logs = MDPAuditLog.query.order_by(MDPAuditLog.timestamp.desc()).all()
+    return render_template('logs.html', logs=logs)
+
+
+@app.route('/admin/toggle_competing/<int:user_id>', methods=['POST'])
+@login_required
+@admin_required
+def admin_toggle_competing(user_id):
+    user = User.query.get_or_404(user_id)
+    user.is_competing = not user.is_competing
+    log_mdp_action(
+        current_user.id,
+        'toggle_competing',
+        'user',
+        target_user_id=user.id,
+        details=f'Marked {user.username} as ' + ('competing' if user.is_competing else 'non-competing'),
+    )
+    db.session.commit()
+    flash(f'"{user.username}" marked as ' + ('competing.' if user.is_competing else 'non-competing.'), 'success')
+    return redirect(url_for('admin_panel'))
+
+
+@app.route('/admin/mentor_pods', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def mentor_pods():
+    form = MentorPodForm()
+    form.member_id.choices = [
+        (user.id, user.username)
+        for user in User.query.filter_by(role='member').order_by(User.username).all()
+    ]
+    form.mentor_id.choices = [
+        (user.id, user.username)
+        for user in User.query.filter(
+            User.role == 'officer', User.is_admin.is_(False)
+        ).order_by(User.username).all()
+    ]
+    if form.validate_on_submit():
+        existing = MentorPod.query.filter_by(member_id=form.member_id.data).first()
+        if existing:
+            flash('That member already has a mentor-pod assignment.', 'warning')
+            return redirect(url_for('mentor_pods'))
+        pod = MentorPod(
+            pod_number=form.pod_number.data,
+            member_id=form.member_id.data,
+            mentor_id=form.mentor_id.data,
+            experience_level=form.experience_level.data,
+            event=form.event.data.strip(),
+            year_in_deca='',
+        )
+        db.session.add(pod)
+        member = db.session.get(User, form.member_id.data)
+        if member:
+            member.is_competing = form.is_competing.data == 'yes'
+            ensure_commitments(member)
+        log_mdp_action(
+            current_user.id, 'pod_add', 'pod', target_user_id=pod.member_id,
+            details=f'Added to Pod {pod.pod_number}',
+        )
+        db.session.commit()
+        flash('Mentor pod saved.', 'success')
+        return redirect(url_for('mentor_pods'))
+    pods = MentorPod.query.options(
+        joinedload(MentorPod.mentor), joinedload(MentorPod.member)
+    ).order_by(MentorPod.mentor_id, MentorPod.pod_number).all()
+    grouped_pods = defaultdict(list)
+    for pod in pods:
+        grouped_pods[pod.mentor].append(pod)
+    return render_template(
+        'mentor_pods.html',
+        form=form,
+        pods=pods,
+        grouped_pods=dict(grouped_pods),
+        event_choices=EVENT_TABS,
+    )
+
+
+@app.route('/admin/mentor_pods/edit/<int:pod_id>', methods=['POST'])
+@login_required
+@admin_required
+def edit_pod(pod_id):
+    pod = MentorPod.query.get_or_404(pod_id)
+    pod.pod_number = request.form.get('pod_number', pod.pod_number, type=int)
+    pod.member_id = request.form.get('member_id', pod.member_id, type=int)
+    pod.mentor_id = request.form.get('mentor_id', pod.mentor_id, type=int)
+    pod.experience_level = request.form.get('experience_level', pod.experience_level)
+    pod.year_in_deca = request.form.get('year_in_deca', pod.year_in_deca or '')
+    pod.event = request.form.get('event', pod.event or '').strip()
+    if 'is_competing' in request.form and pod.member:
+        pod.member.is_competing = request.form.get('is_competing') == 'yes'
+    log_mdp_action(
+        current_user.id, 'pod_edit', 'pod', target_user_id=pod.member_id,
+        details=f'Updated Pod {pod.pod_number}',
+    )
+    db.session.commit()
+    flash('Pod updated.', 'success')
+    return redirect(url_for('mentor_pods'))
+
+
+@app.route('/admin/mentor_pods/delete/<int:pod_id>', methods=['POST'])
+@login_required
+@admin_required
+def delete_pod(pod_id):
+    pod = MentorPod.query.get_or_404(pod_id)
+    member_id, pod_number = pod.member_id, pod.pod_number
+    log_mdp_action(
+        current_user.id, 'pod_delete', 'pod', target_user_id=member_id,
+        details=f'Removed from Pod {pod_number}',
+    )
+    db.session.delete(pod)
+    db.session.commit()
+    flash('Pod deleted.', 'success')
+    return redirect(url_for('mentor_pods'))
+
+
+@app.route('/admin/mentor_pods/delete_group/<int:mentor_id>/<int:pod_number>', methods=['POST'])
+@login_required
+@admin_required
+def delete_pod_group(mentor_id, pod_number):
+    pods = MentorPod.query.filter_by(mentor_id=mentor_id, pod_number=pod_number).all()
+    if not pods:
+        flash('Pod not found.', 'warning')
+        return redirect(url_for('mentor_pods'))
+    for pod in pods:
+        log_mdp_action(
+            current_user.id, 'pod_delete', 'pod', target_user_id=pod.member_id,
+            details=f'Removed Pod {pod.pod_number} (bulk pod delete)',
+        )
+        db.session.delete(pod)
+    db.session.commit()
+    flash(f'Pod #{pod_number} deleted.', 'success')
+    return redirect(url_for('mentor_pods'))
+
+
+@app.route('/mentee-progress')
+@login_required
+def mentee_progress_page():
+    return redirect(url_for('admin_member_commitments'))
+
+
+def _bool_from_form(value):
+    if value is None:
+        return None
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on', 'checked'}
+
+
+@app.route('/toggle_checklist_item', methods=['POST'])
+@login_required
+def toggle_checklist_item():
+    if current_user.role != 'officer' and not current_user.is_admin:
+        return jsonify({'success': False, 'message': 'Only officers/admins can update checklist items.'}), 403
+    user_id = request.form.get('user_id', type=int)
+    event = request.form.get('event', '').strip()
+    item_name = request.form.get('item_name', '').strip()
+    requested_completed = _bool_from_form(request.form.get('completed'))
+    if not user_id or not event or not item_name:
+        return jsonify({'success': False, 'message': 'Missing checklist item details.'}), 400
+    event_items, _ = get_written_checklist_catalog()
+    if item_name not in event_items.get(event, []):
+        return jsonify({'success': False, 'message': 'That item is not part of this event checklist.'}), 400
+    item = ChecklistItem.query.filter_by(
+        user_id=user_id, event=event, item_name=item_name
+    ).first()
+    if item is None:
+        item = ChecklistItem(
+            user_id=user_id,
+            event=event,
+            item_name=item_name,
+            completed=requested_completed if requested_completed is not None else True,
+        )
+        db.session.add(item)
+    else:
+        item.completed = (not item.completed) if requested_completed is None else requested_completed
+    log_mdp_action(
+        current_user.id,
+        'checklist_update',
+        'written_progress',
+        target_user_id=user_id,
+        details=f'{event} - {item_name}: ' + ('complete' if item.completed else 'incomplete'),
+    )
+    db.session.commit()
+    return jsonify({'success': True, 'completed': bool(item.completed)})
+
+
+@app.route('/member_commitments')
+@login_required
+def admin_member_commitments():
+    if current_user.role != 'officer' and not current_user.is_admin:
+        flash('Only officers/admins can view this.', 'danger')
+        return redirect(url_for('dashboard'))
+    members = _members_visible_to_current_user()
+    rows = []
+    for member in members:
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        level = pod.experience_level if pod else 'N'
+        event = pod.event if pod else None
+        commitments = Commitment.query.filter_by(user_id=member.id).all()
+        if not commitments:
+            commitments = Commitment.query.filter_by(member_name=member.username).all()
+        commitments_by_conf = {row.event: row for row in commitments}
+        checklist_by_event = defaultdict(dict)
+        for item in ChecklistItem.query.filter_by(user_id=member.id).all():
+            checklist_by_event[item.event][item.item_name] = item.completed
+        conferences = {}
+        total_done = total_required = 0
+        for conference in CONFERENCE_ORDER:
+            commitment = commitments_by_conf.get(conference)
+            if not commitment:
+                conferences[conference] = None
+                continue
+            done = (
+                commitment.required_roleplay - commitment.remaining_roleplay
+                + commitment.required_written - commitment.remaining_written
+                + commitment.required_exam - commitment.remaining_exam
+            )
+            required = (
+                commitment.required_roleplay
+                + commitment.required_written
+                + commitment.required_exam
+            )
+            total_done += done
+            total_required += required
+            conferences[conference] = {
+                'roleplay_done': commitment.required_roleplay - commitment.remaining_roleplay,
+                'roleplay_req': commitment.required_roleplay,
+                'written_done': commitment.required_written - commitment.remaining_written,
+                'written_req': commitment.required_written,
+                'exam_done': commitment.required_exam - commitment.remaining_exam,
+                'exam_req': commitment.required_exam,
+                'deadline': commitment.deadline,
+                'grade': commitment.grade,
+                'complete': (
+                    commitment.remaining_roleplay
+                    + commitment.remaining_written
+                    + commitment.remaining_exam
+                ) == 0,
+                'checklist': {
+                    name: checklist_by_event.get(conference, {}).get(name, False)
+                    for name in CHECKLIST_ITEMS.get(conference, [])
+                },
+            }
+        overall_pct = round(total_done / total_required * 100, 1) if total_required else 0
+        incomplete = any(value is not None and not value['complete'] for value in conferences.values())
+        rows.append({
+            'member': member,
+            'mentor_name': get_mentor_name(member),
+            'level': level,
+            'event': event,
+            'status': get_commitment_status(member),
+            'conferences': conferences,
+            'overall_pct': overall_pct,
+            'commitments_incomplete': incomplete,
+        })
+    total_members = len(rows)
+    stats = {
+        'total_members': total_members,
+        'at_risk_count': sum(row['status'] == 'at_risk' for row in rows),
+        'incomplete_count': sum(row['commitments_incomplete'] for row in rows),
+        'avg_progress': round(sum(row['overall_pct'] for row in rows) / total_members, 1) if total_members else 0,
+    }
+    return render_template(
+        'admin_member_commitments.html',
+        rows=rows,
+        stats=stats,
+        checklist_items_by_conf=CHECKLIST_ITEMS,
+    )
+
+
+@app.route('/checklist_completion')
+@login_required
+def checklist_completion():
+    if current_user.role != 'officer' and not current_user.is_admin:
+        flash('Only officers/admins can view this.', 'danger')
+        return redirect(url_for('dashboard'))
+    members = _members_visible_to_current_user()
+    event_items, event_deadlines = get_written_checklist_catalog()
+    today = datetime.now(LOCAL_TZ).date()
+    rows = []
+    grouped_rows = defaultdict(list)
+    for member in members:
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        level = pod.experience_level if pod else 'N'
+        event = (pod.event or '').strip() if pod else ''
+        if not event or event not in event_items:
+            continue
+        item_names = event_items.get(event, [])
+        completed = {name: False for name in item_names}
+        for item in ChecklistItem.query.filter_by(user_id=member.id, event=event).all():
+            if item.item_name in completed:
+                completed[item.item_name] = bool(item.completed)
+        written = _written_status(
+            item_names, completed, event_deadlines.get(event, {}), today=today
+        )
+        conference = _conference_summary_for_user(member, today=today)
+        row = {
+            'member': member,
+            'mentor_name': get_mentor_name(member),
+            'level': level,
+            'event': event,
+            'status': written['status'],
+            'status_label': written['status_label'],
+            'checklists': {event: completed},
+            'missing_items': written['missing_items'],
+            'overdue_items': written['overdue_items'],
+            'deadline_safe': written['deadline_safe'],
+            'grades': conference['grades'],
+        }
+        rows.append(row)
+        grouped_rows[event].append(row)
+    written_stats = {
+        'total_members': len(rows),
+        'complete_count': sum(row['status'] == 'complete' for row in rows),
+        'needs_attention_count': sum(row['status'] == 'needs_attention' for row in rows),
+        'overdue_count': sum(row['status'] == 'overdue' for row in rows),
+        'deadline_safe_count': sum(row['deadline_safe'] for row in rows),
+    }
+    start_year = _written_academic_start_year(today=today)
+    return render_template(
+        'checklist.html',
+        rows=rows,
+        grouped_rows=dict(grouped_rows),
+        event_items=event_items,
+        event_deadlines=event_deadlines,
+        written_stats=written_stats,
+        report_date=today,
+        written_academic_year_label=f"{start_year}-{str(start_year + 1)[-2:]}",
+    )
+
 
 scheduler = BackgroundScheduler()
 
