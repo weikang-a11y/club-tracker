@@ -11,3 +11,7 @@ club.db
 *.xls
 *.csv
 *.db
+.venv/
+*.db.backup*
+.full-merge-backup-*/
+.filter-update-backup-*/
