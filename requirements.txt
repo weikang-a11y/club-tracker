@@ -9,3 +9,4 @@ apscheduler==3.10.4
 sendgrid
 python-dotenv
 cloudinary==1.45.0
+requests==2.32.3
