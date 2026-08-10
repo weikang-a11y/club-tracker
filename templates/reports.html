@@ -143,8 +143,13 @@
                         {% if ps.log_submitted %}
                             <span class="badge bg-success mt-1"><i class="bi bi-check-circle me-1"></i>Completion Logged</span>
                         {% else %}
-                            <a href="{{ url_for('submit_practice_log', member=ps.member.username, type=ps.practice_type, conf=ps.conference, session_id=ps.id) }}"
-                               class="btn btn-sm btn-outline-success mt-1">Log Completion</a>
+                            <form method="POST" action="{{ url_for('log_commitment', session_id=ps.id) }}" class="js-confirm-form mt-1">
+                                <button type="button" class="btn btn-sm btn-success js-open-confirm"
+                                    data-confirm-title="Mark Complete"
+                                    data-confirm-message="Mark {{ ps.practice_type }} complete for {{ ps.member.username }} ({{ ps.conference }})?"
+                                    data-confirm-btn-text="Mark Complete"
+                                    data-confirm-btn-class="btn-success">✓ Mark Complete</button>
+                            </form>
                         {% endif %}
                     {% else %}
                         <div class="text-muted small">No sign-up yet — slot is open</div>
