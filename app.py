@@ -15,7 +15,6 @@ from wtforms.validators import DataRequired, Length, NumberRange, ValidationErro
 from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
-from sqlalchemy.pool import NullPool
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -47,9 +46,12 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql+psycopg://', 1)
     elif DATABASE_URL.startswith('postgresql://'):
         DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
-    print(f"[DB] Using external database: {DATABASE_URL[:60]}...")
+    print("[DB] Using external PostgreSQL database.")
     app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_pre_ping': True,
+        'pool_recycle': 300,
+    }
 else:
     local_db = os.path.join(os.path.dirname(__file__), 'club.db')
     print('[DB] No DATABASE_URL found, using local SQLite database.')
@@ -389,15 +391,20 @@ def get_active_conference():
 
 
 def ensure_commitments(member):
-    """Auto-create commitment rows and ICPrep tracker for all conferences if missing."""
+    """Create or repair commitment rows only when a database change is needed."""
     pod = MentorPod.query.filter_by(member_id=member.id).first()
     level = pod.experience_level if pod else 'N'
     reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
-    created = False
+    changed = False
+
     for conf, rule in reqs.items():
-        existing = Commitment.query.filter_by(member_name=member.username, event=conf).first()
+        existing = Commitment.query.filter_by(
+            member_name=member.username,
+            event=conf,
+        ).first()
+
         if not existing:
-            com = Commitment(
+            db.session.add(Commitment(
                 member_name=member.username,
                 event=conf,
                 required_roleplay=rule["roleplay"],
@@ -408,36 +415,42 @@ def ensure_commitments(member):
                 remaining_exam=rule["exam"],
                 deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
                 user_id=member.id,
-            )
-            db.session.add(com)
-            created = True
-        else:
+            ))
+            changed = True
+            continue
+
+        if existing.user_id != member.id:
             existing.user_id = member.id
+            changed = True
+        if existing.member_name != member.username:
             existing.member_name = member.username
-            if existing.deadline is None:
-                existing.deadline = datetime.strptime(
-                    rule["deadline"], "%Y-%m-%d"
-                ).date()
-            # Some legacy/import-created rows contained 0/0/0 requirements.
-            # Repair only that empty state so legitimate completion data is preserved.
-            if (
-                existing.required_roleplay == 0
-                and existing.required_written == 0
-                and existing.required_exam == 0
-            ):
-                existing.required_roleplay = rule["roleplay"]
-                existing.required_written = rule["written"]
-                existing.required_exam = rule["exam"]
-                existing.remaining_roleplay = rule["roleplay"]
-                existing.remaining_written = rule["written"]
-                existing.remaining_exam = rule["exam"]
-            db.session.add(existing)
-            created = True
-    # Ensure annual ICPrep tracker exists
+            changed = True
+        if existing.deadline is None:
+            existing.deadline = datetime.strptime(
+                rule["deadline"], "%Y-%m-%d"
+            ).date()
+            changed = True
+
+        # Repair only legacy rows with no requirement data so imported progress
+        # is not overwritten during ordinary page loads.
+        if (
+            existing.required_roleplay == 0
+            and existing.required_written == 0
+            and existing.required_exam == 0
+        ):
+            existing.required_roleplay = rule["roleplay"]
+            existing.required_written = rule["written"]
+            existing.required_exam = rule["exam"]
+            existing.remaining_roleplay = rule["roleplay"]
+            existing.remaining_written = rule["written"]
+            existing.remaining_exam = rule["exam"]
+            changed = True
+
     if not AnnualICPrepTracker.query.filter_by(member_id=member.id).first():
         db.session.add(AnnualICPrepTracker(member_id=member.id))
-        created = True
-    if created:
+        changed = True
+
+    if changed:
         try:
             db.session.commit()
         except Exception:
@@ -465,10 +478,18 @@ def get_icprep_status(member):
 
 # ── Attendance helper ─────────────────────────────────────────────────────────
 
-def get_attendance_stats(user):
+def get_attendance_stats(
+    user,
+    ah_records=None,
+    ws_records=None,
+    pod=None,
+    pod_loaded=False,
+):
     """Return detailed AH/WS attendance counts, rates, and risk status."""
-    ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
-    ws_records = WSAttendance.query.filter_by(user_id=user.id).all()
+    if ah_records is None:
+        ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
+    if ws_records is None:
+        ws_records = WSAttendance.query.filter_by(user_id=user.id).all()
 
     ah_present = sum(1 for row in ah_records if row.value == 1.0)
     ah_excused = sum(1 for row in ah_records if row.value == 0.5)
@@ -484,7 +505,8 @@ def get_attendance_stats(user):
     ah_rate = round((ah_present / ah_total) * 100, 1) if ah_total else 0.0
     ws_rate = round((ws_present / ws_total) * 100, 1) if ws_total else 0.0
 
-    pod = MentorPod.query.filter_by(member_id=user.id).first()
+    if not pod_loaded:
+        pod = MentorPod.query.filter_by(member_id=user.id).first()
     level = pod.experience_level if pod and pod.experience_level else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
@@ -1030,8 +1052,9 @@ def get_commitment_status(user):
     return 'on_track'
 
 
-def get_commitments_incomplete(user):
-    commitments = Commitment.query.filter_by(user_id=user.id).all()
+def get_commitments_incomplete(user, commitments=None):
+    if commitments is None:
+        commitments = Commitment.query.filter_by(user_id=user.id).all()
     return any(
         (row.remaining_roleplay + row.remaining_written + row.remaining_exam) > 0
         for row in commitments
@@ -1156,11 +1179,12 @@ def get_written_checklist_catalog():
     return dict(event_items), dict(event_deadlines)
 
 
-def _conference_summary_for_user(user, today=None):
+def _conference_summary_for_user(user, today=None, commitments=None):
     today = today or datetime.now(LOCAL_TZ).date()
-    commitments = Commitment.query.filter_by(user_id=user.id).all()
-    if not commitments:
-        commitments = Commitment.query.filter_by(member_name=user.username).all()
+    if commitments is None:
+        commitments = Commitment.query.filter_by(user_id=user.id).all()
+        if not commitments:
+            commitments = Commitment.query.filter_by(member_name=user.username).all()
     commitments_by_event = {row.event: row for row in commitments}
     grades = {}
     incomplete_reasons = []
@@ -1408,10 +1432,42 @@ def dashboard():
 
     # Admins see every member; officers see their pod/fallback members.
     if current_user.is_admin or current_user.role == 'officer':
+        member_ids = [member.id for member in visible_members]
+        pods_by_member = {}
+        ah_by_user = defaultdict(list)
+        ws_by_user = defaultdict(list)
+        commitments_by_user = defaultdict(list)
+
+        if member_ids:
+            for pod in MentorPod.query.options(joinedload(MentorPod.mentor)).filter(
+                MentorPod.member_id.in_(member_ids)
+            ).all():
+                pods_by_member.setdefault(pod.member_id, pod)
+
+            for record in AHAttendance.query.filter(
+                AHAttendance.user_id.in_(member_ids)
+            ).all():
+                ah_by_user[record.user_id].append(record)
+
+            for record in WSAttendance.query.filter(
+                WSAttendance.user_id.in_(member_ids)
+            ).all():
+                ws_by_user[record.user_id].append(record)
+
+            for commitment in Commitment.query.filter(
+                Commitment.user_id.in_(member_ids)
+            ).all():
+                commitments_by_user[commitment.user_id].append(commitment)
+
         for member in sorted(visible_members, key=lambda row: row.username.lower()):
-            ensure_commitments(member)
-            stats = get_attendance_stats(member)
-            pod = MentorPod.query.filter_by(member_id=member.id).first()
+            pod = pods_by_member.get(member.id)
+            stats = get_attendance_stats(
+                member,
+                ah_records=ah_by_user.get(member.id, []),
+                ws_records=ws_by_user.get(member.id, []),
+                pod=pod,
+                pod_loaded=True,
+            )
             ah_ws_data.append({
                 'member': member,
                 'pod_number': pod.pod_number if pod else None,
@@ -1435,7 +1491,10 @@ def dashboard():
                 'ws_threshold_pct': stats['ws_threshold_pct'],
                 'at_risk': stats['at_risk'],
                 'risk_reasons': stats['risk_reasons'],
-                'below_commitments': get_commitments_incomplete(member),
+                'below_commitments': get_commitments_incomplete(
+                    member,
+                    commitments=commitments_by_user.get(member.id, []),
+                ),
             })
 
     for workshop in workshops:
@@ -2819,24 +2878,58 @@ def checklist_completion():
     today = datetime.now(LOCAL_TZ).date()
     rows = []
     grouped_rows = defaultdict(list)
+    member_ids = [member.id for member in members]
+    pods_by_member = {}
+    checklist_by_user_event = defaultdict(dict)
+    commitments_by_user = defaultdict(list)
+
+    if member_ids:
+        for pod in MentorPod.query.options(joinedload(MentorPod.mentor)).filter(
+            MentorPod.member_id.in_(member_ids)
+        ).all():
+            pods_by_member.setdefault(pod.member_id, pod)
+
+        for item in ChecklistItem.query.filter(
+            ChecklistItem.user_id.in_(member_ids)
+        ).all():
+            checklist_by_user_event[(item.user_id, item.event)][item.item_name] = bool(
+                item.completed
+            )
+
+        for commitment in Commitment.query.filter(
+            Commitment.user_id.in_(member_ids)
+        ).all():
+            commitments_by_user[commitment.user_id].append(commitment)
+
     for member in members:
-        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        pod = pods_by_member.get(member.id)
         level = pod.experience_level if pod else 'N'
         event = (pod.event or '').strip() if pod else ''
         if not event or event not in event_items:
             continue
+
         item_names = event_items.get(event, [])
-        completed = {name: False for name in item_names}
-        for item in ChecklistItem.query.filter_by(user_id=member.id, event=event).all():
-            if item.item_name in completed:
-                completed[item.item_name] = bool(item.completed)
+        imported_completion = checklist_by_user_event.get((member.id, event), {})
+        completed = {
+            name: imported_completion.get(name, False)
+            for name in item_names
+        }
         written = _written_status(
-            item_names, completed, event_deadlines.get(event, {}), today=today
+            item_names,
+            completed,
+            event_deadlines.get(event, {}),
+            today=today,
         )
-        conference = _conference_summary_for_user(member, today=today)
+        conference = _conference_summary_for_user(
+            member,
+            today=today,
+            commitments=commitments_by_user.get(member.id, []),
+        )
         row = {
             'member': member,
-            'mentor_name': get_mentor_name(member),
+            'mentor_name': (
+                pod.mentor.username if pod and pod.mentor else 'Unassigned'
+            ),
             'level': level,
             'event': event,
             'status': written['status'],
