@@ -143,14 +143,23 @@ LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 # Validated from "2026-27 Officer List.xlsx". Position is intentionally omitted
 # because application permissions are driven only by Account Access.
 OFFICER_ROSTER_2026_27 = [
+    ("Mr. Shimada", "Admin"),
+    ("Dr. Stuart", "Admin"),
+    ("Mrs. Parayno", "Admin"),
+    ("Ms. Chicas", "Admin"),
+    ("Ms. Wang", "Admin"),
     ("Hannah Li", "Admin"),
     ("Chloe Ding", "Admin"),
     ("Arissa Cao", "Admin"),
     ("Saron Amdeberhan", "Admin"),
     ("Revathi Mekkoth", "Officer"),
     ("Crystal Chen", "Officer"),
+    ("Philina Chen", "Officer, Admin"),
     ("Natalie Zhang", "Officer"),
     ("Melody Leong", "Officer"),
+    ("Aryahi Sharma", "Officer, Admin"),
+    ("Olivia Kang", "Officer, Admin"),
+    ("Zihan Liu", "Officer, Admin"),
     ("Aaron Vu", "Admin, Officer"),
     ("Thatcher Kim", "Admin, Officer"),
     ("Mia Tran", "Admin, Officer"),
@@ -184,7 +193,7 @@ OFFICER_IMPORT_ADMIN_PASSWORD = os.getenv(
 OFFICER_IMPORT_OFFICER_PASSWORD = os.getenv(
     "OFFICER_IMPORT_OFFICER_PASSWORD", "Officer2627!"
 )
-OFFICER_IMPORT_KEY = "2026-27-officer-roster-v2-canonical-usernames"
+OFFICER_IMPORT_KEY = "2026-27-officer-roster-v3-advisors-and-additions"
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -441,8 +450,10 @@ def _account_name_key(value):
 
 
 def _canonical_officer_username(full_name):
-    """Convert a roster name to the standard first.last username."""
+    """Convert a roster name to first.last, or an advisor's lowercase surname."""
     parts = re.findall(r'[a-z0-9]+(?:-[a-z0-9]+)*', (full_name or '').lower())
+    if len(parts) >= 2 and parts[0] in {'mr', 'ms', 'mrs', 'dr'}:
+        return parts[-1]
     if len(parts) < 2:
         raise ValueError(f'Officer name needs a first and last name: {full_name!r}')
     return f'{parts[0]}.{parts[-1]}'
@@ -518,8 +529,17 @@ def import_2026_27_officer_roster():
     deleted_member_duplicates = 0
     for roster_name, access in OFFICER_ROSTER_2026_27:
         username = _canonical_officer_username(roster_name)
-        key = _account_name_key(roster_name)
-        matches = existing_by_key.get(key, [])
+        roster_key = _account_name_key(roster_name)
+        username_key = _account_name_key(username)
+        candidate_keys = {roster_key, username_key}
+        matches = []
+        seen_user_ids = set()
+        for candidate_key in candidate_keys:
+            for candidate in existing_by_key.get(candidate_key, []):
+                identity = candidate.id if candidate.id is not None else id(candidate)
+                if identity not in seen_user_ids:
+                    seen_user_ids.add(identity)
+                    matches.append(candidate)
         officer_matches = [user for user in matches if user.role != 'member']
         member_matches = [user for user in matches if user.role == 'member']
         if len(officer_matches) > 1:
@@ -542,7 +562,7 @@ def import_2026_27_officer_roster():
         if user is None:
             user = User(username=username)
             db.session.add(user)
-            existing_by_key[key] = [user]
+            existing_by_key[username_key] = [user]
             created += 1
         else:
             updated += 1
