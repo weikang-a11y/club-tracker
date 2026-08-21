@@ -184,7 +184,7 @@ OFFICER_IMPORT_ADMIN_PASSWORD = os.getenv(
 OFFICER_IMPORT_OFFICER_PASSWORD = os.getenv(
     "OFFICER_IMPORT_OFFICER_PASSWORD", "Officer2627!"
 )
-OFFICER_IMPORT_KEY = "2026-27-officer-roster-v1"
+OFFICER_IMPORT_KEY = "2026-27-officer-roster-v2-canonical-usernames"
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -440,8 +440,72 @@ def _account_name_key(value):
     return re.sub(r'[^a-z0-9]', '', (value or '').lower())
 
 
+def _canonical_officer_username(full_name):
+    """Convert a roster name to the standard first.last username."""
+    parts = re.findall(r'[a-z0-9]+(?:-[a-z0-9]+)*', (full_name or '').lower())
+    if len(parts) < 2:
+        raise ValueError(f'Officer name needs a first and last name: {full_name!r}')
+    return f'{parts[0]}.{parts[-1]}'
+
+
+def _delete_duplicate_member_account(member):
+    """Delete a roster officer's duplicate member account and member data."""
+    if member.role != 'member':
+        raise ValueError(f'Refusing to delete non-member account: {member.username}')
+
+    if Workshop.query.filter(
+        (Workshop.officer_id == member.id) | (Workshop.creator_id == member.id)
+    ).first():
+        raise RuntimeError(
+            f'Duplicate member {member.username} owns a workshop; '
+            'manual review is required before deletion.'
+        )
+
+    AHAttendance.query.filter_by(user_id=member.id).delete()
+    WSAttendance.query.filter_by(user_id=member.id).delete()
+    MentorPod.query.filter(
+        (MentorPod.member_id == member.id) | (MentorPod.mentor_id == member.id)
+    ).delete(synchronize_session=False)
+    Commitment.query.filter_by(user_id=member.id).delete()
+    ReminderLog.query.filter_by(user_id=member.id).delete()
+    ChecklistItem.query.filter_by(user_id=member.id).delete()
+    AnnualICPrepTracker.query.filter_by(member_id=member.id).delete()
+    ExamUpload.query.filter_by(member_id=member.id).delete()
+    ExamUpload.query.filter_by(reviewer_id=member.id).update(
+        {'reviewer_id': None}, synchronize_session=False
+    )
+    ICPrepWebhookLog.query.filter_by(member_id=member.id).delete()
+    PracticeLog.query.filter(
+        (PracticeLog.member_id == member.id) | (PracticeLog.officer_id == member.id)
+    ).delete(synchronize_session=False)
+    PracticeSession.query.filter_by(officer_id=member.id).delete()
+    PracticeSession.query.filter_by(member_id=member.id).update(
+        {'member_id': None}, synchronize_session=False
+    )
+    MentorPodEditLog.query.filter(
+        (MentorPodEditLog.member_id == member.id)
+        | (MentorPodEditLog.actor_id == member.id)
+    ).delete(synchronize_session=False)
+    MDPAuditLog.query.filter(
+        (MDPAuditLog.target_user_id == member.id)
+        | (MDPAuditLog.actor_id == member.id)
+    ).delete(synchronize_session=False)
+    AttendanceSubmission.query.filter_by(officer_id=member.id).delete()
+    GeneralAttendance.query.filter(
+        (GeneralAttendance.officer_id == member.id)
+        | (
+            db.func.lower(GeneralAttendance.member_name)
+            == member.username.strip().lower()
+        )
+    ).delete(synchronize_session=False)
+    db.session.execute(
+        workshop_signups.delete().where(workshop_signups.c.user_id == member.id)
+    )
+    db.session.delete(member)
+
+
 def import_2026_27_officer_roster():
-    """Create/update the 2026-27 roster exactly once, in one transaction."""
+    """Canonicalize the 2026-27 roster exactly once, in one transaction."""
     if db.session.get(DataMigration, OFFICER_IMPORT_KEY):
         return
 
@@ -449,27 +513,26 @@ def import_2026_27_officer_roster():
     for user in User.query.all():
         existing_by_key[_account_name_key(user.username)].append(user)
 
-    duplicate_keys = {
-        key: users for key, users in existing_by_key.items()
-        if key and len(users) > 1
-    }
-    if duplicate_keys:
-        names = ', '.join(
-            '/'.join(user.username for user in users)
-            for users in duplicate_keys.values()
-        )
-        raise RuntimeError(
-            'Officer import stopped because existing usernames normalize to '
-            f'the same name: {names}'
-        )
-
     created = 0
     updated = 0
+    deleted_member_duplicates = 0
     for roster_name, access in OFFICER_ROSTER_2026_27:
-        username = ' '.join(roster_name.split())
-        key = _account_name_key(username)
+        username = _canonical_officer_username(roster_name)
+        key = _account_name_key(roster_name)
         matches = existing_by_key.get(key, [])
-        user = matches[0] if matches else None
+        officer_matches = [user for user in matches if user.role != 'member']
+        member_matches = [user for user in matches if user.role == 'member']
+        if len(officer_matches) > 1:
+            names = ', '.join(user.username for user in officer_matches)
+            raise RuntimeError(
+                f'Multiple officer accounts match {roster_name}: {names}'
+            )
+
+        # Prefer an existing officer account. If only a member account exists,
+        # convert one of those rows so the person's database identity is reused.
+        user = officer_matches[0] if officer_matches else (
+            member_matches.pop(0) if member_matches else None
+        )
         is_admin = 'admin' in access.lower()
         temporary_password = (
             OFFICER_IMPORT_ADMIN_PASSWORD
@@ -484,7 +547,16 @@ def import_2026_27_officer_roster():
         else:
             updated += 1
 
+        # If both officer and member accounts existed for this roster name,
+        # remove only the duplicate member rows and their member-only records.
+        for duplicate_member in member_matches:
+            _delete_duplicate_member_account(duplicate_member)
+            deleted_member_duplicates += 1
+        if member_matches:
+            db.session.flush()
+
         # The app represents admins as officer accounts with an admin flag.
+        user.username = username
         user.role = 'officer'
         user.is_admin = is_admin
         user.password = generate_password_hash(temporary_password)
@@ -494,12 +566,17 @@ def import_2026_27_officer_roster():
 
     db.session.add(DataMigration(
         key=OFFICER_IMPORT_KEY,
-        details=f'Created {created}; updated {updated}; total {len(OFFICER_ROSTER_2026_27)}',
+        details=(
+            f'Created {created}; updated {updated}; '
+            f'deleted member duplicates {deleted_member_duplicates}; '
+            f'total {len(OFFICER_ROSTER_2026_27)}'
+        ),
     ))
     db.session.commit()
     print(
         f'[Officer Import] 2026-27 complete: created={created}, '
-        f'updated={updated}, total={len(OFFICER_ROSTER_2026_27)}'
+        f'updated={updated}, member_duplicates_deleted={deleted_member_duplicates}, '
+        f'total={len(OFFICER_ROSTER_2026_27)}'
     )
 
 # ── Commitment helpers ───────────────────────────────────────────────────────
@@ -3142,4 +3219,3 @@ if not scheduler.running:
 
 if __name__ == '__main__':
     app.run(debug=True)
-
