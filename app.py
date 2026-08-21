@@ -1037,6 +1037,9 @@ def dashboard():
     attendance_locked_ids = set()
     ah_ws_data = []      # NEW: AH/WS attendance per member for officer view
     member_stats = None  # NEW: AH/WS stats for member's own view
+    all_commitments = []
+    dashboard_scope_label = "Members in Pod"
+    visible_members = []
 
     if current_user.role == 'officer':
         commitments = Commitment.query.filter_by(user_id=current_user.id).order_by(Commitment.deadline).all()
