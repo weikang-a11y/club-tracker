@@ -140,6 +140,52 @@ WS_THRESHOLD = {
 
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
+# Validated from "2026-27 Officer List.xlsx". Position is intentionally omitted
+# because application permissions are driven only by Account Access.
+OFFICER_ROSTER_2026_27 = [
+    ("Hannah Li", "Admin"),
+    ("Chloe Ding", "Admin"),
+    ("Arissa Cao", "Admin"),
+    ("Saron Amdeberhan", "Admin"),
+    ("Revathi Mekkoth", "Officer"),
+    ("Crystal Chen", "Officer"),
+    ("Natalie Zhang", "Officer"),
+    ("Melody Leong", "Officer"),
+    ("Aaron Vu", "Admin, Officer"),
+    ("Thatcher Kim", "Admin, Officer"),
+    ("Mia Tran", "Admin, Officer"),
+    ("Yen-Nhi Tran", "Admin, Officer"),
+    ("Eva Gu", "Officer"),
+    ("Evelyn Bai", "Officer"),
+    ("Allen Tu", "Officer"),
+    ("Jessica Ma", "Officer"),
+    ("Neela Koneru", "Officer"),
+    ("Sophie Yu", "Officer"),
+    ("Anay Kalchuri", "Officer"),
+    ("Lizzie Huang", "Officer"),
+    ("Ayden Wang", "Officer"),
+    ("Sophie Ji", "Officer"),
+    ("Sarah Xu", "Officer"),
+    ("Jason Huang", "Officer"),
+    ("Purab Shah", "Officer"),
+    ("Armaan Arya", "Officer"),
+    ("Audrey Sansone", "Officer"),
+    ("Isabella Yu", "Officer"),
+    ("Riya Khattri", "Officer"),
+    ("Zubin Lakhia", "Officer"),
+]
+
+# Shared temporary passwords requested for the roster import. Railway variables
+# can override these values without changing source code. Every imported user is
+# required to choose an individual password on first login.
+OFFICER_IMPORT_ADMIN_PASSWORD = os.getenv(
+    "OFFICER_IMPORT_ADMIN_PASSWORD", "Admin2627!"
+)
+OFFICER_IMPORT_OFFICER_PASSWORD = os.getenv(
+    "OFFICER_IMPORT_OFFICER_PASSWORD", "Officer2627!"
+)
+OFFICER_IMPORT_KEY = "2026-27-officer-roster-v1"
+
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
@@ -356,6 +402,14 @@ class ICPrepWebhookLog(db.Model):
     member = db.relationship('User', backref='icprep_webhook_logs')
 
 
+class DataMigration(db.Model):
+    """Records one-time data imports so redeploys do not reset accounts again."""
+    __tablename__ = 'data_migration'
+    key = db.Column(db.String(100), primary_key=True)
+    applied_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    details = db.Column(db.String(255))
+
+
 class PracticeLog(db.Model):
     """Completion record submitted by officer after a practice session."""
     __tablename__ = 'practice_log'
@@ -379,6 +433,74 @@ class PracticeLog(db.Model):
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
+
+
+def _account_name_key(value):
+    """Match names case-, whitespace-, and punctuation-insensitively."""
+    return re.sub(r'[^a-z0-9]', '', (value or '').lower())
+
+
+def import_2026_27_officer_roster():
+    """Create/update the 2026-27 roster exactly once, in one transaction."""
+    if db.session.get(DataMigration, OFFICER_IMPORT_KEY):
+        return
+
+    existing_by_key = defaultdict(list)
+    for user in User.query.all():
+        existing_by_key[_account_name_key(user.username)].append(user)
+
+    duplicate_keys = {
+        key: users for key, users in existing_by_key.items()
+        if key and len(users) > 1
+    }
+    if duplicate_keys:
+        names = ', '.join(
+            '/'.join(user.username for user in users)
+            for users in duplicate_keys.values()
+        )
+        raise RuntimeError(
+            'Officer import stopped because existing usernames normalize to '
+            f'the same name: {names}'
+        )
+
+    created = 0
+    updated = 0
+    for roster_name, access in OFFICER_ROSTER_2026_27:
+        username = ' '.join(roster_name.split())
+        key = _account_name_key(username)
+        matches = existing_by_key.get(key, [])
+        user = matches[0] if matches else None
+        is_admin = 'admin' in access.lower()
+        temporary_password = (
+            OFFICER_IMPORT_ADMIN_PASSWORD
+            if is_admin else OFFICER_IMPORT_OFFICER_PASSWORD
+        )
+
+        if user is None:
+            user = User(username=username)
+            db.session.add(user)
+            existing_by_key[key] = [user]
+            created += 1
+        else:
+            updated += 1
+
+        # The app represents admins as officer accounts with an admin flag.
+        user.role = 'officer'
+        user.is_admin = is_admin
+        user.password = generate_password_hash(temporary_password)
+        user.must_change_password = True
+        if user.is_competing is None:
+            user.is_competing = True
+
+    db.session.add(DataMigration(
+        key=OFFICER_IMPORT_KEY,
+        details=f'Created {created}; updated {updated}; total {len(OFFICER_ROSTER_2026_27)}',
+    ))
+    db.session.commit()
+    print(
+        f'[Officer Import] 2026-27 complete: created={created}, '
+        f'updated={updated}, total={len(OFFICER_ROSTER_2026_27)}'
+    )
 
 # ── Commitment helpers ───────────────────────────────────────────────────────
 
@@ -765,6 +887,14 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    # One-time 2026-27 officer import. The operation is transactional and an
+    # import problem is logged without preventing the web service from booting.
+    try:
+        import_2026_27_officer_roster()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Officer Import] skipped: {exc}')
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
