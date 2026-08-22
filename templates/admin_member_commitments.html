@@ -42,7 +42,7 @@ The temporary server copy is deleted immediately after processing.
 <form method="post" action="{{ url_for('admin_import_commitments') }}" enctype="multipart/form-data" class="d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
 {{ mdp_upload_form.hidden_tag() }}
 {{ mdp_upload_form.workbook(class="form-control", accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") }}
-{{ mdp_upload_form.submit(class="btn btn-warning text-nowrap", onclick="this.disabled=true; this.form.submit();") }}
+{{ mdp_upload_form.submit(class="btn btn-warning text-nowrap") }}
 </form>
 </div>
 <div class="small text-danger mt-2">
