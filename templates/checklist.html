@@ -4,18 +4,28 @@
 <style>
   .summary-number { font-size: 2rem; font-weight: 700; line-height: 1; }
   .grade-cell { min-width: 76px; white-space: nowrap; }
-  .status-help { max-width: 980px; }
 </style>
 
 <div class="card page-header-card mb-4">
-  <div class="card-body p-4 d-flex flex-wrap gap-3 justify-content-between align-items-center">
-    <div>
-      <h2 class="mb-1">Written Progress</h2>
-      <p class="lead mb-0">Track written deadlines and conference grades by event.</p>
+  <div class="card-body p-4">
+    <div class="d-flex flex-wrap gap-3 justify-content-between align-items-start">
+      <div>
+        <h2 class="mb-1">Written Progress</h2>
+        <p class="lead mb-0">Track written deadlines and conference grades by event.</p>
+      </div>
+      <a class="btn btn-outline-primary" href="{{ url_for('at_risk_report') }}">
+        Print Overall Risk Report
+      </a>
     </div>
-    <a class="btn btn-outline-primary" href="{{ url_for('at_risk_report') }}">
-      Print Overall Risk Report
-    </a>
+    <div class="mt-3 p-3 bg-light rounded">
+      <strong><i class="fas fa-info-circle"></i> Status Information:</strong>
+      <ul class="mb-0 mt-2" style="font-size: 0.95rem;">
+        <li><span class="badge bg-success">Complete</span> - Every listed written item is checked.</li>
+        <li><span class="badge bg-warning text-dark">Needs Attention</span> - One or more items are incomplete, but no known deadline has passed.</li>
+        <li><span class="badge bg-danger">Overdue</span> - An incomplete item has a deadline before {{ report_date.strftime('%b %d, %Y') }}.</li>
+        <li><span class="badge bg-secondary">Non-Compete</span> - The member remains visible but is excluded from overdue and at-risk evaluation.</li>
+      </ul>
+    </div>
   </div>
 </div>
 
@@ -59,15 +69,6 @@
       </div>
     </div>
   </div>
-</div>
-
-<div class="alert alert-secondary small status-help mb-4">
-  <strong>Status definitions:</strong>
-  <strong>Complete</strong> means every listed written item is checked.
-  <strong>Needs Attention</strong> means one or more items are incomplete, but no known deadline has passed.
-  <strong>Overdue</strong> means an incomplete item has a deadline before {{ report_date.strftime('%b %d, %Y') }}.
-  <strong>Non-Compete</strong> members remain visible but are excluded from overdue and at-risk evaluation.
-  A member can therefore be <em>deadline safe</em> and still have incomplete work; the old count of 183 measured missed deadlines, not requirement completion.
 </div>
 
 <div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
