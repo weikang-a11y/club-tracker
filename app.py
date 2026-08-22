@@ -128,12 +128,13 @@ MDP_TRACKING_FILE = os.getenv(
     'MDP_TRACKING_FILE',
     os.path.join(os.path.dirname(__file__), 'FINAL MDP Deadline Tracking.xlsx'),
 )
-MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v1-'
+MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v2-'
 
 # Spreadsheet names that intentionally differ from account usernames. Joey's
 # source row is labelled "Joey Zhu" but the existing account is joey.shu.
 SPREADSHEET_ACCOUNT_OVERRIDES = {
     'amber chang': ('ambery.chang',),
+    'avaneesh nangare': ('avaneesh.nagare', 'avaneesh.nangare'),
     'chun ka yu': ('chunka.yu',),
     'elizabeth huang': ('lizzie.huang', 'elizabeth.huang'),
     'joey zhu': ('joey.shu', 'joey.zhu'),
@@ -855,6 +856,13 @@ def _find_spreadsheet_user(name, email, users_by_username, users_by_email):
     normalized_email = _spreadsheet_key(email)
     if normalized_email and normalized_email in users_by_email:
         return users_by_email[normalized_email]
+    # Most app usernames are the local part of the Warriorlife email. This
+    # keeps imports reliable even when the User.email field was never filled.
+    if '@' in normalized_email:
+        email_username = normalized_email.split('@', 1)[0]
+        user = users_by_username.get(email_username)
+        if user:
+            return user
     for candidate in _spreadsheet_username_candidates(name):
         user = users_by_username.get(candidate)
         if user:
@@ -918,8 +926,8 @@ def _format_spreadsheet_grade(value):
     return f'{number * 100:.1f}%' if number <= 1 else f'{number:.1f}'
 
 
-def import_mdp_tracking_workbook(path):
-    """Synchronize every matched member from the MDP workbook transactionally."""
+def import_mdp_tracking_workbook(path, commitments_only=False):
+    """Synchronize matched members from the MDP workbook transactionally."""
     wanted_sheets = set(EVENT_TABS) | {
         'Pods (VIEW ONLY)',
         'Mentee Commitment TrackingMDP',
@@ -1036,14 +1044,16 @@ def import_mdp_tracking_workbook(path):
     unmatched_mentors = []
     pods_updated = commitments_updated = checklist_items_updated = 0
 
-    # Replace the catalog only after the whole workbook has parsed successfully.
-    ChecklistRequirement.query.delete()
-    for (event, item_name), deadline in sorted(written_requirements.items()):
-        db.session.add(ChecklistRequirement(
-            event=event,
-            item_name=item_name,
-            deadline=deadline,
-        ))
+    # Replace the written catalog only for a full import. A corrective
+    # commitment-only run must not overwrite checkbox changes made in the app.
+    if not commitments_only:
+        ChecklistRequirement.query.delete()
+        for (event, item_name), deadline in sorted(written_requirements.items()):
+            db.session.add(ChecklistRequirement(
+                event=event,
+                item_name=item_name,
+                deadline=deadline,
+            ))
 
     for row in pods_rows[1:]:
         mentee_name = _spreadsheet_text(_row_value(row, mentee_col))
@@ -1068,39 +1078,42 @@ def import_mdp_tracking_workbook(path):
             continue
 
         mentor_name = _spreadsheet_text(_row_value(row, mentor_col))
-        mentor = _find_spreadsheet_user(
-            mentor_name,
-            '',
-            officers_by_username,
-            officers_by_email,
-        )
-        if not mentor:
-            unmatched_mentors.append(f'{mentor_name} ({member.username})')
+        mentor = None
+        if not commitments_only:
+            mentor = _find_spreadsheet_user(
+                mentor_name,
+                '',
+                officers_by_username,
+                officers_by_email,
+            )
+            if not mentor:
+                unmatched_mentors.append(f'{mentor_name} ({member.username})')
 
         matched_user_ids.add(member.id)
-        if email and not member.email:
-            member.email = email
-            users_by_email[email.lower()] = member
         status = _spreadsheet_text(_row_value(row, status_col))
-        member.is_competing = status.lower() != 'non-compete'
         level = 'E' if status.lower() == 'experienced' else 'N'
         event = _spreadsheet_event_key(_row_value(row, pod_event_col))
         year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
-        pod = pods_by_user.get(member.id)
-        if not pod and mentor:
-            pod = MentorPod(member_id=member.id, mentor_id=mentor.id, pod_number=0)
-            db.session.add(pod)
-            pods_by_user[member.id] = pod
-        if pod:
-            if mentor:
-                pod.mentor_id = mentor.id
-            pod.experience_level = level
-            pod.year_in_deca = year_in_deca
-            pod.event = event or None
-            pod_number = _spreadsheet_number(_row_value(row, pod_number_col))
-            if pod_number:
-                pod.pod_number = pod_number
-            pods_updated += 1
+        if not commitments_only:
+            if email and not member.email:
+                member.email = email
+                users_by_email[email.lower()] = member
+            member.is_competing = status.lower() != 'non-compete'
+            pod = pods_by_user.get(member.id)
+            if not pod and mentor:
+                pod = MentorPod(member_id=member.id, mentor_id=mentor.id, pod_number=0)
+                db.session.add(pod)
+                pods_by_user[member.id] = pod
+            if pod:
+                if mentor:
+                    pod.mentor_id = mentor.id
+                pod.experience_level = level
+                pod.year_in_deca = year_in_deca
+                pod.event = event or None
+                pod_number = _spreadsheet_number(_row_value(row, pod_number_col))
+                if pod_number:
+                    pod.pod_number = pod_number
+                pods_updated += 1
 
         identities = [_spreadsheet_key(email), _spreadsheet_key(display_name), _spreadsheet_key(mentee_name)]
         completion = next(
@@ -1146,27 +1159,28 @@ def import_mdp_tracking_workbook(path):
                 commitment.grade = grades[conference]
             commitments_updated += 1
 
-        checks = next(
-            (
-                written_completion[(key, event)]
-                for key in identities
-                if (key, event) in written_completion
-            ),
-            {},
-        )
-        for item_name, completed in checks.items():
-            item_key = (member.id, event, item_name)
-            item = checklist_items_by_key.get(item_key)
-            if not item:
-                item = ChecklistItem(
-                    user_id=member.id,
-                    event=event,
-                    item_name=item_name,
-                )
-                db.session.add(item)
-                checklist_items_by_key[item_key] = item
-            item.completed = completed
-            checklist_items_updated += 1
+        if not commitments_only:
+            checks = next(
+                (
+                    written_completion[(key, event)]
+                    for key in identities
+                    if (key, event) in written_completion
+                ),
+                {},
+            )
+            for item_name, completed in checks.items():
+                item_key = (member.id, event, item_name)
+                item = checklist_items_by_key.get(item_key)
+                if not item:
+                    item = ChecklistItem(
+                        user_id=member.id,
+                        event=event,
+                        item_name=item_name,
+                    )
+                    db.session.add(item)
+                    checklist_items_by_key[item_key] = item
+                item.completed = completed
+                checklist_items_updated += 1
 
     return {
         'matched_members': len(matched_user_ids),
@@ -1202,7 +1216,7 @@ def sync_mdp_tracking_workbook():
     if db.session.get(DataMigration, migration_key):
         return None
 
-    stats = import_mdp_tracking_workbook(path)
+    stats = import_mdp_tracking_workbook(path, commitments_only=True)
     db.session.add(DataMigration(
         key=migration_key,
         details=(
