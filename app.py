@@ -5,11 +5,12 @@ except ImportError:
 else:
     truststore.inject_into_ssl()
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf import FlaskForm
+from flask_wtf.file import FileAllowed, FileField, FileRequired
 from wtforms import StringField, PasswordField, DateField, SelectField, IntegerField, SubmitField
 from wtforms.validators import DataRequired, Length, NumberRange, ValidationError
 from datetime import datetime, timedelta
@@ -26,8 +27,12 @@ import hmac
 import csv
 import io
 import os
+import posixpath
 import re
 import requests
+import tempfile
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 load_dotenv()
@@ -95,31 +100,64 @@ ICPREP_TARGETS = {
 }
 
 # Per-conference requirements split by experience level (non-cumulative)
-# Novice:     VCMC(RP:1,W:1,E:2), SVCDC(RP:2,W:1,E:2), SCDC(RP:2,W:1,E:2)
+# Novice:     VCMC(RP:1,W:1,E:2), SVCDC(RP:1,W:1,E:2), SCDC(RP:2,W:1,E:2)
 # Experienced:VCMC(N/A),          SVCDC(RP:1,W:1,E:2), SCDC(RP:1,W:1,E:1)
 # RP/Exam counts include both in-person and ICPrep (members choose which to use for ICPrep quota)
 EVENT_REQUIREMENTS = {
     "N": {  # Novice
-        "VCMC":  {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-11-15"},
-        "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-01-08"},
-        "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-02-23"},
+        "VCMC":  {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2025-11-15"},
+        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-01-08"},
+        "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-02-23"},
     },
     "E": {  # Experienced
-        "VCMC":  {"roleplay": 0, "written": 0, "exam": 0, "deadline": "2026-11-15"},
-        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
-        "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2027-02-23"},
+        "VCMC":  {"roleplay": 0, "written": 0, "exam": 0, "deadline": "2025-11-15"},
+        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-01-08"},
+        "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2026-02-23"},
     },
 }
 
 CONFERENCE_ORDER = ["VCMC", "SVCDC", "SCDC"]
 CONFERENCE_DEADLINES = {
-    "VCMC":  "2026-11-15",
-    "SVCDC": "2027-01-08",
-    "SCDC":  "2027-02-23",
+    "VCMC":  "2025-11-15",
+    "SVCDC": "2026-01-08",
+    "SCDC":  "2026-02-23",
 }
 
 # Competitive-event labels used by mentor-pod administration.
 EVENT_TABS = ['BOR', 'EIP', 'EFB', 'EIB', 'ESB', 'IBP', 'IMC', 'PM', 'PSE', 'NA']
+
+MDP_TRACKING_FILE = os.getenv(
+    'MDP_TRACKING_FILE',
+    os.path.join(os.path.dirname(__file__), 'FINAL MDP Deadline Tracking.xlsx'),
+)
+MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v3-canonical-members-'
+
+
+def is_mdp_upload_enabled():
+    """Return True only while the temporary admin import page is enabled."""
+    return os.getenv('ENABLE_MDP_UPLOAD', '').strip().lower() in {
+        '1', 'true', 'yes', 'on',
+    }
+
+# Spreadsheet names that intentionally differ from account usernames. Joey's
+# source row is labelled "Joey Zhu" but the existing account is joey.shu.
+SPREADSHEET_ACCOUNT_OVERRIDES = {
+    'amber chang': ('ambery.chang',),
+    # The live account uses the workbook/email spelling. Do not fall back to
+    # the old ``avaneesh.nagare`` typo: if both accounts exist, that would
+    # update the wrong user's commitments and leave avaneesh.nangare stale.
+    'avaneesh nangare': ('avaneesh.nangare',),
+    'chun ka yu': ('chunka.yu',),
+    'elizabeth huang': ('lizzie.huang', 'elizabeth.huang'),
+    'joey zhu': ('joey.shu', 'joey.zhu'),
+    'lincoln tran': ('lincolnjacob.tran',),
+    'lucas wang': ('lucasj.wang',),
+    'ruhaan parandekar': ('r.parandekar',),
+    'sidharth swaminathan': ('s.swaminathan',),
+    'srinivasan satagopan': ('sk.satagopan',),
+    'varshini subramanian': ('v.subramanian',),
+    'yen-nhi tran': ('yennhi.tran',),
+}
 
 # Fallback catalog. Imported ChecklistRequirement rows drive Written Progress.
 CHECKLIST_ITEMS = {
@@ -139,6 +177,66 @@ WS_THRESHOLD = {
 }
 
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+
+# Validated from "2026-27 Officer List.xlsx". Position is intentionally omitted
+# because application permissions are driven only by Account Access.
+OFFICER_ROSTER_2026_27 = [
+    ("Mr. Shimada", "Admin"),
+    ("Dr. Stuart", "Admin"),
+    ("Mrs. Parayno", "Admin"),
+    ("Ms. Chicas", "Admin"),
+    ("Ms. Wang", "Admin"),
+    ("Hannah Li", "Admin"),
+    ("Chloe Ding", "Admin"),
+    ("Arissa Cao", "Admin"),
+    ("Saron Amdeberhan", "Admin"),
+    ("Revathi Mekkoth", "Officer"),
+    ("Crystal Chen", "Officer"),
+    ("Philina Chen", "Officer, Admin"),
+    ("Natalie Zhang", "Officer"),
+    ("Melody Leong", "Officer"),
+    ("Aryahi Sharma", "Officer"),
+    ("Olivia Kang", "Officer"),
+    ("Zihan Liu", "Officer"),
+    ("Aaron Vu", "Admin, Officer"),
+    ("Thatcher Kim", "Admin, Officer"),
+    ("Mia Tran", "Admin, Officer"),
+    ("Yen-Nhi Tran", "Admin, Officer"),
+    ("Eva Gu", "Officer"),
+    ("Evelyn Bai", "Officer"),
+    ("Allen Tu", "Officer"),
+    ("Jessica Ma", "Officer"),
+    ("Neela Koneru", "Officer"),
+    ("Sophie Yu", "Officer"),
+    ("Anay Kalchuri", "Officer"),
+    ("Lizzie Huang", "Officer"),
+    ("Ayden Wang", "Officer"),
+    ("Sophie Ji", "Officer"),
+    ("Sarah Xu", "Officer"),
+    ("Jason Huang", "Officer"),
+    ("Purab Shah", "Officer"),
+    ("Armaan Arya", "Officer"),
+    ("Audrey Sansone", "Officer"),
+    ("Isabella Yu", "Officer"),
+    ("Riya Khattri", "Officer"),
+    ("Zubin Lakhia", "Officer"),
+]
+
+# Shared temporary passwords requested for the roster import. Railway variables
+# can override these values without changing source code. Every imported user is
+# required to choose an individual password on first login.
+OFFICER_IMPORT_ADMIN_PASSWORD = os.getenv(
+    "OFFICER_IMPORT_ADMIN_PASSWORD", "Admin2627!"
+)
+OFFICER_IMPORT_OFFICER_PASSWORD = os.getenv(
+    "OFFICER_IMPORT_OFFICER_PASSWORD", "Officer2627!"
+)
+OFFICER_IMPORT_KEY = "2026-27-officer-roster-v3-advisors-and-additions"
+
+# This migration updates already-imported databases without rerunning the full
+# roster import (which would reset every officer's temporary password).
+REMOVED_ADMIN_ACCESS = ("Aryahi Sharma", "Olivia Kang", "Zihan Liu")
+REMOVED_ADMIN_ACCESS_KEY = "2026-27-remove-admin-access-aryahi-olivia-zihan-v1"
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -356,6 +454,14 @@ class ICPrepWebhookLog(db.Model):
     member = db.relationship('User', backref='icprep_webhook_logs')
 
 
+class DataMigration(db.Model):
+    """Records one-time data imports so redeploys do not reset accounts again."""
+    __tablename__ = 'data_migration'
+    key = db.Column(db.String(100), primary_key=True)
+    applied_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    details = db.Column(db.String(255))
+
+
 class PracticeLog(db.Model):
     """Completion record submitted by officer after a practice session."""
     __tablename__ = 'practice_log'
@@ -379,6 +485,792 @@ class PracticeLog(db.Model):
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
+
+
+def _account_name_key(value):
+    """Match names case-, whitespace-, and punctuation-insensitively."""
+    return re.sub(r'[^a-z0-9]', '', (value or '').lower())
+
+
+def _canonical_officer_username(full_name):
+    """Convert a roster name to first.last, or an advisor's lowercase surname."""
+    parts = re.findall(r'[a-z0-9]+(?:-[a-z0-9]+)*', (full_name or '').lower())
+    if len(parts) >= 2 and parts[0] in {'mr', 'ms', 'mrs', 'dr'}:
+        return parts[-1]
+    if len(parts) < 2:
+        raise ValueError(f'Officer name needs a first and last name: {full_name!r}')
+    return f'{parts[0]}.{parts[-1]}'
+
+
+def _delete_duplicate_member_account(member):
+    """Delete a roster officer's duplicate member account and member data."""
+    if member.role != 'member':
+        raise ValueError(f'Refusing to delete non-member account: {member.username}')
+
+    if Workshop.query.filter(
+        (Workshop.officer_id == member.id) | (Workshop.creator_id == member.id)
+    ).first():
+        raise RuntimeError(
+            f'Duplicate member {member.username} owns a workshop; '
+            'manual review is required before deletion.'
+        )
+
+    AHAttendance.query.filter_by(user_id=member.id).delete()
+    WSAttendance.query.filter_by(user_id=member.id).delete()
+    MentorPod.query.filter(
+        (MentorPod.member_id == member.id) | (MentorPod.mentor_id == member.id)
+    ).delete(synchronize_session=False)
+    Commitment.query.filter_by(user_id=member.id).delete()
+    ReminderLog.query.filter_by(user_id=member.id).delete()
+    ChecklistItem.query.filter_by(user_id=member.id).delete()
+    AnnualICPrepTracker.query.filter_by(member_id=member.id).delete()
+    ExamUpload.query.filter_by(member_id=member.id).delete()
+    ExamUpload.query.filter_by(reviewer_id=member.id).update(
+        {'reviewer_id': None}, synchronize_session=False
+    )
+    ICPrepWebhookLog.query.filter_by(member_id=member.id).delete()
+    PracticeLog.query.filter(
+        (PracticeLog.member_id == member.id) | (PracticeLog.officer_id == member.id)
+    ).delete(synchronize_session=False)
+    PracticeSession.query.filter_by(officer_id=member.id).delete()
+    PracticeSession.query.filter_by(member_id=member.id).update(
+        {'member_id': None}, synchronize_session=False
+    )
+    MentorPodEditLog.query.filter(
+        (MentorPodEditLog.member_id == member.id)
+        | (MentorPodEditLog.actor_id == member.id)
+    ).delete(synchronize_session=False)
+    MDPAuditLog.query.filter(
+        (MDPAuditLog.target_user_id == member.id)
+        | (MDPAuditLog.actor_id == member.id)
+    ).delete(synchronize_session=False)
+    AttendanceSubmission.query.filter_by(officer_id=member.id).delete()
+    GeneralAttendance.query.filter(
+        (GeneralAttendance.officer_id == member.id)
+        | (
+            db.func.lower(GeneralAttendance.member_name)
+            == member.username.strip().lower()
+        )
+    ).delete(synchronize_session=False)
+    db.session.execute(
+        workshop_signups.delete().where(workshop_signups.c.user_id == member.id)
+    )
+    db.session.delete(member)
+
+
+def import_2026_27_officer_roster():
+    """Canonicalize the 2026-27 roster exactly once, in one transaction."""
+    if db.session.get(DataMigration, OFFICER_IMPORT_KEY):
+        return
+
+    existing_by_key = defaultdict(list)
+    for user in User.query.all():
+        existing_by_key[_account_name_key(user.username)].append(user)
+
+    created = 0
+    updated = 0
+    deleted_member_duplicates = 0
+    for roster_name, access in OFFICER_ROSTER_2026_27:
+        username = _canonical_officer_username(roster_name)
+        roster_key = _account_name_key(roster_name)
+        username_key = _account_name_key(username)
+        candidate_keys = {roster_key, username_key}
+        matches = []
+        seen_user_ids = set()
+        for candidate_key in candidate_keys:
+            for candidate in existing_by_key.get(candidate_key, []):
+                identity = candidate.id if candidate.id is not None else id(candidate)
+                if identity not in seen_user_ids:
+                    seen_user_ids.add(identity)
+                    matches.append(candidate)
+        officer_matches = [user for user in matches if user.role != 'member']
+        member_matches = [user for user in matches if user.role == 'member']
+        if len(officer_matches) > 1:
+            names = ', '.join(user.username for user in officer_matches)
+            raise RuntimeError(
+                f'Multiple officer accounts match {roster_name}: {names}'
+            )
+
+        # Prefer an existing officer account. If only a member account exists,
+        # convert one of those rows so the person's database identity is reused.
+        user = officer_matches[0] if officer_matches else (
+            member_matches.pop(0) if member_matches else None
+        )
+        is_admin = 'admin' in access.lower()
+        temporary_password = (
+            OFFICER_IMPORT_ADMIN_PASSWORD
+            if is_admin else OFFICER_IMPORT_OFFICER_PASSWORD
+        )
+
+        if user is None:
+            user = User(username=username)
+            db.session.add(user)
+            existing_by_key[username_key] = [user]
+            created += 1
+        else:
+            updated += 1
+
+        # If both officer and member accounts existed for this roster name,
+        # remove only the duplicate member rows and their member-only records.
+        for duplicate_member in member_matches:
+            _delete_duplicate_member_account(duplicate_member)
+            deleted_member_duplicates += 1
+        if member_matches:
+            db.session.flush()
+
+        # The app represents admins as officer accounts with an admin flag.
+        user.username = username
+        user.role = 'officer'
+        user.is_admin = is_admin
+        user.password = generate_password_hash(temporary_password)
+        user.must_change_password = True
+        if user.is_competing is None:
+            user.is_competing = True
+
+    db.session.add(DataMigration(
+        key=OFFICER_IMPORT_KEY,
+        details=(
+            f'Created {created}; updated {updated}; '
+            f'deleted member duplicates {deleted_member_duplicates}; '
+            f'total {len(OFFICER_ROSTER_2026_27)}'
+        ),
+    ))
+    db.session.commit()
+    print(
+        f'[Officer Import] 2026-27 complete: created={created}, '
+        f'updated={updated}, member_duplicates_deleted={deleted_member_duplicates}, '
+        f'total={len(OFFICER_ROSTER_2026_27)}'
+    )
+
+
+def reconcile_removed_admin_access():
+    """Remove admin access from the three officers in existing databases."""
+    if db.session.get(DataMigration, REMOVED_ADMIN_ACCESS_KEY):
+        return
+
+    target_keys = set()
+    for roster_name in REMOVED_ADMIN_ACCESS:
+        target_keys.add(_account_name_key(roster_name))
+        target_keys.add(_account_name_key(_canonical_officer_username(roster_name)))
+
+    updated = []
+    for user in User.query.all():
+        if _account_name_key(user.username) in target_keys and user.is_admin:
+            user.is_admin = False
+            user.role = 'officer'
+            updated.append(user.username)
+
+    db.session.add(DataMigration(
+        key=REMOVED_ADMIN_ACCESS_KEY,
+        details=f'Removed admin access from: {", ".join(updated) or "no matching admins"}',
+    ))
+    db.session.commit()
+    print(f'[Admin Access] removed from: {", ".join(updated) or "no matching admins"}')
+
+
+# ── Dependency-free MDP workbook import ─────────────────────────────────────
+
+_XLSX_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+_XLSX_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+_XLSX_PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
+_WRITTEN_DEADLINE_RE = re.compile(r'(?<!\d)(\d{1,2}/\d{1,2})(?!\d)')
+
+
+def _spreadsheet_text(value):
+    if value is None:
+        return ''
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return re.sub(r'\s+', ' ', str(value).replace('\n', ' ')).strip()
+
+
+def _spreadsheet_key(value):
+    return _spreadsheet_text(value).lower()
+
+
+def _spreadsheet_event_key(value):
+    key = _spreadsheet_text(value).upper()
+    return 'NA' if key in {'N/A', 'N-A'} else key
+
+
+def _xlsx_formula_fallback(formula):
+    """Recover the cached Google-Sheets value stored in an IFERROR formula."""
+    text = (formula or '').strip()
+    if not text.upper().startswith('IFERROR('):
+        return None
+    match = re.search(
+        r',\s*("(?:[^"]|"")*"|[-+]?\d+(?:\.\d+)?)\s*\)\s*$',
+        text,
+    )
+    if not match:
+        return None
+    raw = match.group(1)
+    if raw.startswith('"'):
+        return raw[1:-1].replace('""', '"')
+    try:
+        number = float(raw)
+        return int(number) if number.is_integer() else number
+    except ValueError:
+        return None
+
+
+def _xlsx_column_index(cell_reference):
+    letters = re.match(r'[A-Z]+', (cell_reference or '').upper())
+    if not letters:
+        return 0
+    result = 0
+    for char in letters.group(0):
+        result = result * 26 + ord(char) - ord('A') + 1
+    return result - 1
+
+
+def _xlsx_cell_value(cell, shared_strings):
+    cell_type = cell.attrib.get('t')
+    formula_node = cell.find(f'{{{_XLSX_NS}}}f')
+    formula = formula_node.text if formula_node is not None else ''
+    value_node = cell.find(f'{{{_XLSX_NS}}}v')
+    raw = value_node.text if value_node is not None else None
+
+    if cell_type == 'inlineStr':
+        parts = [node.text or '' for node in cell.findall(f'.//{{{_XLSX_NS}}}t')]
+        value = ''.join(parts)
+    elif cell_type == 's' and raw is not None:
+        try:
+            value = shared_strings[int(raw)]
+        except (ValueError, IndexError):
+            value = ''
+    elif cell_type == 'b':
+        value = raw == '1'
+    elif cell_type in {'str', 'e'}:
+        value = raw or ''
+    elif raw in (None, ''):
+        value = ''
+    else:
+        try:
+            number = float(raw)
+            value = int(number) if number.is_integer() else number
+        except ValueError:
+            value = raw
+
+    # The Pods sheet was exported from Google Sheets. Excel stores #NAME? in
+    # its value cache and the real imported value as IFERROR's final argument.
+    if value in ('', '#NAME?') and formula:
+        fallback = _xlsx_formula_fallback(formula)
+        if fallback is not None:
+            value = fallback
+    return value
+
+
+def _read_xlsx_sheets(path, wanted_names):
+    """Return {sheet_name: rows} using only Python's standard library."""
+    with zipfile.ZipFile(path) as archive:
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in archive.namelist():
+            root = ET.fromstring(archive.read('xl/sharedStrings.xml'))
+            for item in root.findall(f'{{{_XLSX_NS}}}si'):
+                shared_strings.append(''.join(
+                    node.text or '' for node in item.findall(f'.//{{{_XLSX_NS}}}t')
+                ))
+
+        workbook_root = ET.fromstring(archive.read('xl/workbook.xml'))
+        rels_root = ET.fromstring(archive.read('xl/_rels/workbook.xml.rels'))
+        relationships = {
+            rel.attrib['Id']: rel.attrib['Target']
+            for rel in rels_root.findall(f'{{{_XLSX_PACKAGE_REL_NS}}}Relationship')
+        }
+        sheet_paths = {}
+        for sheet in workbook_root.findall(f'.//{{{_XLSX_NS}}}sheet'):
+            name = sheet.attrib.get('name')
+            if name not in wanted_names:
+                continue
+            rel_id = sheet.attrib.get(f'{{{_XLSX_REL_NS}}}id')
+            target = relationships.get(rel_id, '')
+            sheet_paths[name] = (
+                target.lstrip('/') if target.startswith('/')
+                else posixpath.normpath(posixpath.join('xl', target))
+            )
+
+        missing = sorted(set(wanted_names) - set(sheet_paths))
+        if missing:
+            raise RuntimeError(f'MDP workbook is missing sheet(s): {", ".join(missing)}')
+
+        result = {}
+        for name, sheet_path in sheet_paths.items():
+            root = ET.fromstring(archive.read(sheet_path))
+            rows = []
+            for row_node in root.findall(f'.//{{{_XLSX_NS}}}sheetData/{{{_XLSX_NS}}}row'):
+                values_by_index = {}
+                for cell in row_node.findall(f'{{{_XLSX_NS}}}c'):
+                    index = _xlsx_column_index(cell.attrib.get('r'))
+                    values_by_index[index] = _xlsx_cell_value(cell, shared_strings)
+                if values_by_index:
+                    width = max(values_by_index) + 1
+                    row = [''] * width
+                    for index, value in values_by_index.items():
+                        row[index] = value
+                else:
+                    row = []
+                rows.append(row)
+            result[name] = rows
+        return result
+
+
+def _row_value(row, index):
+    return row[index] if index is not None and index < len(row) else ''
+
+
+def _header_index(headers, *wanted):
+    wanted_keys = {_spreadsheet_key(value) for value in wanted}
+    for index, header in enumerate(headers):
+        if _spreadsheet_key(header) in wanted_keys:
+            return index
+    return None
+
+
+def _spreadsheet_number(value):
+    try:
+        return int(round(float(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _spreadsheet_checked(value):
+    if isinstance(value, bool):
+        return value
+    try:
+        return float(value) == 1.0
+    except (TypeError, ValueError):
+        return _spreadsheet_key(value) in {'true', 'yes', 'y', 'checked', 'x'}
+
+
+def _spreadsheet_username_candidates(name):
+    normalized = _spreadsheet_key(name)
+    if not normalized:
+        return []
+    parts = normalized.split()
+    candidates = {
+        normalized,
+        normalized.replace(' ', ''),
+        normalized.replace(' ', '.'),
+        normalized.replace(' ', '_'),
+    }
+    if len(parts) >= 2:
+        candidates.add(f'{parts[0]}.{parts[-1]}')
+    return list(candidates)
+
+
+def _find_spreadsheet_user(name, email, users_by_username, users_by_email):
+    normalized_name = _spreadsheet_key(name)
+    for username in SPREADSHEET_ACCOUNT_OVERRIDES.get(normalized_name, ()):
+        user = users_by_username.get(username.lower())
+        if user:
+            return user
+    normalized_email = _spreadsheet_key(email)
+    if normalized_email and normalized_email in users_by_email:
+        return users_by_email[normalized_email]
+    # Most app usernames are the local part of the Warriorlife email. This
+    # keeps imports reliable even when the User.email field was never filled.
+    if '@' in normalized_email:
+        email_username = normalized_email.split('@', 1)[0]
+        user = users_by_username.get(email_username)
+        if user:
+            return user
+    for candidate in _spreadsheet_username_candidates(name):
+        user = users_by_username.get(candidate)
+        if user:
+            return user
+    return None
+
+
+def _conference_columns(headers):
+    """Map duplicate RP/EX/WR headers inside their conference block."""
+    result = defaultdict(dict)
+    active_conference = None
+    for index, header in enumerate(headers):
+        key = _spreadsheet_key(header)
+        conference_match = re.search(r'\b(vcmc|svcdc|scdc)\b', key)
+        if conference_match and ('conference:' in key or 'commitments' in key):
+            active_conference = conference_match.group(1).upper()
+            continue
+        if not active_conference:
+            continue
+        if key.startswith('roleplays:'):
+            result[active_conference]['roleplay'] = index
+        elif key.startswith('exams:'):
+            result[active_conference]['exam'] = index
+        elif key.startswith('written presentation:'):
+            result[active_conference]['written'] = index
+    return dict(result)
+
+
+def _written_columns(headers):
+    start_index = _header_index(headers, 'SCDC Total Progress')
+    if start_index is None:
+        return []
+    end_index = None
+    for index in range(start_index + 1, len(headers)):
+        key = _spreadsheet_key(headers[index])
+        if 'conference:' in key and 'vcmc' in key:
+            end_index = index
+            break
+    if end_index is None:
+        return []
+    columns = []
+    for index in range(start_index + 1, end_index):
+        header = _spreadsheet_text(headers[index])
+        match = _WRITTEN_DEADLINE_RE.search(header)
+        if not match:
+            continue
+        deadline = match.group(1)
+        item_name = _WRITTEN_DEADLINE_RE.sub('', header).strip(' -–—().:')
+        if item_name:
+            columns.append((index, item_name, deadline))
+    return columns
+
+
+def _format_spreadsheet_grade(value):
+    if value in (None, ''):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return _spreadsheet_text(value) or None
+    return f'{number * 100:.1f}%' if number <= 1 else f'{number:.1f}'
+
+
+def import_mdp_tracking_workbook(path, commitments_only=False):
+    """Synchronize matched members from the MDP workbook transactionally."""
+    wanted_sheets = set(EVENT_TABS) | {
+        'Pods (VIEW ONLY)',
+        'Mentee Commitment TrackingMDP',
+    }
+    sheets = _read_xlsx_sheets(path, wanted_sheets)
+
+    main_rows = sheets['Mentee Commitment TrackingMDP']
+    if not main_rows:
+        raise RuntimeError('MDP summary sheet is empty.')
+    main_headers = main_rows[0]
+    main_name_col = _header_index(main_headers, 'Mentee Name')
+    main_email_col = _header_index(main_headers, 'Email')
+    main_event_col = _header_index(main_headers, 'Event')
+    main_category_col = _header_index(main_headers, 'Event Category')
+    grade_columns = {
+        'VCMC': _header_index(main_headers, 'MC Grade'),
+        'SVCDC': _header_index(main_headers, 'SV Grade'),
+        'SCDC': _header_index(main_headers, 'SC Grade'),
+    }
+    event_to_category = {}
+    grades_by_identity = {}
+    for row in main_rows[1:]:
+        name = _spreadsheet_text(_row_value(row, main_name_col))
+        email = _spreadsheet_key(_row_value(row, main_email_col))
+        event = _spreadsheet_event_key(_row_value(row, main_event_col))
+        category = _spreadsheet_event_key(_row_value(row, main_category_col))
+        if event and category:
+            event_to_category[event] = category
+        grades = {
+            conference: _format_spreadsheet_grade(_row_value(row, column))
+            for conference, column in grade_columns.items()
+        }
+        for identity in (email, _spreadsheet_key(name)):
+            if identity:
+                grades_by_identity[identity] = grades
+
+    completion_by_identity = {}
+    written_requirements = {}
+    written_completion = {}
+    for tab in EVENT_TABS:
+        rows = sheets[tab]
+        if not rows:
+            continue
+        headers = rows[0]
+        name_col = _header_index(headers, 'Legal Name', 'Legal name', 'Mentee Name', 'Mentee', 'Name')
+        email_col = _header_index(headers, 'Email')
+        event_col = _header_index(headers, 'Event')
+        conference_columns = _conference_columns(headers)
+        written_columns = _written_columns(headers)
+        for row in rows[1:]:
+            name = _spreadsheet_text(_row_value(row, name_col))
+            email = _spreadsheet_key(_row_value(row, email_col))
+            event = _spreadsheet_event_key(_row_value(row, event_col))
+            if not name or not event:
+                continue
+            category = event_to_category.get(event, event)
+            if category != tab:
+                continue
+            completion = {
+                conference: {
+                    bucket: _spreadsheet_number(_row_value(row, column))
+                    for bucket, column in bucket_columns.items()
+                }
+                for conference, bucket_columns in conference_columns.items()
+            }
+            checks = {
+                item_name: _spreadsheet_checked(_row_value(row, column))
+                for column, item_name, _ in written_columns
+            }
+            for _, item_name, deadline in written_columns:
+                written_requirements[(event, item_name)] = deadline
+            for identity in (email, _spreadsheet_key(name)):
+                if identity:
+                    completion_by_identity[identity] = completion
+                    written_completion[(identity, event)] = checks
+
+    pods_rows = sheets['Pods (VIEW ONLY)']
+    if not pods_rows:
+        raise RuntimeError('Pods (VIEW ONLY) sheet is empty.')
+    pod_headers = pods_rows[0]
+    pod_number_col = 0
+    mentor_col = _header_index(pod_headers, 'Mentor')
+    mentee_col = _header_index(pod_headers, 'Mentee')
+    pod_email_col = _header_index(pod_headers, 'Email')
+    status_col = _header_index(pod_headers, 'Status')
+    years_col = _header_index(pod_headers, 'Years in DECA')
+    pod_event_col = _header_index(pod_headers, 'Event')
+    legal_name_col = _header_index(pod_headers, 'Legal name', 'Legal Name')
+
+    all_users = User.query.all()
+    users_by_username = {user.username.lower(): user for user in all_users}
+    users_by_email = {
+        user.email.lower(): user for user in all_users if user.email
+    }
+    officer_users = [user for user in all_users if user.role == 'officer']
+    officers_by_username = {user.username.lower(): user for user in officer_users}
+    officers_by_email = {
+        user.email.lower(): user for user in officer_users if user.email
+    }
+    pods_by_user = {
+        pod.member_id: pod for pod in MentorPod.query.all()
+    }
+    commitments_by_key = {
+        (commitment.user_id, commitment.event): commitment
+        for commitment in Commitment.query.filter(Commitment.user_id.is_not(None)).all()
+    }
+    checklist_items_by_key = {
+        (item.user_id, item.event, item.item_name): item
+        for item in ChecklistItem.query.all()
+    }
+
+    matched_user_ids = set()
+    unmatched_members = []
+    members_without_completion = []
+    unmatched_mentors = []
+    pods_updated = commitments_updated = checklist_items_updated = 0
+
+    # Replace the written catalog only for a full import. A corrective
+    # commitment-only run must not overwrite checkbox changes made in the app.
+    if not commitments_only:
+        ChecklistRequirement.query.delete()
+        for (event, item_name), deadline in sorted(written_requirements.items()):
+            db.session.add(ChecklistRequirement(
+                event=event,
+                item_name=item_name,
+                deadline=deadline,
+            ))
+
+    for row in pods_rows[1:]:
+        mentee_name = _spreadsheet_text(_row_value(row, mentee_col))
+        legal_name = _spreadsheet_text(_row_value(row, legal_name_col))
+        display_name = legal_name or mentee_name
+        email = _spreadsheet_text(_row_value(row, pod_email_col))
+        if not display_name and not email:
+            continue
+        # Google Sheets leaves formula artifacts below the real pod roster.
+        # Every actual roster row has a Warriorlife email; ignoring the
+        # artifacts prevents team IDs from being reported as fake members.
+        if '@' not in email:
+            continue
+        member = _find_spreadsheet_user(
+            display_name or mentee_name,
+            email,
+            users_by_username,
+            users_by_email,
+        ) or _find_spreadsheet_user(
+            mentee_name,
+            email,
+            users_by_username,
+            users_by_email,
+        )
+        if not member:
+            unmatched_members.append(display_name or email)
+            continue
+
+        mentor_name = _spreadsheet_text(_row_value(row, mentor_col))
+        mentor = None
+        if not commitments_only:
+            mentor = _find_spreadsheet_user(
+                mentor_name,
+                '',
+                officers_by_username,
+                officers_by_email,
+            )
+            if not mentor:
+                unmatched_mentors.append(f'{mentor_name} ({member.username})')
+
+        matched_user_ids.add(member.id)
+        status = _spreadsheet_text(_row_value(row, status_col))
+        level = 'E' if status.lower() == 'experienced' else 'N'
+        event = _spreadsheet_event_key(_row_value(row, pod_event_col))
+        year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
+        if not commitments_only:
+            if email and not member.email:
+                member.email = email
+                users_by_email[email.lower()] = member
+            member.is_competing = status.lower() != 'non-compete'
+            pod = pods_by_user.get(member.id)
+            if not pod and mentor:
+                pod = MentorPod(member_id=member.id, mentor_id=mentor.id, pod_number=0)
+                db.session.add(pod)
+                pods_by_user[member.id] = pod
+            if pod:
+                if mentor:
+                    pod.mentor_id = mentor.id
+                pod.experience_level = level
+                pod.year_in_deca = year_in_deca
+                pod.event = event or None
+                pod_number = _spreadsheet_number(_row_value(row, pod_number_col))
+                if pod_number:
+                    pod.pod_number = pod_number
+                pods_updated += 1
+
+        identities = [_spreadsheet_key(email), _spreadsheet_key(display_name), _spreadsheet_key(mentee_name)]
+        completion = next(
+            (completion_by_identity[key] for key in identities if key in completion_by_identity),
+            None,
+        )
+        # A missing completion row is a mapping error, not proof that the
+        # member completed zero requirements. Preserve the existing database
+        # rows and surface the name in import diagnostics instead of silently
+        # resetting all three conferences to 0 completed.
+        if completion is None:
+            members_without_completion.append(display_name or email)
+            continue
+        grades = next(
+            (grades_by_identity[key] for key in identities if key in grades_by_identity),
+            {},
+        )
+        requirements = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
+        for conference in CONFERENCE_ORDER:
+            rule = requirements[conference]
+            done = completion.get(conference)
+            required = {
+                bucket: (
+                    rule[bucket]
+                    if done is None or bucket in done
+                    else 0
+                )
+                for bucket in ('roleplay', 'written', 'exam')
+            }
+            done = done or {}
+            commitment_key = (member.id, conference)
+            commitment = commitments_by_key.get(commitment_key)
+            if not commitment:
+                commitment = Commitment(
+                    user_id=member.id,
+                    member_name=member.username,
+                    event=conference,
+                )
+                db.session.add(commitment)
+                commitments_by_key[commitment_key] = commitment
+            commitment.member_name = member.username
+            commitment.required_roleplay = required['roleplay']
+            commitment.required_written = required['written']
+            commitment.required_exam = required['exam']
+            commitment.remaining_roleplay = max(0, required['roleplay'] - done.get('roleplay', 0))
+            commitment.remaining_written = max(0, required['written'] - done.get('written', 0))
+            commitment.remaining_exam = max(0, required['exam'] - done.get('exam', 0))
+            commitment.deadline = datetime.strptime(rule['deadline'], '%Y-%m-%d').date()
+            if grades.get(conference) is not None:
+                commitment.grade = grades[conference]
+            commitments_updated += 1
+
+        if not commitments_only:
+            checks = next(
+                (
+                    written_completion[(key, event)]
+                    for key in identities
+                    if (key, event) in written_completion
+                ),
+                {},
+            )
+            for item_name, completed in checks.items():
+                item_key = (member.id, event, item_name)
+                item = checklist_items_by_key.get(item_key)
+                if not item:
+                    item = ChecklistItem(
+                        user_id=member.id,
+                        event=event,
+                        item_name=item_name,
+                    )
+                    db.session.add(item)
+                    checklist_items_by_key[item_key] = item
+                item.completed = completed
+                checklist_items_updated += 1
+
+    return {
+        'matched_members': len(matched_user_ids),
+        'unmatched_members': sorted(set(filter(None, unmatched_members))),
+        'members_without_completion': sorted(set(filter(None, members_without_completion))),
+        'unmatched_mentors': sorted(set(filter(None, unmatched_mentors))),
+        'pods_updated': pods_updated,
+        'commitments_updated': commitments_updated,
+        'checklist_requirements': len(written_requirements),
+        'checklist_items_updated': checklist_items_updated,
+    }
+
+
+def sync_mdp_tracking_workbook():
+    """Import each workbook version once without adding pandas to production."""
+    candidates = [MDP_TRACKING_FILE]
+    bundled = os.path.join(
+        os.path.dirname(__file__),
+        'source_workbook',
+        'FINAL MDP Deadline Tracking.xlsx',
+    )
+    if bundled not in candidates:
+        candidates.append(bundled)
+    path = next((candidate for candidate in candidates if candidate and os.path.isfile(candidate)), None)
+    if not path:
+        print('[MDP Import] workbook not found; set MDP_TRACKING_FILE to enable sync.')
+        return None
+
+    digest = hashlib.sha256()
+    with open(path, 'rb') as workbook_file:
+        for chunk in iter(lambda: workbook_file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    migration_key = MDP_IMPORT_KEY_PREFIX + digest.hexdigest()[:32]
+    if db.session.get(DataMigration, migration_key):
+        return None
+
+    stats = import_mdp_tracking_workbook(path, commitments_only=True)
+    db.session.add(DataMigration(
+        key=migration_key,
+        details=(
+            f"Matched {stats['matched_members']}; pods {stats['pods_updated']}; "
+            f"commitments {stats['commitments_updated']}; "
+            f"unmatched members {len(stats['unmatched_members'])}; "
+            f"missing completion rows {len(stats['members_without_completion'])}"
+        ),
+    ))
+    db.session.commit()
+    print(
+        '[MDP Import] complete: '
+        f"matched={stats['matched_members']}, pods={stats['pods_updated']}, "
+        f"commitments={stats['commitments_updated']}, "
+        f"unmatched_members={len(stats['unmatched_members'])}, "
+        f"missing_completion={len(stats['members_without_completion'])}, "
+        f"unmatched_mentors={len(stats['unmatched_mentors'])}"
+    )
+    if stats['unmatched_members']:
+        print('[MDP Import] unmatched members: ' + ', '.join(stats['unmatched_members']))
+    if stats['members_without_completion']:
+        print(
+            '[MDP Import] members without completion rows: '
+            + ', '.join(stats['members_without_completion'])
+        )
+    if stats['unmatched_mentors']:
+        print('[MDP Import] unmatched mentors: ' + ', '.join(stats['unmatched_mentors']))
+    return stats
 
 # ── Commitment helpers ───────────────────────────────────────────────────────
 
@@ -427,10 +1319,11 @@ def ensure_commitments(member):
         if existing.member_name != member.username:
             existing.member_name = member.username
             changed = True
-        if existing.deadline is None:
-            existing.deadline = datetime.strptime(
-                rule["deadline"], "%Y-%m-%d"
-            ).date()
+        configured_deadline = datetime.strptime(
+            rule["deadline"], "%Y-%m-%d"
+        ).date()
+        if existing.deadline != configured_deadline:
+            existing.deadline = configured_deadline
             changed = True
 
         # Apply the current matrix to existing rows. Preserve the number already
@@ -512,14 +1405,16 @@ def get_attendance_stats(
     level = pod.experience_level if pod and pod.experience_level else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
+    is_competing = user.is_competing is not False
     ah_ok = ah_rate >= (AH_THRESHOLD * 100)
     ws_ok = ws_rate >= ws_threshold_pct
+    at_risk = is_competing and (not ah_ok or not ws_ok)
     risk_reasons = []
-    if not ah_ok:
+    if is_competing and not ah_ok:
         risk_reasons.append(
             f"AH attendance {ah_rate}% < {AH_THRESHOLD * 100:.0f}% required"
         )
-    if not ws_ok:
+    if is_competing and not ws_ok:
         risk_reasons.append(
             f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required"
         )
@@ -539,7 +1434,10 @@ def get_attendance_stats(
         'ws_rate': ws_rate,
         'level': level,
         'ws_threshold_pct': ws_threshold_pct,
-        'at_risk': not ah_ok or not ws_ok,
+        'is_competing': is_competing,
+        'status': 'non_compete' if not is_competing else ('at_risk' if at_risk else 'on_track'),
+        'status_label': 'Non-Compete' if not is_competing else ('At Risk' if at_risk else 'On Track'),
+        'at_risk': at_risk,
         'risk_reasons': risk_reasons,
     }
 
@@ -548,7 +1446,9 @@ def get_attendance_stats(
 class RegisterForm(FlaskForm):
     username = StringField('Username', [DataRequired(), Length(min=3)])
     password = PasswordField('Password', [DataRequired(), Length(min=6)])
-    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member'), ('admin', 'Admin')], default='')
+    # Admin access is granted only by the canonical roster or an existing admin.
+    # Public registration must never allow a visitor to self-select admin.
+    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member')], default='')
     submit = SubmitField('Register')
 
     def validate_role(self, field):
@@ -633,6 +1533,18 @@ class MentorPodForm(FlaskForm):
         default='yes',
     )
     submit = SubmitField('Save')
+
+
+class MDPWorkbookUploadForm(FlaskForm):
+    """Temporary, admin-only upload form for commitment repairs."""
+    workbook = FileField(
+        'MDP tracking workbook',
+        validators=[
+            FileRequired(message='Please select the MDP tracking workbook.'),
+            FileAllowed(['xlsx'], message='Please upload an .xlsx workbook.'),
+        ],
+    )
+    submit = SubmitField('Import Commitments')
 
 
 # ── Schema migration ──────────────────────────────────────────────────────────
@@ -765,6 +1677,31 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    # One-time 2026-27 officer import. The operation is transactional and an
+    # import problem is logged without preventing the web service from booting.
+    try:
+        import_2026_27_officer_roster()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Officer Import] skipped: {exc}')
+
+    # Apply targeted access changes to databases where the roster import has
+    # already run. This does not change anyone's password.
+    try:
+        reconcile_removed_admin_access()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Admin Access] reconciliation skipped: {exc}')
+
+    # Import the exact workbook values after officer reconciliation so members
+    # who are also officers (for example Anay Kalchuri) retain their tracking
+    # rows. Each workbook byte-version is imported only once.
+    try:
+        sync_mdp_tracking_workbook()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[MDP Import] skipped: {exc}')
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1002,11 +1939,14 @@ def log_mdp_action(actor_id, action, category, target_user_id=None, details=""):
     ))
 
 
-def get_commitment_status(user):
-    commitments = Commitment.query.filter_by(user_id=user.id).all()
+def get_commitment_status(user, commitments=None, today=None):
+    if user.is_competing is False:
+        return 'non_compete'
+    if commitments is None:
+        commitments = Commitment.query.filter_by(user_id=user.id).all()
     if not commitments:
         return 'on_track'
-    today = datetime.now(LOCAL_TZ).date()
+    today = today or datetime.now(LOCAL_TZ).date()
     for commitment in commitments:
         remaining = (
             commitment.remaining_roleplay
@@ -1019,6 +1959,8 @@ def get_commitment_status(user):
 
 
 def get_commitments_incomplete(user, commitments=None):
+    if user.is_competing is False:
+        return False
     if commitments is None:
         commitments = Commitment.query.filter_by(user_id=user.id).all()
     return any(
@@ -1029,7 +1971,13 @@ def get_commitments_incomplete(user, commitments=None):
 
 def _members_visible_to_current_user():
     if current_user.is_admin:
-        return User.query.filter_by(role='member').order_by(User.username).all()
+        tracked_ids = [row[0] for row in db.session.query(MentorPod.member_id).all()]
+        query = User.query.filter(User.role == 'member')
+        if tracked_ids:
+            query = User.query.filter(
+                db.or_(User.role == 'member', User.id.in_(tracked_ids))
+            )
+        return query.order_by(User.username).all()
     pod_member_ids = [
         row.member_id
         for row in MentorPod.query.filter_by(mentor_id=current_user.id).all()
@@ -1199,6 +2147,7 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
     today = today or datetime.now(LOCAL_TZ).date()
     rows = []
     for member in members:
+        is_competing = member.is_competing is not False
         pod = MentorPod.query.filter_by(member_id=member.id).first()
         event = (pod.event or '').strip() if pod else ''
         level = pod.experience_level if pod else 'N'
@@ -1246,7 +2195,11 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             for item in written['missing_items']
             if item['name'] not in overdue_written_names
         )
-        if hard_risk_reasons:
+        if not is_competing:
+            status, status_label = 'non_compete', 'Non-Compete'
+            hard_risk_reasons = []
+            attention_reasons = []
+        elif hard_risk_reasons:
             status, status_label = 'at_risk', 'At Risk'
         elif attention_reasons:
             status, status_label = 'needs_attention', 'Needs Attention'
@@ -1259,6 +2212,7 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             'event': event_label,
             'event_keys': [event_label],
             'level': level,
+            'is_competing': is_competing,
             'status': status,
             'status_label': status_label,
             'hard_risk_reasons': hard_risk_reasons,
@@ -1292,9 +2246,10 @@ def dashboard():
 
     if current_user.is_admin:
         # Admin is a distinct dashboard scope. Show every member, not only
-        # members assigned to the admin's underlying officer account.
+        # members assigned to the admin's underlying officer account. Tracked
+        # student officers remain included through their MentorPod member row.
         dashboard_scope_label = 'All Members'
-        visible_members = User.query.filter_by(role='member').order_by(User.username).all()
+        visible_members = _members_visible_to_current_user()
 
     elif current_user.role == 'officer':
         assigned_workshops = Workshop.query.filter_by(
@@ -1458,6 +2413,9 @@ def dashboard():
                 'ws_sum': stats['ws_sum'],
                 'ws_total': stats['ws_total'],
                 'ws_threshold_pct': stats['ws_threshold_pct'],
+                'is_competing': stats['is_competing'],
+                'status': stats['status'],
+                'status_label': stats['status_label'],
                 'at_risk': stats['at_risk'],
                 'risk_reasons': stats['risk_reasons'],
                 'below_commitments': get_commitments_incomplete(
@@ -1526,8 +2484,8 @@ def register():
         user = User(
             username=form.username.data.strip(),
             password=hashed_pw,
-            role='officer' if selected_role == 'admin' else selected_role,
-            is_admin=(selected_role == 'admin'),
+            role=selected_role,
+            is_admin=False,
         )
         db.session.add(user)
         db.session.commit()
@@ -2395,7 +3353,10 @@ def at_risk_report():
     all_rows = build_mentee_risk_report(
         members, event_items, event_deadlines, today=today
     )
-    report_rows = [row for row in all_rows if row['status'] != 'on_track']
+    report_rows = [
+        row for row in all_rows
+        if row['status'] in {'at_risk', 'needs_attention'}
+    ]
     report_rows.sort(key=lambda row: (
         0 if row['status'] == 'at_risk' else 1,
         row['mentor_name'].lower(),
@@ -2406,6 +3367,7 @@ def at_risk_report():
         'at_risk_count': sum(row['status'] == 'at_risk' for row in all_rows),
         'needs_attention_count': sum(row['status'] == 'needs_attention' for row in all_rows),
         'on_track_count': sum(row['status'] == 'on_track' for row in all_rows),
+        'non_compete_count': sum(row['status'] == 'non_compete' for row in all_rows),
         'actionable_count': len(report_rows),
     }
     return render_template(
@@ -2426,7 +3388,10 @@ def export_at_risk_report():
     rows = build_mentee_risk_report(
         _members_visible_to_current_user(), event_items, event_deadlines, today=today
     )
-    rows = [row for row in rows if row['status'] != 'on_track']
+    rows = [
+        row for row in rows
+        if row['status'] in {'at_risk', 'needs_attention'}
+    ]
     rows.sort(key=lambda row: (
         0 if row['status'] == 'at_risk' else 1,
         row['mentor_name'].lower(),
@@ -2481,6 +3446,135 @@ def admin_required(f):
     return decorated
 
 
+def _delete_user_account_and_dependencies(user):
+    """Delete one account after removing every database reference to it."""
+    user_id = user.id
+    username = (user.username or '').strip()
+
+    # Remove sessions owned by this user; preserve another officer's session by
+    # clearing only the deleted member's signup.
+    owned_session_ids = [
+        row[0]
+        for row in db.session.query(PracticeSession.id).filter_by(
+            officer_id=user_id
+        ).all()
+    ]
+    practice_log_filter = (
+        (PracticeLog.member_id == user_id)
+        | (PracticeLog.officer_id == user_id)
+    )
+    if owned_session_ids:
+        practice_log_filter = practice_log_filter | (
+            PracticeLog.practice_session_id.in_(owned_session_ids)
+        )
+    PracticeLog.query.filter(practice_log_filter).delete(
+        synchronize_session=False
+    )
+    if owned_session_ids:
+        PracticeSession.query.filter(
+            PracticeSession.id.in_(owned_session_ids)
+        ).delete(synchronize_session=False)
+    PracticeSession.query.filter_by(member_id=user_id).update(
+        {'member_id': None}, synchronize_session=False
+    )
+
+    # Remove uploads owned by this member and retain other uploads by clearing
+    # the deleted reviewer's optional reference.
+    ExamUpload.query.filter_by(member_id=user_id).delete(
+        synchronize_session=False
+    )
+    ExamUpload.query.filter_by(reviewer_id=user_id).update(
+        {'reviewer_id': None}, synchronize_session=False
+    )
+    ICPrepWebhookLog.query.filter_by(member_id=user_id).delete(
+        synchronize_session=False
+    )
+
+    # Delete hosted workshops and their dependent rows. If this user only
+    # created a workshop hosted by somebody else, retain it with no creator.
+    hosted_workshop_ids = [
+        row[0]
+        for row in db.session.query(Workshop.id).filter_by(
+            officer_id=user_id
+        ).all()
+    ]
+    attendance_submission_filter = AttendanceSubmission.officer_id == user_id
+    reminder_filter = ReminderLog.user_id == user_id
+    if hosted_workshop_ids:
+        attendance_submission_filter = attendance_submission_filter | (
+            AttendanceSubmission.workshop_id.in_(hosted_workshop_ids)
+        )
+        reminder_filter = reminder_filter | (
+            ReminderLog.workshop_id.in_(hosted_workshop_ids)
+        )
+    AttendanceSubmission.query.filter(attendance_submission_filter).delete(
+        synchronize_session=False
+    )
+    ReminderLog.query.filter(reminder_filter).delete(
+        synchronize_session=False
+    )
+    db.session.execute(
+        workshop_signups.delete().where(workshop_signups.c.user_id == user_id)
+    )
+    if hosted_workshop_ids:
+        db.session.execute(
+            workshop_signups.delete().where(
+                workshop_signups.c.workshop_id.in_(hosted_workshop_ids)
+            )
+        )
+        Workshop.query.filter(
+            Workshop.id.in_(hosted_workshop_ids)
+        ).delete(synchronize_session=False)
+    Workshop.query.filter_by(creator_id=user_id).update(
+        {'creator_id': None}, synchronize_session=False
+    )
+
+    # Delete member progress only after rows that can reference commitments.
+    AHAttendance.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    WSAttendance.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    ChecklistItem.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    AnnualICPrepTracker.query.filter_by(member_id=user_id).delete(
+        synchronize_session=False
+    )
+    Commitment.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    MentorPod.query.filter(
+        (MentorPod.member_id == user_id) | (MentorPod.mentor_id == user_id)
+    ).delete(synchronize_session=False)
+    GeneralAttendance.query.filter(
+        (GeneralAttendance.officer_id == user_id)
+        | (
+            db.func.lower(GeneralAttendance.member_name)
+            == username.lower()
+        )
+    ).delete(synchronize_session=False)
+
+    # Preserve target-side audit history, but actor rows cannot survive because
+    # actor_id is required. Pod edit logs require both user references.
+    MDPAuditLog.query.filter_by(target_user_id=user_id).update(
+        {'target_user_id': None}, synchronize_session=False
+    )
+    MDPAuditLog.query.filter_by(actor_id=user_id).delete(
+        synchronize_session=False
+    )
+    MentorPodEditLog.query.filter(
+        (MentorPodEditLog.member_id == user_id)
+        | (MentorPodEditLog.actor_id == user_id)
+    ).delete(synchronize_session=False)
+
+    db.session.delete(user)
+    # Surface any missed constraint for this specific account before continuing
+    # to the next test account; the surrounding transaction still stays atomic.
+    db.session.flush()
+
+
 @app.route('/admin')
 @login_required
 @admin_required
@@ -2509,28 +3603,14 @@ def admin_delete_user(user_id):
         flash('You cannot delete your own account.', 'danger')
         return redirect(url_for('admin_panel'))
     username = user.username
-    AHAttendance.query.filter_by(user_id=user.id).delete()
-    WSAttendance.query.filter_by(user_id=user.id).delete()
-    MentorPod.query.filter(
-        (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
-    ).delete()
-    Commitment.query.filter_by(user_id=user.id).delete()
-    ReminderLog.query.filter_by(user_id=user.id).delete()
-    db.session.execute(
-        workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
-    )
-    ChecklistItem.query.filter_by(user_id=user.id).delete()
-    AnnualICPrepTracker.query.filter_by(member_id=user.id).delete()
-    ExamUpload.query.filter(ExamUpload.member_id == user.id).delete(synchronize_session=False)
-    ICPrepWebhookLog.query.filter(ICPrepWebhookLog.member_id == user.id).delete(synchronize_session=False)
-    PracticeLog.query.filter(
-        (PracticeLog.member_id == user.id) | (PracticeLog.officer_id == user.id)
-    ).delete(synchronize_session=False)
-    PracticeSession.query.filter(
-        (PracticeSession.member_id == user.id) | (PracticeSession.officer_id == user.id)
-    ).delete(synchronize_session=False)
-    db.session.delete(user)
-    db.session.commit()
+    try:
+        _delete_user_account_and_dependencies(user)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Admin Delete User] failed for {username}: {type(exc).__name__}: {exc}')
+        flash(f'Could not delete user "{username}". Check the Railway logs.', 'danger')
+        return redirect(url_for('admin_panel'))
     flash(f'User "{username}" deleted successfully.', 'success')
     return redirect(url_for('admin_panel'))
 
@@ -2539,27 +3619,27 @@ def admin_delete_user(user_id):
 @login_required
 @admin_required
 def admin_delete_test_users():
-    """Delete accounts that look like test accounts (Officer1, Member1, etc.)"""
-    test_prefixes = ['officer', 'member', 'test']
+    """Delete accounts that look like test accounts (Officer1, Presentation1, etc.)"""
+    test_prefixes = ['officer', 'member', 'test', 'presentation']
     deleted = []
-    for user in User.query.all():
-        if user.id == current_user.id:
-            continue
-        lower = user.username.lower()
-        if any(lower.startswith(p) and lower[len(p):].isdigit() for p in test_prefixes):
-            AHAttendance.query.filter_by(user_id=user.id).delete()
-            WSAttendance.query.filter_by(user_id=user.id).delete()
-            MentorPod.query.filter(
-                (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
-            ).delete()
-            Commitment.query.filter_by(user_id=user.id).delete()
-            ReminderLog.query.filter_by(user_id=user.id).delete()
-            db.session.execute(
-                workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
-            )
-            deleted.append(user.username)
-            db.session.delete(user)
-    db.session.commit()
+    try:
+        for user in User.query.all():
+            if user.id == current_user.id:
+                continue
+            lower = user.username.lower()
+            if any(
+                lower.startswith(prefix)
+                and lower[len(prefix):].isdigit()
+                for prefix in test_prefixes
+            ):
+                deleted.append(user.username)
+                _delete_user_account_and_dependencies(user)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Delete Test Users] failed: {type(exc).__name__}: {exc}')
+        flash('Test accounts could not be deleted. Check the Railway logs.', 'danger')
+        return redirect(url_for('admin_panel'))
     if deleted:
         flash(f'Deleted {len(deleted)} test account(s): {", ".join(deleted)}', 'success')
     else:
@@ -2812,6 +3892,79 @@ def toggle_checklist_item():
     return jsonify({'success': True, 'completed': bool(item.completed)})
 
 
+@app.route('/admin/import_commitments', methods=['POST'])
+@login_required
+@admin_required
+def admin_import_commitments():
+    """Temporarily accept an MDP workbook and repair commitment progress."""
+    if not is_mdp_upload_enabled():
+        abort(404)
+
+    # Keep accidental uploads bounded without changing limits for other routes.
+    if request.content_length and request.content_length > 25 * 1024 * 1024:
+        flash('The workbook is too large. The maximum upload size is 25 MB.', 'danger')
+        return redirect(url_for('admin_member_commitments'))
+
+    form = MDPWorkbookUploadForm()
+    if not form.validate_on_submit():
+        for messages in form.errors.values():
+            for message in messages:
+                flash(message, 'danger')
+        return redirect(url_for('admin_member_commitments'))
+
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temporary_file:
+            temporary_path = temporary_file.name
+        form.workbook.data.save(temporary_path)
+
+        stats = import_mdp_tracking_workbook(
+            temporary_path,
+            commitments_only=True,
+        )
+        log_mdp_action(
+            current_user.id,
+            'workbook_import',
+            'member_commitments',
+            details=(
+                f"Matched {stats['matched_members']}; "
+                f"commitments {stats['commitments_updated']}; "
+                f"unmatched {len(stats['unmatched_members'])}; "
+                f"missing completion {len(stats['members_without_completion'])}"
+            ),
+        )
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
+        flash('The import failed. Check the Railway deployment logs for details.', 'danger')
+        return redirect(url_for('admin_member_commitments'))
+    finally:
+        if temporary_path:
+            try:
+                os.remove(temporary_path)
+            except FileNotFoundError:
+                pass
+
+    flash(
+        f"Import complete: matched {stats['matched_members']} members and updated "
+        f"{stats['commitments_updated']} commitment rows.",
+        'success',
+    )
+    if stats['unmatched_members']:
+        flash(
+            'Unmatched workbook members: ' + ', '.join(stats['unmatched_members']),
+            'warning',
+        )
+    if stats['members_without_completion']:
+        flash(
+            'Members without completion rows: '
+            + ', '.join(stats['members_without_completion']),
+            'warning',
+        )
+    return redirect(url_for('admin_member_commitments'))
+
+
 @app.route('/member_commitments')
 @login_required
 def admin_member_commitments():
@@ -2819,18 +3972,44 @@ def admin_member_commitments():
         flash('Only officers/admins can view this.', 'danger')
         return redirect(url_for('dashboard'))
     members = _members_visible_to_current_user()
+    member_ids = [member.id for member in members]
+    members_by_username = {member.username: member for member in members}
+    pods_by_member = {}
+    commitments_by_user = defaultdict(list)
+    checklist_by_user_event = defaultdict(dict)
+    today = datetime.now(LOCAL_TZ).date()
+
+    if member_ids:
+        for pod in MentorPod.query.options(joinedload(MentorPod.mentor)).filter(
+            MentorPod.member_id.in_(member_ids)
+        ).all():
+            pods_by_member.setdefault(pod.member_id, pod)
+        for commitment in Commitment.query.filter(
+            Commitment.user_id.in_(member_ids)
+        ).all():
+            commitments_by_user[commitment.user_id].append(commitment)
+        for commitment in Commitment.query.filter(
+            Commitment.user_id.is_(None),
+            Commitment.member_name.in_(list(members_by_username)),
+        ).all():
+            member = members_by_username.get(commitment.member_name)
+            if member:
+                commitments_by_user[member.id].append(commitment)
+        for item in ChecklistItem.query.filter(
+            ChecklistItem.user_id.in_(member_ids)
+        ).all():
+            checklist_by_user_event[(item.user_id, item.event)][item.item_name] = bool(
+                item.completed
+            )
+
     rows = []
     for member in members:
-        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        is_competing = member.is_competing is not False
+        pod = pods_by_member.get(member.id)
         level = pod.experience_level if pod else 'N'
         event = pod.event if pod else None
-        commitments = Commitment.query.filter_by(user_id=member.id).all()
-        if not commitments:
-            commitments = Commitment.query.filter_by(member_name=member.username).all()
+        commitments = commitments_by_user.get(member.id, [])
         commitments_by_conf = {row.event: row for row in commitments}
-        checklist_by_event = defaultdict(dict)
-        for item in ChecklistItem.query.filter_by(user_id=member.id).all():
-            checklist_by_event[item.event][item.item_name] = item.completed
         conferences = {}
         total_done = total_required = 0
         for conference in CONFERENCE_ORDER:
@@ -2840,13 +4019,13 @@ def admin_member_commitments():
                 continue
             done = (
                 commitment.required_roleplay - commitment.remaining_roleplay
-                + commitment.required_written - commitment.remaining_written
                 + commitment.required_exam - commitment.remaining_exam
+                + commitment.required_written - commitment.remaining_written
             )
             required = (
                 commitment.required_roleplay
-                + commitment.required_written
                 + commitment.required_exam
+                + commitment.required_written
             )
             total_done += done
             total_required += required
@@ -2857,38 +4036,59 @@ def admin_member_commitments():
                     'N/A' if commitment.required_roleplay == 0 else
                     f'{commitment.required_roleplay - commitment.remaining_roleplay}/{commitment.required_roleplay}'
                 ),
-                'written_done': commitment.required_written - commitment.remaining_written,
-                'written_req': commitment.required_written,
-                'written_display': (
-                    'N/A' if commitment.required_written == 0 else
-                    f'{commitment.required_written - commitment.remaining_written}/{commitment.required_written}'
-                ),
                 'exam_done': commitment.required_exam - commitment.remaining_exam,
                 'exam_req': commitment.required_exam,
                 'exam_display': (
                     'N/A' if commitment.required_exam == 0 else
                     f'{commitment.required_exam - commitment.remaining_exam}/{commitment.required_exam}'
                 ),
+                'written_done': commitment.required_written - commitment.remaining_written,
+                'written_req': commitment.required_written,
+                'written_display': (
+                    'N/A' if commitment.required_written == 0 else
+                    f'{commitment.required_written - commitment.remaining_written}/{commitment.required_written}'
+                ),
                 'deadline': commitment.deadline,
                 'grade': commitment.grade,
                 'complete': (
                     commitment.remaining_roleplay
-                    + commitment.remaining_written
                     + commitment.remaining_exam
+                    + commitment.remaining_written
                 ) == 0,
                 'checklist': {
-                    name: checklist_by_event.get(conference, {}).get(name, False)
+                    name: checklist_by_user_event.get(
+                        (member.id, conference), {}
+                    ).get(name, False)
                     for name in CHECKLIST_ITEMS.get(conference, [])
                 },
             }
         overall_pct = round(total_done / total_required * 100, 1) if total_required else 0
-        incomplete = any(value is not None and not value['complete'] for value in conferences.values())
+        incomplete = (
+            is_competing
+            and any(
+                value is not None and not value['complete']
+                for value in conferences.values()
+            )
+        )
+        status = get_commitment_status(
+            member,
+            commitments=commitments,
+            today=today,
+        )
         rows.append({
             'member': member,
-            'mentor_name': get_mentor_name(member),
+            'mentor_name': (
+                pod.mentor.username if pod and pod.mentor else 'Unassigned'
+            ),
             'level': level,
             'event': event,
-            'status': get_commitment_status(member),
+            'is_competing': is_competing,
+            'status': status,
+            'status_label': (
+                'Non-Compete' if status == 'non_compete'
+                else 'At Risk' if status == 'at_risk'
+                else 'On Track'
+            ),
             'conferences': conferences,
             'overall_pct': overall_pct,
             'commitments_incomplete': incomplete,
@@ -2897,6 +4097,7 @@ def admin_member_commitments():
     stats = {
         'total_members': total_members,
         'at_risk_count': sum(row['status'] == 'at_risk' for row in rows),
+        'non_compete_count': sum(row['status'] == 'non_compete' for row in rows),
         'incomplete_count': sum(row['commitments_incomplete'] for row in rows),
         'avg_progress': round(sum(row['overall_pct'] for row in rows) / total_members, 1) if total_members else 0,
     }
@@ -2905,6 +4106,12 @@ def admin_member_commitments():
         rows=rows,
         stats=stats,
         checklist_items_by_conf=CHECKLIST_ITEMS,
+        mdp_upload_enabled=is_mdp_upload_enabled(),
+        mdp_upload_form=(
+            MDPWorkbookUploadForm()
+            if current_user.is_admin and is_mdp_upload_enabled()
+            else None
+        ),
     )
 
 
@@ -2943,6 +4150,7 @@ def checklist_completion():
             commitments_by_user[commitment.user_id].append(commitment)
 
     for member in members:
+        is_competing = member.is_competing is not False
         pod = pods_by_member.get(member.id)
         level = pod.experience_level if pod else 'N'
         event = (pod.event or '').strip() if pod else ''
@@ -2961,6 +4169,16 @@ def checklist_completion():
             event_deadlines.get(event, {}),
             today=today,
         )
+        if not is_competing:
+            display_status = 'non_compete'
+            display_status_label = 'Non-Compete'
+            overdue_items = []
+            deadline_safe = True
+        else:
+            display_status = written['status']
+            display_status_label = written['status_label']
+            overdue_items = written['overdue_items']
+            deadline_safe = written['deadline_safe']
         conference = _conference_summary_for_user(
             member,
             today=today,
@@ -2973,12 +4191,13 @@ def checklist_completion():
             ),
             'level': level,
             'event': event,
-            'status': written['status'],
-            'status_label': written['status_label'],
+            'is_competing': is_competing,
+            'status': display_status,
+            'status_label': display_status_label,
             'checklists': {event: completed},
             'missing_items': written['missing_items'],
-            'overdue_items': written['overdue_items'],
-            'deadline_safe': written['deadline_safe'],
+            'overdue_items': overdue_items,
+            'deadline_safe': deadline_safe,
             'grades': conference['grades'],
         }
         rows.append(row)
@@ -2988,6 +4207,7 @@ def checklist_completion():
         'complete_count': sum(row['status'] == 'complete' for row in rows),
         'needs_attention_count': sum(row['status'] == 'needs_attention' for row in rows),
         'overdue_count': sum(row['status'] == 'overdue' for row in rows),
+        'non_compete_count': sum(row['status'] == 'non_compete' for row in rows),
         'deadline_safe_count': sum(row['deadline_safe'] for row in rows),
     }
     start_year = _written_academic_start_year(today=today)
@@ -3012,4 +4232,3 @@ if not scheduler.running:
 
 if __name__ == '__main__':
     app.run(debug=True)
-

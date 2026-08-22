@@ -4,22 +4,22 @@
 <div class="card page-header-card mb-4">
 <div class="card-body p-4">
 <h2 class="mb-1">Member Commitments</h2>
-<p class="lead mb-0">Roleplay, written presentation, and exam completion for VCMC, SVCDC, and SCDC.</p>
+<p class="lead mb-0">Roleplay, exam, and written presentation completion for VCMC, SVCDC, and SCDC.</p>
 <div class="mt-3 p-3 bg-light rounded">
 <strong><i class="fas fa-info-circle"></i> Status Information:</strong>
 <ul class="mb-0 mt-2" style="font-size: 0.95rem;">
-<li><span class="badge bg-success">✓ On Track</span> - No RP/WR/EX deadline has been missed. The member can still have work remaining if the deadline has not passed.</li>
-<li><span class="badge bg-danger">⚠ At Risk</span> - At least one RP/WR/EX requirement is still remaining after its deadline.</li>
+<li><span class="badge bg-success">✓ On Track</span> - No RP/EX/WR deadline has been missed. The member can still have work remaining if the deadline has not passed.</li>
+<li><span class="badge bg-danger">⚠ At Risk</span> - At least one RP/EX/WR requirement is still remaining after its deadline.</li>
+<li><span class="badge bg-secondary">Non-Compete</span> - The member is shown for reference but is excluded from at-risk and incomplete counts.</li>
+<li><span class="badge bg-success">✓ Done</span> - No remaining RP/EX/WR requirements in the imported conference rows.</li>
 </ul>
 <div class="mt-3 pt-3 border-top small">
 <strong><i class="fas fa-calendar-alt"></i> Deadlines:</strong>
-<span class="ms-1">VCMC - Nov 15, 2026 | SVCDC - Jan 8, 2027 | SCDC - Feb 23, 2027</span>
+<span class="ms-1">VCMC - Nov 15, 2025 | SVCDC - Jan 8, 2026 | SCDC - Feb 23, 2026</span>
 </div>
 </div>
 </div>
 </div>
-
-
 
 
 {% with messages = get_flashed_messages(with_categories=true) %}
@@ -28,7 +28,29 @@
  {% endfor %}
 {% endwith %}
 
-
+{% if current_user.is_admin and mdp_upload_enabled and mdp_upload_form %}
+<div class="card border-warning shadow-sm mb-4">
+<div class="card-body">
+<div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-center">
+<div>
+<h5 class="mb-1"><i class="fas fa-file-import"></i> Temporary Commitment Import</h5>
+<div class="text-muted small">
+Upload the official MDP <code>.xlsx</code> workbook to replace RP/EX/WR progress.
+The temporary server copy is deleted immediately after processing.
+</div>
+</div>
+<form method="post" action="{{ url_for('admin_import_commitments') }}" enctype="multipart/form-data" class="d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
+{{ mdp_upload_form.hidden_tag() }}
+{{ mdp_upload_form.workbook(class="form-control", accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") }}
+{{ mdp_upload_form.submit(class="btn btn-warning text-nowrap") }}
+</form>
+</div>
+<div class="small text-danger mt-2">
+Only upload when the workbook is the source of truth; importing again overwrites current commitment counts.
+</div>
+</div>
+</div>
+{% endif %}
 
 
 {# ── Summary cards ─────────────────────────────────────────── #}
@@ -38,6 +60,7 @@
            <div class="card-body">
                <div class="text-muted">Mentees</div>
                <div class="display-6">{{ stats.total_members }}</div>
+               <div class="small text-muted mt-1">{{ stats.non_compete_count }} non-compete</div>
            </div>
        </div>
    </div>
@@ -50,28 +73,26 @@
        </div>
    </div>
    <div class="col-md-3">
-       {% set on_track_count = stats.total_members - stats.at_risk_count %}
+       {% set on_track_count = stats.total_members - stats.at_risk_count - stats.non_compete_count %}
        <div class="card summary-card {{ 'bg-success text-white' if on_track_count > 0 else 'light-blue' }}">
            <div class="card-body">
                <div class="{{ 'text-white-50' if on_track_count > 0 else 'text-muted' }}">Deadline Safe</div>
                <div class="display-6">{{ on_track_count }}</div>
-               <div class="small {{ 'text-white-50' if on_track_count > 0 else 'text-muted' }} mt-1">No missed RP/WR/EX deadlines</div>
+               <div class="small {{ 'text-white-50' if on_track_count > 0 else 'text-muted' }} mt-1">No missed RP/EX/WR deadlines</div>
            </div>
        </div>
    </div>
    <div class="col-md-3">
-       {% set fully_complete_count = stats.total_members - stats.incomplete_count %}
+       {% set fully_complete_count = stats.total_members - stats.incomplete_count - stats.non_compete_count %}
        <div class="card summary-card {{ 'bg-success text-white' if fully_complete_count > 0 else 'light-blue' }}">
            <div class="card-body">
                <div class="{{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }}">Requirements Done</div>
                <div class="display-6">{{ fully_complete_count }}</div>
-               <div class="small {{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }} mt-1">No remaining RP/WR/EX</div>
+               <div class="small {{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }} mt-1">No remaining RP/EX/WR</div>
            </div>
        </div>
    </div>
 </div>
-
-
 
 
 {# ── Filter Controls ─────────────────────────────────────────── #}
@@ -87,10 +108,9 @@
                        <option value="level">Experience Level</option>
                        <option value="event">Event</option>
                        <option value="mentor">Mentor</option>
-                       <option value="complete_commitments">Complete Commitments</option>
                    </select>
                </div>
-
+              
                <div id="filterValueContainer" style="display: none;">
                    <label for="filterValueSelect" class="form-label small mb-1">Select:</label>
                    <select id="filterValueSelect" class="form-select w-auto" onchange="applyFilters()">
@@ -104,9 +124,6 @@
        </div>
    </div>
 </div>
-
-
-
 
 
 
@@ -129,30 +146,27 @@
 <tr class="table-light" style="border-top: none;">
 <th colspan="5"></th>
 <th class="text-center small">RP</th>
-<th class="text-center small">WR</th>
 <th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
 <th class="text-center small">RP</th>
-<th class="text-center small">WR</th>
 <th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
 <th class="text-center small">RP</th>
-<th class="text-center small">WR</th>
 <th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
 </tr>
 </thead>
 <tbody>
                    {% for row in rows %}
-<tr class="{{ 'table-danger' if row.status == 'at_risk' else '' }}"
-    data-status="{{ row.status }}"
-    data-level="{{ row.level }}"
-    data-event="{{ row.event or '' }}"
-    data-mentor="{{ row.mentor_name }}"
-    data-complete-vcmc="{{ 'true' if row.conferences['VCMC'] and row.conferences['VCMC'].complete else 'false' }}"
-    data-complete-svcdc="{{ 'true' if row.conferences['SVCDC'] and row.conferences['SVCDC'].complete else 'false' }}"
-    data-complete-scdc="{{ 'true' if row.conferences['SCDC'] and row.conferences['SCDC'].complete else 'false' }}"
-    data-complete-all="{{ 'true' if row.conferences['VCMC'] and row.conferences['VCMC'].complete and row.conferences['SVCDC'] and row.conferences['SVCDC'].complete and row.conferences['SCDC'] and row.conferences['SCDC'].complete else 'false' }}">
-<td class="fw-semibold">{{ row.member.username }}</td>
+<tr class="{{ 'table-secondary' if row.status == 'non_compete' else ('table-danger' if row.status == 'at_risk' else '') }}" data-status="{{ row.status }}" data-level="{{ row.level }}" data-event="{{ row.event or '' }}" data-mentor="{{ row.mentor_name }}">
+<td class="fw-semibold">
+{{ row.member.username }}
+{% if row.status == 'non_compete' %}<span class="badge bg-secondary ms-1">Non-Compete</span>{% endif %}
+</td>
 <td>
-                           {% if row.status == 'at_risk' %}
+                           {% if row.status == 'non_compete' %}
+<span class="badge bg-secondary">Non-Compete</span>
+                           {% elif row.status == 'at_risk' %}
 <span class="badge bg-danger">⚠ At Risk</span>
                            {% else %}
 <span class="badge bg-success">✓ On Track</span>
@@ -176,14 +190,14 @@
 </td>
 <td class="text-center small">
                            {% if c %}
-<span class="{{ 'text-success fw-semibold' if c.written_done >= c.written_req else 'text-danger fw-semibold' }}">{{ c.written_done }}/{{ c.written_req }}</span>
+<span class="{{ 'text-success fw-semibold' if c.exam_done >= c.exam_req else 'text-danger fw-semibold' }}">{{ c.exam_done }}/{{ c.exam_req }}</span>
                            {% else %}
 <span class="text-muted">—</span>
                            {% endif %}
 </td>
 <td class="text-center small">
                            {% if c %}
-<span class="{{ 'text-success fw-semibold' if c.exam_done >= c.exam_req else 'text-danger fw-semibold' }}">{{ c.exam_done }}/{{ c.exam_req }}</span>
+<span class="{{ 'text-success fw-semibold' if c.written_done >= c.written_req else 'text-danger fw-semibold' }}">{{ c.written_done }}/{{ c.written_req }}</span>
                            {% else %}
 <span class="text-muted">—</span>
                            {% endif %}
@@ -200,46 +214,29 @@
 </div>
 
 
-
-
 <script>
 // ── Cascading Filters ─────────────────────────────────────────
 function updateFilterOptions() {
    const filterType = document.getElementById('filterTypeSelect').value;
    const filterValueContainer = document.getElementById('filterValueContainer');
    const filterValueSelect = document.getElementById('filterValueSelect');
-
+  
    // Clear previous options
    filterValueSelect.innerHTML = '<option value="">All</option>';
-
+  
    if (!filterType) {
        filterValueContainer.style.display = 'none';
        applyFilters();
        return;
    }
-
+  
    filterValueContainer.style.display = 'block';
-
-   if (filterType === 'complete_commitments') {
-       [
-           ['VCMC', 'VCMC'],
-           ['SVCDC', 'SVCDC'],
-           ['SCDC', 'SCDC'],
-           ['all', 'All Conferences']
-       ].forEach(([value, label]) => {
-           const option = document.createElement('option');
-           option.value = value.toLowerCase();
-           option.textContent = label;
-           filterValueSelect.appendChild(option);
-       });
-       return;
-   }
-
+  
    // Get unique values from the table for this filter type
    const table = document.getElementById('memberCommitmentsTable');
    const rows = Array.from(table.querySelectorAll('tbody tr:not(.detail-row)'));
    const values = new Set();
-
+  
    rows.forEach(row => {
        let value = '';
        if (filterType === 'status') {
@@ -253,19 +250,18 @@ function updateFilterOptions() {
        }
        if (value) values.add(value);
    });
-
+  
    // Populate dropdown with unique values
    const valueMap = {
-       'status': { 'on_track': 'On Track', 'at_risk': 'At Risk' },
+       'status': { 'on_track': 'On Track', 'at_risk': 'At Risk', 'non_compete': 'Non-Compete' },
        'level': { 'N': 'Novice', 'E': 'Experienced' },
        'event': {},
-       'mentor': {},
-       'complete_commitments': {}
+       'mentor': {}
    };
-
+  
    // Sort values alphabetically
    const sortedValues = Array.from(values).sort();
-
+  
    sortedValues.forEach(value => {
        const label = valueMap[filterType][value] || value;
        const option = document.createElement('option');
@@ -276,17 +272,15 @@ function updateFilterOptions() {
 }
 
 
-
-
 function applyFilters() {
    const filterType = document.getElementById('filterTypeSelect').value;
    const filterValue = document.getElementById('filterValueSelect').value;
    const table = document.getElementById('memberCommitmentsTable');
    const rows = Array.from(table.querySelectorAll('tbody tr'));
-
+  
    rows.forEach(row => {
        let show = true;
-
+      
        if (filterType && filterValue) {
            let rowValue = '';
            if (filterType === 'status') {
@@ -297,26 +291,20 @@ function applyFilters() {
                rowValue = row.dataset.event;
            } else if (filterType === 'mentor') {
                rowValue = row.dataset.mentor;
-           } else if (filterType === 'complete_commitments') {
-               show = row.getAttribute(`data-complete-${filterValue}`) === 'true';
            }
-           if (filterType !== 'complete_commitments') {
-               show = rowValue === filterValue;
-           }
+           show = rowValue === filterValue;
        }
-
+      
        row.style.display = show ? 'table-row' : 'none';
    });
 }
-
-
 
 
 function resetFilters() {
    document.getElementById('filterTypeSelect').value = '';
    document.getElementById('filterValueSelect').value = '';
    document.getElementById('filterValueContainer').style.display = 'none';
-
+  
    // Show all rows
    const table = document.getElementById('memberCommitmentsTable');
    const rows = Array.from(table.querySelectorAll('tbody tr'));
@@ -326,3 +314,5 @@ function resetFilters() {
 }
 </script>
 {% endblock %}
+
+
