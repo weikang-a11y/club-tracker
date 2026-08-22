@@ -4,14 +4,14 @@
 <div class="card page-header-card mb-4">
 <div class="card-body p-4">
 <h2 class="mb-1">Member Commitments</h2>
-<p class="lead mb-0">Roleplay, written presentation, and exam completion for VCMC, SVCDC, and SCDC.</p>
+<p class="lead mb-0">Roleplay, exam, and written presentation completion for VCMC, SVCDC, and SCDC.</p>
 <div class="mt-3 p-3 bg-light rounded">
 <strong><i class="fas fa-info-circle"></i> Status Information:</strong>
 <ul class="mb-0 mt-2" style="font-size: 0.95rem;">
-<li><span class="badge bg-success">✓ On Track</span> - No RP/WR/EX deadline has been missed. The member can still have work remaining if the deadline has not passed.</li>
-<li><span class="badge bg-danger">⚠ At Risk</span> - At least one RP/WR/EX requirement is still remaining after its deadline.</li>
+<li><span class="badge bg-success">✓ On Track</span> - No RP/EX/WR deadline has been missed. The member can still have work remaining if the deadline has not passed.</li>
+<li><span class="badge bg-danger">⚠ At Risk</span> - At least one RP/EX/WR requirement is still remaining after its deadline.</li>
 <li><span class="badge bg-secondary">Non-Compete</span> - The member is shown for reference but is excluded from at-risk and incomplete counts.</li>
-<li><span class="badge bg-success">✓ Done</span> - No remaining RP/WR/EX requirements in the imported conference rows.</li>
+<li><span class="badge bg-success">✓ Done</span> - No remaining RP/EX/WR requirements in the imported conference rows.</li>
 </ul>
 <div class="mt-3 pt-3 border-top small">
 <strong><i class="fas fa-calendar-alt"></i> Deadlines:</strong>
@@ -54,7 +54,7 @@
            <div class="card-body">
                <div class="{{ 'text-white-50' if on_track_count > 0 else 'text-muted' }}">Deadline Safe</div>
                <div class="display-6">{{ on_track_count }}</div>
-               <div class="small {{ 'text-white-50' if on_track_count > 0 else 'text-muted' }} mt-1">No missed RP/WR/EX deadlines</div>
+               <div class="small {{ 'text-white-50' if on_track_count > 0 else 'text-muted' }} mt-1">No missed RP/EX/WR deadlines</div>
            </div>
        </div>
    </div>
@@ -64,7 +64,7 @@
            <div class="card-body">
                <div class="{{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }}">Requirements Done</div>
                <div class="display-6">{{ fully_complete_count }}</div>
-               <div class="small {{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }} mt-1">No remaining RP/WR/EX</div>
+               <div class="small {{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }} mt-1">No remaining RP/EX/WR</div>
            </div>
        </div>
    </div>
@@ -122,14 +122,14 @@
 <tr class="table-light" style="border-top: none;">
 <th colspan="5"></th>
 <th class="text-center small">RP</th>
-<th class="text-center small">WR</th>
 <th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
 <th class="text-center small">RP</th>
-<th class="text-center small">WR</th>
 <th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
 <th class="text-center small">RP</th>
-<th class="text-center small">WR</th>
 <th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
 </tr>
 </thead>
 <tbody>
@@ -166,14 +166,14 @@
 </td>
 <td class="text-center small">
                            {% if c %}
-<span class="{{ 'text-success fw-semibold' if c.written_done >= c.written_req else 'text-danger fw-semibold' }}">{{ c.written_done }}/{{ c.written_req }}</span>
+<span class="{{ 'text-success fw-semibold' if c.exam_done >= c.exam_req else 'text-danger fw-semibold' }}">{{ c.exam_done }}/{{ c.exam_req }}</span>
                            {% else %}
 <span class="text-muted">—</span>
                            {% endif %}
 </td>
 <td class="text-center small">
                            {% if c %}
-<span class="{{ 'text-success fw-semibold' if c.exam_done >= c.exam_req else 'text-danger fw-semibold' }}">{{ c.exam_done }}/{{ c.exam_req }}</span>
+<span class="{{ 'text-success fw-semibold' if c.written_done >= c.written_req else 'text-danger fw-semibold' }}">{{ c.written_done }}/{{ c.written_req }}</span>
                            {% else %}
 <span class="text-muted">—</span>
                            {% endif %}
