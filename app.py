@@ -26,8 +26,11 @@ import hmac
 import csv
 import io
 import os
+import posixpath
 import re
 import requests
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 load_dotenv()
@@ -120,6 +123,28 @@ CONFERENCE_DEADLINES = {
 
 # Competitive-event labels used by mentor-pod administration.
 EVENT_TABS = ['BOR', 'EIP', 'EFB', 'EIB', 'ESB', 'IBP', 'IMC', 'PM', 'PSE', 'NA']
+
+MDP_TRACKING_FILE = os.getenv(
+    'MDP_TRACKING_FILE',
+    os.path.join(os.path.dirname(__file__), 'FINAL MDP Deadline Tracking.xlsx'),
+)
+MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v1-'
+
+# Spreadsheet names that intentionally differ from account usernames. Joey's
+# source row is labelled "Joey Zhu" but the existing account is joey.shu.
+SPREADSHEET_ACCOUNT_OVERRIDES = {
+    'amber chang': ('ambery.chang',),
+    'chun ka yu': ('chunka.yu',),
+    'elizabeth huang': ('lizzie.huang', 'elizabeth.huang'),
+    'joey zhu': ('joey.shu', 'joey.zhu'),
+    'lincoln tran': ('lincolnjacob.tran',),
+    'lucas wang': ('lucasj.wang',),
+    'ruhaan parandekar': ('r.parandekar',),
+    'sidharth swaminathan': ('s.swaminathan',),
+    'srinivasan satagopan': ('sk.satagopan',),
+    'varshini subramanian': ('v.subramanian',),
+    'yen-nhi tran': ('yennhi.tran',),
+}
 
 # Fallback catalog. Imported ChecklistRequirement rows drive Written Progress.
 CHECKLIST_ITEMS = {
@@ -629,6 +654,577 @@ def reconcile_removed_admin_access():
     db.session.commit()
     print(f'[Admin Access] removed from: {", ".join(updated) or "no matching admins"}')
 
+
+# ── Dependency-free MDP workbook import ─────────────────────────────────────
+
+_XLSX_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+_XLSX_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+_XLSX_PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
+_WRITTEN_DEADLINE_RE = re.compile(r'(?<!\d)(\d{1,2}/\d{1,2})(?!\d)')
+
+
+def _spreadsheet_text(value):
+    if value is None:
+        return ''
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return re.sub(r'\s+', ' ', str(value).replace('\n', ' ')).strip()
+
+
+def _spreadsheet_key(value):
+    return _spreadsheet_text(value).lower()
+
+
+def _spreadsheet_event_key(value):
+    key = _spreadsheet_text(value).upper()
+    return 'NA' if key in {'N/A', 'N-A'} else key
+
+
+def _xlsx_formula_fallback(formula):
+    """Recover the cached Google-Sheets value stored in an IFERROR formula."""
+    text = (formula or '').strip()
+    if not text.upper().startswith('IFERROR('):
+        return None
+    match = re.search(
+        r',\s*("(?:[^"]|"")*"|[-+]?\d+(?:\.\d+)?)\s*\)\s*$',
+        text,
+    )
+    if not match:
+        return None
+    raw = match.group(1)
+    if raw.startswith('"'):
+        return raw[1:-1].replace('""', '"')
+    try:
+        number = float(raw)
+        return int(number) if number.is_integer() else number
+    except ValueError:
+        return None
+
+
+def _xlsx_column_index(cell_reference):
+    letters = re.match(r'[A-Z]+', (cell_reference or '').upper())
+    if not letters:
+        return 0
+    result = 0
+    for char in letters.group(0):
+        result = result * 26 + ord(char) - ord('A') + 1
+    return result - 1
+
+
+def _xlsx_cell_value(cell, shared_strings):
+    cell_type = cell.attrib.get('t')
+    formula_node = cell.find(f'{{{_XLSX_NS}}}f')
+    formula = formula_node.text if formula_node is not None else ''
+    value_node = cell.find(f'{{{_XLSX_NS}}}v')
+    raw = value_node.text if value_node is not None else None
+
+    if cell_type == 'inlineStr':
+        parts = [node.text or '' for node in cell.findall(f'.//{{{_XLSX_NS}}}t')]
+        value = ''.join(parts)
+    elif cell_type == 's' and raw is not None:
+        try:
+            value = shared_strings[int(raw)]
+        except (ValueError, IndexError):
+            value = ''
+    elif cell_type == 'b':
+        value = raw == '1'
+    elif cell_type in {'str', 'e'}:
+        value = raw or ''
+    elif raw in (None, ''):
+        value = ''
+    else:
+        try:
+            number = float(raw)
+            value = int(number) if number.is_integer() else number
+        except ValueError:
+            value = raw
+
+    # The Pods sheet was exported from Google Sheets. Excel stores #NAME? in
+    # its value cache and the real imported value as IFERROR's final argument.
+    if value in ('', '#NAME?') and formula:
+        fallback = _xlsx_formula_fallback(formula)
+        if fallback is not None:
+            value = fallback
+    return value
+
+
+def _read_xlsx_sheets(path, wanted_names):
+    """Return {sheet_name: rows} using only Python's standard library."""
+    with zipfile.ZipFile(path) as archive:
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in archive.namelist():
+            root = ET.fromstring(archive.read('xl/sharedStrings.xml'))
+            for item in root.findall(f'{{{_XLSX_NS}}}si'):
+                shared_strings.append(''.join(
+                    node.text or '' for node in item.findall(f'.//{{{_XLSX_NS}}}t')
+                ))
+
+        workbook_root = ET.fromstring(archive.read('xl/workbook.xml'))
+        rels_root = ET.fromstring(archive.read('xl/_rels/workbook.xml.rels'))
+        relationships = {
+            rel.attrib['Id']: rel.attrib['Target']
+            for rel in rels_root.findall(f'{{{_XLSX_PACKAGE_REL_NS}}}Relationship')
+        }
+        sheet_paths = {}
+        for sheet in workbook_root.findall(f'.//{{{_XLSX_NS}}}sheet'):
+            name = sheet.attrib.get('name')
+            if name not in wanted_names:
+                continue
+            rel_id = sheet.attrib.get(f'{{{_XLSX_REL_NS}}}id')
+            target = relationships.get(rel_id, '')
+            sheet_paths[name] = (
+                target.lstrip('/') if target.startswith('/')
+                else posixpath.normpath(posixpath.join('xl', target))
+            )
+
+        missing = sorted(set(wanted_names) - set(sheet_paths))
+        if missing:
+            raise RuntimeError(f'MDP workbook is missing sheet(s): {", ".join(missing)}')
+
+        result = {}
+        for name, sheet_path in sheet_paths.items():
+            root = ET.fromstring(archive.read(sheet_path))
+            rows = []
+            for row_node in root.findall(f'.//{{{_XLSX_NS}}}sheetData/{{{_XLSX_NS}}}row'):
+                values_by_index = {}
+                for cell in row_node.findall(f'{{{_XLSX_NS}}}c'):
+                    index = _xlsx_column_index(cell.attrib.get('r'))
+                    values_by_index[index] = _xlsx_cell_value(cell, shared_strings)
+                if values_by_index:
+                    width = max(values_by_index) + 1
+                    row = [''] * width
+                    for index, value in values_by_index.items():
+                        row[index] = value
+                else:
+                    row = []
+                rows.append(row)
+            result[name] = rows
+        return result
+
+
+def _row_value(row, index):
+    return row[index] if index is not None and index < len(row) else ''
+
+
+def _header_index(headers, *wanted):
+    wanted_keys = {_spreadsheet_key(value) for value in wanted}
+    for index, header in enumerate(headers):
+        if _spreadsheet_key(header) in wanted_keys:
+            return index
+    return None
+
+
+def _spreadsheet_number(value):
+    try:
+        return int(round(float(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _spreadsheet_checked(value):
+    if isinstance(value, bool):
+        return value
+    try:
+        return float(value) == 1.0
+    except (TypeError, ValueError):
+        return _spreadsheet_key(value) in {'true', 'yes', 'y', 'checked', 'x'}
+
+
+def _spreadsheet_username_candidates(name):
+    normalized = _spreadsheet_key(name)
+    if not normalized:
+        return []
+    parts = normalized.split()
+    candidates = {
+        normalized,
+        normalized.replace(' ', ''),
+        normalized.replace(' ', '.'),
+        normalized.replace(' ', '_'),
+    }
+    if len(parts) >= 2:
+        candidates.add(f'{parts[0]}.{parts[-1]}')
+    return list(candidates)
+
+
+def _find_spreadsheet_user(name, email, users_by_username, users_by_email):
+    normalized_name = _spreadsheet_key(name)
+    for username in SPREADSHEET_ACCOUNT_OVERRIDES.get(normalized_name, ()):
+        user = users_by_username.get(username.lower())
+        if user:
+            return user
+    normalized_email = _spreadsheet_key(email)
+    if normalized_email and normalized_email in users_by_email:
+        return users_by_email[normalized_email]
+    for candidate in _spreadsheet_username_candidates(name):
+        user = users_by_username.get(candidate)
+        if user:
+            return user
+    return None
+
+
+def _conference_columns(headers):
+    """Map duplicate RP/EX/WR headers inside their conference block."""
+    result = defaultdict(dict)
+    active_conference = None
+    for index, header in enumerate(headers):
+        key = _spreadsheet_key(header)
+        conference_match = re.search(r'\b(vcmc|svcdc|scdc)\b', key)
+        if conference_match and ('conference:' in key or 'commitments' in key):
+            active_conference = conference_match.group(1).upper()
+            continue
+        if not active_conference:
+            continue
+        if key.startswith('roleplays:'):
+            result[active_conference]['roleplay'] = index
+        elif key.startswith('exams:'):
+            result[active_conference]['exam'] = index
+        elif key.startswith('written presentation:'):
+            result[active_conference]['written'] = index
+    return dict(result)
+
+
+def _written_columns(headers):
+    start_index = _header_index(headers, 'SCDC Total Progress')
+    if start_index is None:
+        return []
+    end_index = None
+    for index in range(start_index + 1, len(headers)):
+        key = _spreadsheet_key(headers[index])
+        if 'conference:' in key and 'vcmc' in key:
+            end_index = index
+            break
+    if end_index is None:
+        return []
+    columns = []
+    for index in range(start_index + 1, end_index):
+        header = _spreadsheet_text(headers[index])
+        match = _WRITTEN_DEADLINE_RE.search(header)
+        if not match:
+            continue
+        deadline = match.group(1)
+        item_name = _WRITTEN_DEADLINE_RE.sub('', header).strip(' -–—().:')
+        if item_name:
+            columns.append((index, item_name, deadline))
+    return columns
+
+
+def _format_spreadsheet_grade(value):
+    if value in (None, ''):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return _spreadsheet_text(value) or None
+    return f'{number * 100:.1f}%' if number <= 1 else f'{number:.1f}'
+
+
+def import_mdp_tracking_workbook(path):
+    """Synchronize every matched member from the MDP workbook transactionally."""
+    wanted_sheets = set(EVENT_TABS) | {
+        'Pods (VIEW ONLY)',
+        'Mentee Commitment TrackingMDP',
+    }
+    sheets = _read_xlsx_sheets(path, wanted_sheets)
+
+    main_rows = sheets['Mentee Commitment TrackingMDP']
+    if not main_rows:
+        raise RuntimeError('MDP summary sheet is empty.')
+    main_headers = main_rows[0]
+    main_name_col = _header_index(main_headers, 'Mentee Name')
+    main_email_col = _header_index(main_headers, 'Email')
+    main_event_col = _header_index(main_headers, 'Event')
+    main_category_col = _header_index(main_headers, 'Event Category')
+    grade_columns = {
+        'VCMC': _header_index(main_headers, 'MC Grade'),
+        'SVCDC': _header_index(main_headers, 'SV Grade'),
+        'SCDC': _header_index(main_headers, 'SC Grade'),
+    }
+    event_to_category = {}
+    grades_by_identity = {}
+    for row in main_rows[1:]:
+        name = _spreadsheet_text(_row_value(row, main_name_col))
+        email = _spreadsheet_key(_row_value(row, main_email_col))
+        event = _spreadsheet_event_key(_row_value(row, main_event_col))
+        category = _spreadsheet_event_key(_row_value(row, main_category_col))
+        if event and category:
+            event_to_category[event] = category
+        grades = {
+            conference: _format_spreadsheet_grade(_row_value(row, column))
+            for conference, column in grade_columns.items()
+        }
+        for identity in (email, _spreadsheet_key(name)):
+            if identity:
+                grades_by_identity[identity] = grades
+
+    completion_by_identity = {}
+    written_requirements = {}
+    written_completion = {}
+    for tab in EVENT_TABS:
+        rows = sheets[tab]
+        if not rows:
+            continue
+        headers = rows[0]
+        name_col = _header_index(headers, 'Legal Name', 'Legal name', 'Mentee Name', 'Mentee', 'Name')
+        email_col = _header_index(headers, 'Email')
+        event_col = _header_index(headers, 'Event')
+        conference_columns = _conference_columns(headers)
+        written_columns = _written_columns(headers)
+        for row in rows[1:]:
+            name = _spreadsheet_text(_row_value(row, name_col))
+            email = _spreadsheet_key(_row_value(row, email_col))
+            event = _spreadsheet_event_key(_row_value(row, event_col))
+            if not name or not event:
+                continue
+            category = event_to_category.get(event, event)
+            if category != tab:
+                continue
+            completion = {
+                conference: {
+                    bucket: _spreadsheet_number(_row_value(row, column))
+                    for bucket, column in bucket_columns.items()
+                }
+                for conference, bucket_columns in conference_columns.items()
+            }
+            checks = {
+                item_name: _spreadsheet_checked(_row_value(row, column))
+                for column, item_name, _ in written_columns
+            }
+            for _, item_name, deadline in written_columns:
+                written_requirements[(event, item_name)] = deadline
+            for identity in (email, _spreadsheet_key(name)):
+                if identity:
+                    completion_by_identity[identity] = completion
+                    written_completion[(identity, event)] = checks
+
+    pods_rows = sheets['Pods (VIEW ONLY)']
+    if not pods_rows:
+        raise RuntimeError('Pods (VIEW ONLY) sheet is empty.')
+    pod_headers = pods_rows[0]
+    pod_number_col = 0
+    mentor_col = _header_index(pod_headers, 'Mentor')
+    mentee_col = _header_index(pod_headers, 'Mentee')
+    pod_email_col = _header_index(pod_headers, 'Email')
+    status_col = _header_index(pod_headers, 'Status')
+    years_col = _header_index(pod_headers, 'Years in DECA')
+    pod_event_col = _header_index(pod_headers, 'Event')
+    legal_name_col = _header_index(pod_headers, 'Legal name', 'Legal Name')
+
+    all_users = User.query.all()
+    users_by_username = {user.username.lower(): user for user in all_users}
+    users_by_email = {
+        user.email.lower(): user for user in all_users if user.email
+    }
+    officer_users = [user for user in all_users if user.role == 'officer']
+    officers_by_username = {user.username.lower(): user for user in officer_users}
+    officers_by_email = {
+        user.email.lower(): user for user in officer_users if user.email
+    }
+    pods_by_user = {
+        pod.member_id: pod for pod in MentorPod.query.all()
+    }
+    commitments_by_key = {
+        (commitment.user_id, commitment.event): commitment
+        for commitment in Commitment.query.filter(Commitment.user_id.is_not(None)).all()
+    }
+    checklist_items_by_key = {
+        (item.user_id, item.event, item.item_name): item
+        for item in ChecklistItem.query.all()
+    }
+
+    matched_user_ids = set()
+    unmatched_members = []
+    unmatched_mentors = []
+    pods_updated = commitments_updated = checklist_items_updated = 0
+
+    # Replace the catalog only after the whole workbook has parsed successfully.
+    ChecklistRequirement.query.delete()
+    for (event, item_name), deadline in sorted(written_requirements.items()):
+        db.session.add(ChecklistRequirement(
+            event=event,
+            item_name=item_name,
+            deadline=deadline,
+        ))
+
+    for row in pods_rows[1:]:
+        mentee_name = _spreadsheet_text(_row_value(row, mentee_col))
+        legal_name = _spreadsheet_text(_row_value(row, legal_name_col))
+        display_name = legal_name or mentee_name
+        email = _spreadsheet_text(_row_value(row, pod_email_col))
+        if not display_name and not email:
+            continue
+        member = _find_spreadsheet_user(
+            display_name or mentee_name,
+            email,
+            users_by_username,
+            users_by_email,
+        ) or _find_spreadsheet_user(
+            mentee_name,
+            email,
+            users_by_username,
+            users_by_email,
+        )
+        if not member:
+            unmatched_members.append(display_name or email)
+            continue
+
+        mentor_name = _spreadsheet_text(_row_value(row, mentor_col))
+        mentor = _find_spreadsheet_user(
+            mentor_name,
+            '',
+            officers_by_username,
+            officers_by_email,
+        )
+        if not mentor:
+            unmatched_mentors.append(f'{mentor_name} ({member.username})')
+
+        matched_user_ids.add(member.id)
+        if email and not member.email:
+            member.email = email
+            users_by_email[email.lower()] = member
+        status = _spreadsheet_text(_row_value(row, status_col))
+        member.is_competing = status.lower() != 'non-compete'
+        level = 'E' if status.lower() == 'experienced' else 'N'
+        event = _spreadsheet_event_key(_row_value(row, pod_event_col))
+        year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
+        pod = pods_by_user.get(member.id)
+        if not pod and mentor:
+            pod = MentorPod(member_id=member.id, mentor_id=mentor.id, pod_number=0)
+            db.session.add(pod)
+            pods_by_user[member.id] = pod
+        if pod:
+            if mentor:
+                pod.mentor_id = mentor.id
+            pod.experience_level = level
+            pod.year_in_deca = year_in_deca
+            pod.event = event or None
+            pod_number = _spreadsheet_number(_row_value(row, pod_number_col))
+            if pod_number:
+                pod.pod_number = pod_number
+            pods_updated += 1
+
+        identities = [_spreadsheet_key(email), _spreadsheet_key(display_name), _spreadsheet_key(mentee_name)]
+        completion = next(
+            (completion_by_identity[key] for key in identities if key in completion_by_identity),
+            {},
+        )
+        grades = next(
+            (grades_by_identity[key] for key in identities if key in grades_by_identity),
+            {},
+        )
+        requirements = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
+        for conference in CONFERENCE_ORDER:
+            rule = requirements[conference]
+            done = completion.get(conference)
+            required = {
+                bucket: (
+                    rule[bucket]
+                    if done is None or bucket in done
+                    else 0
+                )
+                for bucket in ('roleplay', 'written', 'exam')
+            }
+            done = done or {}
+            commitment_key = (member.id, conference)
+            commitment = commitments_by_key.get(commitment_key)
+            if not commitment:
+                commitment = Commitment(
+                    user_id=member.id,
+                    member_name=member.username,
+                    event=conference,
+                )
+                db.session.add(commitment)
+                commitments_by_key[commitment_key] = commitment
+            commitment.member_name = member.username
+            commitment.required_roleplay = required['roleplay']
+            commitment.required_written = required['written']
+            commitment.required_exam = required['exam']
+            commitment.remaining_roleplay = max(0, required['roleplay'] - done.get('roleplay', 0))
+            commitment.remaining_written = max(0, required['written'] - done.get('written', 0))
+            commitment.remaining_exam = max(0, required['exam'] - done.get('exam', 0))
+            commitment.deadline = datetime.strptime(rule['deadline'], '%Y-%m-%d').date()
+            if grades.get(conference) is not None:
+                commitment.grade = grades[conference]
+            commitments_updated += 1
+
+        checks = next(
+            (
+                written_completion[(key, event)]
+                for key in identities
+                if (key, event) in written_completion
+            ),
+            {},
+        )
+        for item_name, completed in checks.items():
+            item_key = (member.id, event, item_name)
+            item = checklist_items_by_key.get(item_key)
+            if not item:
+                item = ChecklistItem(
+                    user_id=member.id,
+                    event=event,
+                    item_name=item_name,
+                )
+                db.session.add(item)
+                checklist_items_by_key[item_key] = item
+            item.completed = completed
+            checklist_items_updated += 1
+
+    return {
+        'matched_members': len(matched_user_ids),
+        'unmatched_members': sorted(set(filter(None, unmatched_members))),
+        'unmatched_mentors': sorted(set(filter(None, unmatched_mentors))),
+        'pods_updated': pods_updated,
+        'commitments_updated': commitments_updated,
+        'checklist_requirements': len(written_requirements),
+        'checklist_items_updated': checklist_items_updated,
+    }
+
+
+def sync_mdp_tracking_workbook():
+    """Import each workbook version once without adding pandas to production."""
+    candidates = [MDP_TRACKING_FILE]
+    bundled = os.path.join(
+        os.path.dirname(__file__),
+        'source_workbook',
+        'FINAL MDP Deadline Tracking.xlsx',
+    )
+    if bundled not in candidates:
+        candidates.append(bundled)
+    path = next((candidate for candidate in candidates if candidate and os.path.isfile(candidate)), None)
+    if not path:
+        print('[MDP Import] workbook not found; set MDP_TRACKING_FILE to enable sync.')
+        return None
+
+    digest = hashlib.sha256()
+    with open(path, 'rb') as workbook_file:
+        for chunk in iter(lambda: workbook_file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    migration_key = MDP_IMPORT_KEY_PREFIX + digest.hexdigest()[:32]
+    if db.session.get(DataMigration, migration_key):
+        return None
+
+    stats = import_mdp_tracking_workbook(path)
+    db.session.add(DataMigration(
+        key=migration_key,
+        details=(
+            f"Matched {stats['matched_members']}; pods {stats['pods_updated']}; "
+            f"commitments {stats['commitments_updated']}; "
+            f"unmatched members {len(stats['unmatched_members'])}"
+        ),
+    ))
+    db.session.commit()
+    print(
+        '[MDP Import] complete: '
+        f"matched={stats['matched_members']}, pods={stats['pods_updated']}, "
+        f"commitments={stats['commitments_updated']}, "
+        f"unmatched_members={len(stats['unmatched_members'])}, "
+        f"unmatched_mentors={len(stats['unmatched_mentors'])}"
+    )
+    if stats['unmatched_members']:
+        print('[MDP Import] unmatched members: ' + ', '.join(stats['unmatched_members']))
+    if stats['unmatched_mentors']:
+        print('[MDP Import] unmatched mentors: ' + ', '.join(stats['unmatched_mentors']))
+    return stats
+
 # ── Commitment helpers ───────────────────────────────────────────────────────
 
 def get_active_conference():
@@ -1039,6 +1635,15 @@ with app.app_context():
         db.session.rollback()
         print(f'[Admin Access] reconciliation skipped: {exc}')
 
+    # Import the exact workbook values after officer reconciliation so members
+    # who are also officers (for example Anay Kalchuri) retain their tracking
+    # rows. Each workbook byte-version is imported only once.
+    try:
+        sync_mdp_tracking_workbook()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[MDP Import] skipped: {exc}')
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def friendly_slot(dt):
@@ -1275,13 +1880,14 @@ def log_mdp_action(actor_id, action, category, target_user_id=None, details=""):
     ))
 
 
-def get_commitment_status(user):
+def get_commitment_status(user, commitments=None, today=None):
     if user.is_competing is False:
         return 'non_compete'
-    commitments = Commitment.query.filter_by(user_id=user.id).all()
+    if commitments is None:
+        commitments = Commitment.query.filter_by(user_id=user.id).all()
     if not commitments:
         return 'on_track'
-    today = datetime.now(LOCAL_TZ).date()
+    today = today or datetime.now(LOCAL_TZ).date()
     for commitment in commitments:
         remaining = (
             commitment.remaining_roleplay
@@ -1306,7 +1912,13 @@ def get_commitments_incomplete(user, commitments=None):
 
 def _members_visible_to_current_user():
     if current_user.is_admin:
-        return User.query.filter_by(role='member').order_by(User.username).all()
+        tracked_ids = [row[0] for row in db.session.query(MentorPod.member_id).all()]
+        query = User.query.filter(User.role == 'member')
+        if tracked_ids:
+            query = User.query.filter(
+                db.or_(User.role == 'member', User.id.in_(tracked_ids))
+            )
+        return query.order_by(User.username).all()
     pod_member_ids = [
         row.member_id
         for row in MentorPod.query.filter_by(mentor_id=current_user.id).all()
@@ -1575,9 +2187,10 @@ def dashboard():
 
     if current_user.is_admin:
         # Admin is a distinct dashboard scope. Show every member, not only
-        # members assigned to the admin's underlying officer account.
+        # members assigned to the admin's underlying officer account. Tracked
+        # student officers remain included through their MentorPod member row.
         dashboard_scope_label = 'All Members'
-        visible_members = User.query.filter_by(role='member').order_by(User.username).all()
+        visible_members = _members_visible_to_current_user()
 
     elif current_user.role == 'officer':
         assigned_workshops = Workshop.query.filter_by(
@@ -3112,19 +3725,44 @@ def admin_member_commitments():
         flash('Only officers/admins can view this.', 'danger')
         return redirect(url_for('dashboard'))
     members = _members_visible_to_current_user()
+    member_ids = [member.id for member in members]
+    members_by_username = {member.username: member for member in members}
+    pods_by_member = {}
+    commitments_by_user = defaultdict(list)
+    checklist_by_user_event = defaultdict(dict)
+    today = datetime.now(LOCAL_TZ).date()
+
+    if member_ids:
+        for pod in MentorPod.query.options(joinedload(MentorPod.mentor)).filter(
+            MentorPod.member_id.in_(member_ids)
+        ).all():
+            pods_by_member.setdefault(pod.member_id, pod)
+        for commitment in Commitment.query.filter(
+            Commitment.user_id.in_(member_ids)
+        ).all():
+            commitments_by_user[commitment.user_id].append(commitment)
+        for commitment in Commitment.query.filter(
+            Commitment.user_id.is_(None),
+            Commitment.member_name.in_(list(members_by_username)),
+        ).all():
+            member = members_by_username.get(commitment.member_name)
+            if member:
+                commitments_by_user[member.id].append(commitment)
+        for item in ChecklistItem.query.filter(
+            ChecklistItem.user_id.in_(member_ids)
+        ).all():
+            checklist_by_user_event[(item.user_id, item.event)][item.item_name] = bool(
+                item.completed
+            )
+
     rows = []
     for member in members:
         is_competing = member.is_competing is not False
-        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        pod = pods_by_member.get(member.id)
         level = pod.experience_level if pod else 'N'
         event = pod.event if pod else None
-        commitments = Commitment.query.filter_by(user_id=member.id).all()
-        if not commitments:
-            commitments = Commitment.query.filter_by(member_name=member.username).all()
+        commitments = commitments_by_user.get(member.id, [])
         commitments_by_conf = {row.event: row for row in commitments}
-        checklist_by_event = defaultdict(dict)
-        for item in ChecklistItem.query.filter_by(user_id=member.id).all():
-            checklist_by_event[item.event][item.item_name] = item.completed
         conferences = {}
         total_done = total_required = 0
         for conference in CONFERENCE_ORDER:
@@ -3171,7 +3809,9 @@ def admin_member_commitments():
                     + commitment.remaining_exam
                 ) == 0,
                 'checklist': {
-                    name: checklist_by_event.get(conference, {}).get(name, False)
+                    name: checklist_by_user_event.get(
+                        (member.id, conference), {}
+                    ).get(name, False)
                     for name in CHECKLIST_ITEMS.get(conference, [])
                 },
             }
@@ -3183,10 +3823,16 @@ def admin_member_commitments():
                 for value in conferences.values()
             )
         )
-        status = get_commitment_status(member)
+        status = get_commitment_status(
+            member,
+            commitments=commitments,
+            today=today,
+        )
         rows.append({
             'member': member,
-            'mentor_name': get_mentor_name(member),
+            'mentor_name': (
+                pod.mentor.username if pod and pod.mentor else 'Unassigned'
+            ),
             'level': level,
             'event': event,
             'is_competing': is_competing,
