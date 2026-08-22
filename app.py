@@ -5,11 +5,12 @@ except ImportError:
 else:
     truststore.inject_into_ssl()
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf import FlaskForm
+from flask_wtf.file import FileAllowed, FileField, FileRequired
 from wtforms import StringField, PasswordField, DateField, SelectField, IntegerField, SubmitField
 from wtforms.validators import DataRequired, Length, NumberRange, ValidationError
 from datetime import datetime, timedelta
@@ -29,6 +30,7 @@ import os
 import posixpath
 import re
 import requests
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -129,6 +131,13 @@ MDP_TRACKING_FILE = os.getenv(
     os.path.join(os.path.dirname(__file__), 'FINAL MDP Deadline Tracking.xlsx'),
 )
 MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v3-canonical-members-'
+
+
+def is_mdp_upload_enabled():
+    """Return True only while the temporary admin import page is enabled."""
+    return os.getenv('ENABLE_MDP_UPLOAD', '').strip().lower() in {
+        '1', 'true', 'yes', 'on',
+    }
 
 # Spreadsheet names that intentionally differ from account usernames. Joey's
 # source row is labelled "Joey Zhu" but the existing account is joey.shu.
@@ -1524,6 +1533,18 @@ class MentorPodForm(FlaskForm):
         default='yes',
     )
     submit = SubmitField('Save')
+
+
+class MDPWorkbookUploadForm(FlaskForm):
+    """Temporary, admin-only upload form for commitment repairs."""
+    workbook = FileField(
+        'MDP tracking workbook',
+        validators=[
+            FileRequired(message='Please select the MDP tracking workbook.'),
+            FileAllowed(['xlsx'], message='Please upload an .xlsx workbook.'),
+        ],
+    )
+    submit = SubmitField('Import Commitments')
 
 
 # ── Schema migration ──────────────────────────────────────────────────────────
@@ -3473,13 +3494,11 @@ def admin_delete_user(user_id):
     PracticeSession.query.filter(
         (PracticeSession.member_id == user.id) | (PracticeSession.officer_id == user.id)
     ).delete(synchronize_session=False)
-        # Preserve audit history while removing references to this account.
     MDPAuditLog.query.filter_by(target_user_id=user.id).update(
-        {'target_user_id': None},
-        synchronize_session=False,
+        {'target_user_id': None}, synchronize_session=False
     )
     MDPAuditLog.query.filter_by(actor_id=user.id).delete(
-        synchronize_session=False,
+        synchronize_session=False
     )
     MentorPodEditLog.query.filter(
         (MentorPodEditLog.member_id == user.id)
@@ -3513,19 +3532,16 @@ def admin_delete_test_users():
             db.session.execute(
                 workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
             )
-            # Preserve audit history while removing references to this account.
             MDPAuditLog.query.filter_by(target_user_id=user.id).update(
-                {'target_user_id': None},
-                synchronize_session=False,
+                {'target_user_id': None}, synchronize_session=False
             )
             MDPAuditLog.query.filter_by(actor_id=user.id).delete(
-                synchronize_session=False,
+                synchronize_session=False
             )
             MentorPodEditLog.query.filter(
                 (MentorPodEditLog.member_id == user.id)
                 | (MentorPodEditLog.actor_id == user.id)
             ).delete(synchronize_session=False)
-    
             deleted.append(user.username)
             db.session.delete(user)
     db.session.commit()
@@ -3781,6 +3797,79 @@ def toggle_checklist_item():
     return jsonify({'success': True, 'completed': bool(item.completed)})
 
 
+@app.route('/admin/import_commitments', methods=['POST'])
+@login_required
+@admin_required
+def admin_import_commitments():
+    """Temporarily accept an MDP workbook and repair commitment progress."""
+    if not is_mdp_upload_enabled():
+        abort(404)
+
+    # Keep accidental uploads bounded without changing limits for other routes.
+    if request.content_length and request.content_length > 25 * 1024 * 1024:
+        flash('The workbook is too large. The maximum upload size is 25 MB.', 'danger')
+        return redirect(url_for('admin_member_commitments'))
+
+    form = MDPWorkbookUploadForm()
+    if not form.validate_on_submit():
+        for messages in form.errors.values():
+            for message in messages:
+                flash(message, 'danger')
+        return redirect(url_for('admin_member_commitments'))
+
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temporary_file:
+            temporary_path = temporary_file.name
+        form.workbook.data.save(temporary_path)
+
+        stats = import_mdp_tracking_workbook(
+            temporary_path,
+            commitments_only=True,
+        )
+        log_mdp_action(
+            current_user.id,
+            'workbook_import',
+            'member_commitments',
+            details=(
+                f"Matched {stats['matched_members']}; "
+                f"commitments {stats['commitments_updated']}; "
+                f"unmatched {len(stats['unmatched_members'])}; "
+                f"missing completion {len(stats['members_without_completion'])}"
+            ),
+        )
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
+        flash('The import failed. Check the Railway deployment logs for details.', 'danger')
+        return redirect(url_for('admin_member_commitments'))
+    finally:
+        if temporary_path:
+            try:
+                os.remove(temporary_path)
+            except FileNotFoundError:
+                pass
+
+    flash(
+        f"Import complete: matched {stats['matched_members']} members and updated "
+        f"{stats['commitments_updated']} commitment rows.",
+        'success',
+    )
+    if stats['unmatched_members']:
+        flash(
+            'Unmatched workbook members: ' + ', '.join(stats['unmatched_members']),
+            'warning',
+        )
+    if stats['members_without_completion']:
+        flash(
+            'Members without completion rows: '
+            + ', '.join(stats['members_without_completion']),
+            'warning',
+        )
+    return redirect(url_for('admin_member_commitments'))
+
+
 @app.route('/member_commitments')
 @login_required
 def admin_member_commitments():
@@ -3922,6 +4011,12 @@ def admin_member_commitments():
         rows=rows,
         stats=stats,
         checklist_items_by_conf=CHECKLIST_ITEMS,
+        mdp_upload_enabled=is_mdp_upload_enabled(),
+        mdp_upload_form=(
+            MDPWorkbookUploadForm()
+            if current_user.is_admin and is_mdp_upload_enabled()
+            else None
+        ),
     )
 
 
@@ -4042,5 +4137,3 @@ if not scheduler.running:
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-
