@@ -3473,6 +3473,18 @@ def admin_delete_user(user_id):
     PracticeSession.query.filter(
         (PracticeSession.member_id == user.id) | (PracticeSession.officer_id == user.id)
     ).delete(synchronize_session=False)
+        # Preserve audit history while removing references to this account.
+    MDPAuditLog.query.filter_by(target_user_id=user.id).update(
+        {'target_user_id': None},
+        synchronize_session=False,
+    )
+    MDPAuditLog.query.filter_by(actor_id=user.id).delete(
+        synchronize_session=False,
+    )
+    MentorPodEditLog.query.filter(
+        (MentorPodEditLog.member_id == user.id)
+        | (MentorPodEditLog.actor_id == user.id)
+    ).delete(synchronize_session=False)
     db.session.delete(user)
     db.session.commit()
     flash(f'User "{username}" deleted successfully.', 'success')
@@ -3501,6 +3513,19 @@ def admin_delete_test_users():
             db.session.execute(
                 workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
             )
+            # Preserve audit history while removing references to this account.
+            MDPAuditLog.query.filter_by(target_user_id=user.id).update(
+                {'target_user_id': None},
+                synchronize_session=False,
+            )
+            MDPAuditLog.query.filter_by(actor_id=user.id).delete(
+                synchronize_session=False,
+            )
+            MentorPodEditLog.query.filter(
+                (MentorPodEditLog.member_id == user.id)
+                | (MentorPodEditLog.actor_id == user.id)
+            ).delete(synchronize_session=False)
+    
             deleted.append(user.username)
             db.session.delete(user)
     db.session.commit()
