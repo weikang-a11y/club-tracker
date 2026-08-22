@@ -128,13 +128,16 @@ MDP_TRACKING_FILE = os.getenv(
     'MDP_TRACKING_FILE',
     os.path.join(os.path.dirname(__file__), 'FINAL MDP Deadline Tracking.xlsx'),
 )
-MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v2-'
+MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v3-canonical-members-'
 
 # Spreadsheet names that intentionally differ from account usernames. Joey's
 # source row is labelled "Joey Zhu" but the existing account is joey.shu.
 SPREADSHEET_ACCOUNT_OVERRIDES = {
     'amber chang': ('ambery.chang',),
-    'avaneesh nangare': ('avaneesh.nagare', 'avaneesh.nangare'),
+    # The live account uses the workbook/email spelling. Do not fall back to
+    # the old ``avaneesh.nagare`` typo: if both accounts exist, that would
+    # update the wrong user's commitments and leave avaneesh.nangare stale.
+    'avaneesh nangare': ('avaneesh.nangare',),
     'chun ka yu': ('chunka.yu',),
     'elizabeth huang': ('lizzie.huang', 'elizabeth.huang'),
     'joey zhu': ('joey.shu', 'joey.zhu'),
@@ -1041,6 +1044,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
 
     matched_user_ids = set()
     unmatched_members = []
+    members_without_completion = []
     unmatched_mentors = []
     pods_updated = commitments_updated = checklist_items_updated = 0
 
@@ -1061,6 +1065,11 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         display_name = legal_name or mentee_name
         email = _spreadsheet_text(_row_value(row, pod_email_col))
         if not display_name and not email:
+            continue
+        # Google Sheets leaves formula artifacts below the real pod roster.
+        # Every actual roster row has a Warriorlife email; ignoring the
+        # artifacts prevents team IDs from being reported as fake members.
+        if '@' not in email:
             continue
         member = _find_spreadsheet_user(
             display_name or mentee_name,
@@ -1118,8 +1127,15 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         identities = [_spreadsheet_key(email), _spreadsheet_key(display_name), _spreadsheet_key(mentee_name)]
         completion = next(
             (completion_by_identity[key] for key in identities if key in completion_by_identity),
-            {},
+            None,
         )
+        # A missing completion row is a mapping error, not proof that the
+        # member completed zero requirements. Preserve the existing database
+        # rows and surface the name in import diagnostics instead of silently
+        # resetting all three conferences to 0 completed.
+        if completion is None:
+            members_without_completion.append(display_name or email)
+            continue
         grades = next(
             (grades_by_identity[key] for key in identities if key in grades_by_identity),
             {},
@@ -1185,6 +1201,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
     return {
         'matched_members': len(matched_user_ids),
         'unmatched_members': sorted(set(filter(None, unmatched_members))),
+        'members_without_completion': sorted(set(filter(None, members_without_completion))),
         'unmatched_mentors': sorted(set(filter(None, unmatched_mentors))),
         'pods_updated': pods_updated,
         'commitments_updated': commitments_updated,
@@ -1222,7 +1239,8 @@ def sync_mdp_tracking_workbook():
         details=(
             f"Matched {stats['matched_members']}; pods {stats['pods_updated']}; "
             f"commitments {stats['commitments_updated']}; "
-            f"unmatched members {len(stats['unmatched_members'])}"
+            f"unmatched members {len(stats['unmatched_members'])}; "
+            f"missing completion rows {len(stats['members_without_completion'])}"
         ),
     ))
     db.session.commit()
@@ -1231,10 +1249,16 @@ def sync_mdp_tracking_workbook():
         f"matched={stats['matched_members']}, pods={stats['pods_updated']}, "
         f"commitments={stats['commitments_updated']}, "
         f"unmatched_members={len(stats['unmatched_members'])}, "
+        f"missing_completion={len(stats['members_without_completion'])}, "
         f"unmatched_mentors={len(stats['unmatched_mentors'])}"
     )
     if stats['unmatched_members']:
         print('[MDP Import] unmatched members: ' + ', '.join(stats['unmatched_members']))
+    if stats['members_without_completion']:
+        print(
+            '[MDP Import] members without completion rows: '
+            + ', '.join(stats['members_without_completion'])
+        )
     if stats['unmatched_mentors']:
         print('[MDP Import] unmatched mentors: ' + ', '.join(stats['unmatched_mentors']))
     return stats
@@ -3786,13 +3810,13 @@ def admin_member_commitments():
                 continue
             done = (
                 commitment.required_roleplay - commitment.remaining_roleplay
-                + commitment.required_written - commitment.remaining_written
                 + commitment.required_exam - commitment.remaining_exam
+                + commitment.required_written - commitment.remaining_written
             )
             required = (
                 commitment.required_roleplay
-                + commitment.required_written
                 + commitment.required_exam
+                + commitment.required_written
             )
             total_done += done
             total_required += required
@@ -3803,24 +3827,24 @@ def admin_member_commitments():
                     'N/A' if commitment.required_roleplay == 0 else
                     f'{commitment.required_roleplay - commitment.remaining_roleplay}/{commitment.required_roleplay}'
                 ),
-                'written_done': commitment.required_written - commitment.remaining_written,
-                'written_req': commitment.required_written,
-                'written_display': (
-                    'N/A' if commitment.required_written == 0 else
-                    f'{commitment.required_written - commitment.remaining_written}/{commitment.required_written}'
-                ),
                 'exam_done': commitment.required_exam - commitment.remaining_exam,
                 'exam_req': commitment.required_exam,
                 'exam_display': (
                     'N/A' if commitment.required_exam == 0 else
                     f'{commitment.required_exam - commitment.remaining_exam}/{commitment.required_exam}'
                 ),
+                'written_done': commitment.required_written - commitment.remaining_written,
+                'written_req': commitment.required_written,
+                'written_display': (
+                    'N/A' if commitment.required_written == 0 else
+                    f'{commitment.required_written - commitment.remaining_written}/{commitment.required_written}'
+                ),
                 'deadline': commitment.deadline,
                 'grade': commitment.grade,
                 'complete': (
                     commitment.remaining_roleplay
-                    + commitment.remaining_written
                     + commitment.remaining_exam
+                    + commitment.remaining_written
                 ) == 0,
                 'checklist': {
                     name: checklist_by_user_event.get(
