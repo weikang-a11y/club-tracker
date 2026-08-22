@@ -100,22 +100,22 @@ ICPREP_TARGETS = {
 # RP/Exam counts include both in-person and ICPrep (members choose which to use for ICPrep quota)
 EVENT_REQUIREMENTS = {
     "N": {  # Novice
-        "VCMC":  {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-11-15"},
-        "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-01-08"},
-        "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-02-23"},
+        "VCMC":  {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2025-11-15"},
+        "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-01-08"},
+        "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-02-23"},
     },
     "E": {  # Experienced
-        "VCMC":  {"roleplay": 0, "written": 0, "exam": 0, "deadline": "2026-11-15"},
-        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
-        "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2027-02-23"},
+        "VCMC":  {"roleplay": 0, "written": 0, "exam": 0, "deadline": "2025-11-15"},
+        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-01-08"},
+        "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2026-02-23"},
     },
 }
 
 CONFERENCE_ORDER = ["VCMC", "SVCDC", "SCDC"]
 CONFERENCE_DEADLINES = {
-    "VCMC":  "2026-11-15",
-    "SVCDC": "2027-01-08",
-    "SCDC":  "2027-02-23",
+    "VCMC":  "2025-11-15",
+    "SVCDC": "2026-01-08",
+    "SCDC":  "2026-02-23",
 }
 
 # Competitive-event labels used by mentor-pod administration.
@@ -157,9 +157,9 @@ OFFICER_ROSTER_2026_27 = [
     ("Philina Chen", "Officer, Admin"),
     ("Natalie Zhang", "Officer"),
     ("Melody Leong", "Officer"),
-    ("Aryahi Sharma", "Officer, Admin"),
-    ("Olivia Kang", "Officer, Admin"),
-    ("Zihan Liu", "Officer, Admin"),
+    ("Aryahi Sharma", "Officer"),
+    ("Olivia Kang", "Officer"),
+    ("Zihan Liu", "Officer"),
     ("Aaron Vu", "Admin, Officer"),
     ("Thatcher Kim", "Admin, Officer"),
     ("Mia Tran", "Admin, Officer"),
@@ -194,6 +194,11 @@ OFFICER_IMPORT_OFFICER_PASSWORD = os.getenv(
     "OFFICER_IMPORT_OFFICER_PASSWORD", "Officer2627!"
 )
 OFFICER_IMPORT_KEY = "2026-27-officer-roster-v3-advisors-and-additions"
+
+# This migration updates already-imported databases without rerunning the full
+# roster import (which would reset every officer's temporary password).
+REMOVED_ADMIN_ACCESS = ("Aryahi Sharma", "Olivia Kang", "Zihan Liu")
+REMOVED_ADMIN_ACCESS_KEY = "2026-27-remove-admin-access-aryahi-olivia-zihan-v1"
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -599,6 +604,31 @@ def import_2026_27_officer_roster():
         f'total={len(OFFICER_ROSTER_2026_27)}'
     )
 
+
+def reconcile_removed_admin_access():
+    """Remove admin access from the three officers in existing databases."""
+    if db.session.get(DataMigration, REMOVED_ADMIN_ACCESS_KEY):
+        return
+
+    target_keys = set()
+    for roster_name in REMOVED_ADMIN_ACCESS:
+        target_keys.add(_account_name_key(roster_name))
+        target_keys.add(_account_name_key(_canonical_officer_username(roster_name)))
+
+    updated = []
+    for user in User.query.all():
+        if _account_name_key(user.username) in target_keys and user.is_admin:
+            user.is_admin = False
+            user.role = 'officer'
+            updated.append(user.username)
+
+    db.session.add(DataMigration(
+        key=REMOVED_ADMIN_ACCESS_KEY,
+        details=f'Removed admin access from: {", ".join(updated) or "no matching admins"}',
+    ))
+    db.session.commit()
+    print(f'[Admin Access] removed from: {", ".join(updated) or "no matching admins"}')
+
 # ── Commitment helpers ───────────────────────────────────────────────────────
 
 def get_active_conference():
@@ -646,10 +676,11 @@ def ensure_commitments(member):
         if existing.member_name != member.username:
             existing.member_name = member.username
             changed = True
-        if existing.deadline is None:
-            existing.deadline = datetime.strptime(
-                rule["deadline"], "%Y-%m-%d"
-            ).date()
+        configured_deadline = datetime.strptime(
+            rule["deadline"], "%Y-%m-%d"
+        ).date()
+        if existing.deadline != configured_deadline:
+            existing.deadline = configured_deadline
             changed = True
 
         # Apply the current matrix to existing rows. Preserve the number already
@@ -767,7 +798,9 @@ def get_attendance_stats(
 class RegisterForm(FlaskForm):
     username = StringField('Username', [DataRequired(), Length(min=3)])
     password = PasswordField('Password', [DataRequired(), Length(min=6)])
-    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member'), ('admin', 'Admin')], default='')
+    # Admin access is granted only by the canonical roster or an existing admin.
+    # Public registration must never allow a visitor to self-select admin.
+    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member')], default='')
     submit = SubmitField('Register')
 
     def validate_role(self, field):
@@ -992,6 +1025,14 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Officer Import] skipped: {exc}')
+
+    # Apply targeted access changes to databases where the roster import has
+    # already run. This does not change anyone's password.
+    try:
+        reconcile_removed_admin_access()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Admin Access] reconciliation skipped: {exc}')
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1753,8 +1794,8 @@ def register():
         user = User(
             username=form.username.data.strip(),
             password=hashed_pw,
-            role='officer' if selected_role == 'admin' else selected_role,
-            is_admin=(selected_role == 'admin'),
+            role=selected_role,
+            is_admin=False,
         )
         db.session.add(user)
         db.session.commit()
@@ -2766,8 +2807,8 @@ def admin_delete_user(user_id):
 @login_required
 @admin_required
 def admin_delete_test_users():
-    """Delete accounts that look like test accounts (Officer1, Member1, etc.)"""
-    test_prefixes = ['officer', 'member', 'test']
+    """Delete accounts that look like test accounts (Officer1, Presentation1, etc.)"""
+    test_prefixes = ['officer', 'member', 'test', 'presentation']
     deleted = []
     for user in User.query.all():
         if user.id == current_user.id:
