@@ -114,17 +114,35 @@
 {% endif %}
 
 {% if uploads %}
-<div class="card border-0 shadow-sm rounded-4">
+
+{# Group uploads by member using a namespace trick #}
+{% set seen = namespace(members=[]) %}
+{% for u in uploads %}
+    {% if u.member.username not in seen.members %}
+        {% set seen.members = seen.members + [u.member.username] %}
+    {% endif %}
+{% endfor %}
+
+{% for username in seen.members %}
+{% set member_uploads = uploads | selectattr('member.username', 'equalto', username) | list %}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
     <div class="card-header bg-white p-4 d-flex justify-content-between align-items-center">
-        <h5 class="mb-0 fw-bold">Pod Exam Submissions</h5>
-        <span class="badge bg-primary-subtle text-primary rounded-pill px-3">{{ uploads|length }} total</span>
+        <div>
+            <h5 class="mb-0 fw-bold">{{ username }}</h5>
+            <span class="text-muted small">{{ member_uploads|length }} submission{{ 's' if member_uploads|length != 1 else '' }}</span>
+        </div>
+        {% set pending_count = member_uploads | rejectattr('reviewed') | list | length %}
+        {% if pending_count > 0 %}
+            <span class="badge bg-warning text-dark rounded-pill">{{ pending_count }} pending</span>
+        {% else %}
+            <span class="badge bg-success rounded-pill">All reviewed</span>
+        {% endif %}
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
             <table class="table table-hover table-sm mb-0">
                 <thead class="table-light">
                     <tr>
-                        <th>Member</th>
                         <th>Uploaded</th>
                         <th>Conference</th>
                         <th>Notes</th>
@@ -134,9 +152,8 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for u in uploads %}
+                    {% for u in member_uploads %}
                     <tr class="{{ 'table-warning' if not u.reviewed else ('table-success' if u.credited else '') }}">
-                        <td class="fw-semibold">{{ u.member.username }}</td>
                         <td class="text-nowrap">{{ u.uploaded_at.strftime('%m/%d %H:%M') }}</td>
                         <td><span class="badge bg-secondary-subtle text-secondary">{{ u.conference }}</span></td>
                         <td class="text-muted small">{{ u.notes or '—' }}</td>
@@ -160,7 +177,7 @@
                                     <input type="hidden" name="action" value="review">
                                     <button type="button" class="btn btn-sm btn-outline-secondary js-open-confirm"
                                         data-confirm-title="Mark Reviewed"
-                                        data-confirm-message="Mark this exam from {{ u.member.username }} as reviewed (no credit yet)?"
+                                        data-confirm-message="Mark this exam from {{ username }} as reviewed (no credit yet)?"
                                         data-confirm-btn-text="Mark Reviewed"
                                         data-confirm-btn-class="btn-secondary">Reviewed</button>
                                 </form>
@@ -169,7 +186,7 @@
                                     <input type="hidden" name="action" value="credit">
                                     <button type="button" class="btn btn-sm btn-success js-open-confirm"
                                         data-confirm-title="Credit Exam"
-                                        data-confirm-message="Credit this exam for {{ u.member.username }} ({{ u.conference }})? This will decrement their remaining exam count."
+                                        data-confirm-message="Credit this exam for {{ username }} ({{ u.conference }})? This will decrement their remaining exam count."
                                         data-confirm-btn-text="Credit"
                                         data-confirm-btn-class="btn-success">Credit</button>
                                 </form>
@@ -185,6 +202,8 @@
         </div>
     </div>
 </div>
+{% endfor %}
+
 {% else %}
 <div class="card border-0 shadow-sm rounded-4">
     <div class="card-body text-muted">No exam submissions from your pod yet.</div>

@@ -159,29 +159,44 @@
                             <a class="nav-link {% if request.endpoint == 'admin_panel' %}active{% endif %}" href="{{ url_for('admin_panel') }}">
                                 ⚙ Admin Panel
                             </a>
-                            <a class="nav-link {% if request.endpoint == 'view_logs' %}active{% endif %}" href="{{ url_for('view_logs') }}">
-                                MDP Changes
-                            </a>
-                            <a class="nav-link {% if request.endpoint == 'mentor_pods' %}active{% endif %}" href="{{ url_for('mentor_pods') }}">
-                                Mentor Pods
-                            </a>
-                            <a class="nav-link {% if request.endpoint == 'admin_member_commitments' %}active{% endif %}" href="{{ url_for('admin_member_commitments') }}">
-                                Member Commitments
-                            </a>
-                            <a class="nav-link {% if request.endpoint == 'checklist_completion' %}active{% endif %}" href="{{ url_for('checklist_completion') }}">
-                                Written Progress
-                            </a>
                         {% elif current_user.role == 'officer' %}
                             <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
                             <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab', 'commitment') == 'commitment' %}active{% endif %}" href="{{ url_for('reports', tab='commitment') }}">Commitment Reports</a>
                             <a class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}" href="{{ url_for('reports', tab='calendar') }}">Calendar</a>
                             <a class="nav-link {% if request.endpoint == 'exam_uploads' %}active{% endif %}" href="{{ url_for('exam_uploads') }}">Exam Uploads</a>
                         {% else %}
-                            <a class="nav-link {% if request.endpoint == 'my_commitments' %}active{% endif %}" href="{{ url_for('my_commitments') }}">My Commitments</a>
+                            <a class="nav-link {% if request.endpoint == 'member_commitments' %}active{% endif %}" href="{{ url_for('member_commitments') }}">My Commitments</a>
                             <a class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}" href="{{ url_for('practice_sessions') }}">Practice Sessions</a>
                             <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
                         {% endif %}
                     </nav>
+
+                    {# ── Notification bell ── #}
+                    <div class="dropdown mt-auto mb-2">
+                        <button class="btn w-100 text-start nav-link d-flex align-items-center gap-2 position-relative"
+                                id="notifDropdown" data-bs-toggle="dropdown" aria-expanded="false"
+                                onclick="markNotifsRead()">
+                            <i class="bi bi-bell"></i>
+                            Notifications
+                            {% if unread_count > 0 %}
+                            <span class="badge bg-danger rounded-pill ms-auto" id="notif-badge">{{ unread_count }}</span>
+                            {% endif %}
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end shadow border-0 rounded-4 p-2"
+                            aria-labelledby="notifDropdown" style="min-width:300px; max-width:340px;">
+                            {% if notifications %}
+                                {% for n in notifications %}
+                                <li class="px-2 py-1">
+                                    <div class="small {{ 'fw-semibold' if not n.read else 'text-muted' }}">{{ n.message }}</div>
+                                    <div class="text-muted" style="font-size:0.7rem;">{{ n.created_at.strftime('%m/%d %H:%M') }}</div>
+                                </li>
+                                {% if not loop.last %}<li><hr class="dropdown-divider my-1"></li>{% endif %}
+                                {% endfor %}
+                            {% else %}
+                                <li class="px-2 py-2 text-muted small text-center">No notifications</li>
+                            {% endif %}
+                        </ul>
+                    </div>
 
                     <a class="nav-link logout-link" href="{{ url_for('logout') }}">Logout</a>
                 </aside>
@@ -261,5 +276,13 @@
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    function markNotifsRead() {
+        const badge = document.getElementById('notif-badge');
+        if (!badge) return;
+        fetch('/notifications/mark_read', { method: 'POST' })
+            .then(() => { badge.remove(); });
+    }
+    </script>
 </body>
 </html>

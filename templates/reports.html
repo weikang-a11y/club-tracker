@@ -16,6 +16,62 @@
    COMMITMENT REPORTS TAB
    ═══════════════════════════════════════ #}
 
+{# ── Subtab toggle ─────────────────────────────────────────────── #}
+<ul class="nav nav-pills mb-4" id="commitmentSubtabs">
+    <li class="nav-item">
+        <button class="nav-link active" id="tab-pod" onclick="switchSubtab('pod')">Pod Progress</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" id="tab-mark" onclick="switchSubtab('mark')">Mark Complete</button>
+    </li>
+</ul>
+
+{# ── Mark Complete subtab ──────────────────────────────────────── #}
+<div id="subtab-mark" style="display:none;">
+    <div class="card border-0 shadow-sm rounded-4 mb-4">
+        <div class="card-header bg-white p-4 border-bottom-0">
+            <h5 class="mb-0 fw-bold">Mark a Commitment Complete</h5>
+            <p class="text-muted small mb-0 mt-1">
+                Mark any member's commitment as complete. Both you and the member will receive an email confirmation,
+                and the member's mentor will be notified if it's not your own pod.
+            </p>
+        </div>
+        <div class="card-body p-4 pt-2">
+            <form method="POST" action="{{ url_for('mark_complete') }}" class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Member</label>
+                    <select name="member_id" class="form-select" id="memberSearchSelect" required>
+                        <option value="">Search member...</option>
+                        {% for m in all_members %}
+                        <option value="{{ m.id }}">{{ m.username }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Practice Type</label>
+                    <select name="practice_type" class="form-select" required>
+                        <option value="">Select type</option>
+                        {% for t in activity_types %}
+                        <option value="{{ t }}">{{ t }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label fw-semibold">Conference</label>
+                    <input type="text" class="form-control bg-light" value="{{ active_conf }}" readonly>
+                    <input type="hidden" name="conference" value="{{ active_conf }}">
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-success w-100">✓ Mark Complete</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+{# ── Pod Progress subtab ───────────────────────────────────────── #}
+<div id="subtab-pod">
+
 {% if commitment_data %}
 
 {# Active conference badge #}
@@ -110,6 +166,28 @@
     <div class="card-body text-muted">No pod members found.</div>
 </div>
 {% endif %}
+
+</div>{# end subtab-pod #}
+
+<script>
+function switchSubtab(tab) {
+    document.getElementById('subtab-pod').style.display = tab === 'pod' ? 'block' : 'none';
+    document.getElementById('subtab-mark').style.display = tab === 'mark' ? 'block' : 'none';
+    document.getElementById('tab-pod').classList.toggle('active', tab === 'pod');
+    document.getElementById('tab-mark').classList.toggle('active', tab === 'mark');
+}
+// Make member select searchable
+document.addEventListener('DOMContentLoaded', function() {
+    const sel = document.getElementById('memberSearchSelect');
+    if (!sel) return;
+    sel.addEventListener('keyup', function(e) {
+        const q = e.target.value.toLowerCase();
+        Array.from(sel.options).forEach(opt => {
+            opt.style.display = opt.value === '' || opt.text.toLowerCase().includes(q) ? '' : 'none';
+        });
+    });
+});
+</script>
 
 
 {% elif active_tab == 'calendar' %}
