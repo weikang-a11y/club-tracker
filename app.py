@@ -3446,6 +3446,135 @@ def admin_required(f):
     return decorated
 
 
+def _delete_user_account_and_dependencies(user):
+    """Delete one account after removing every database reference to it."""
+    user_id = user.id
+    username = (user.username or '').strip()
+
+    # Remove sessions owned by this user; preserve another officer's session by
+    # clearing only the deleted member's signup.
+    owned_session_ids = [
+        row[0]
+        for row in db.session.query(PracticeSession.id).filter_by(
+            officer_id=user_id
+        ).all()
+    ]
+    practice_log_filter = (
+        (PracticeLog.member_id == user_id)
+        | (PracticeLog.officer_id == user_id)
+    )
+    if owned_session_ids:
+        practice_log_filter = practice_log_filter | (
+            PracticeLog.practice_session_id.in_(owned_session_ids)
+        )
+    PracticeLog.query.filter(practice_log_filter).delete(
+        synchronize_session=False
+    )
+    if owned_session_ids:
+        PracticeSession.query.filter(
+            PracticeSession.id.in_(owned_session_ids)
+        ).delete(synchronize_session=False)
+    PracticeSession.query.filter_by(member_id=user_id).update(
+        {'member_id': None}, synchronize_session=False
+    )
+
+    # Remove uploads owned by this member and retain other uploads by clearing
+    # the deleted reviewer's optional reference.
+    ExamUpload.query.filter_by(member_id=user_id).delete(
+        synchronize_session=False
+    )
+    ExamUpload.query.filter_by(reviewer_id=user_id).update(
+        {'reviewer_id': None}, synchronize_session=False
+    )
+    ICPrepWebhookLog.query.filter_by(member_id=user_id).delete(
+        synchronize_session=False
+    )
+
+    # Delete hosted workshops and their dependent rows. If this user only
+    # created a workshop hosted by somebody else, retain it with no creator.
+    hosted_workshop_ids = [
+        row[0]
+        for row in db.session.query(Workshop.id).filter_by(
+            officer_id=user_id
+        ).all()
+    ]
+    attendance_submission_filter = AttendanceSubmission.officer_id == user_id
+    reminder_filter = ReminderLog.user_id == user_id
+    if hosted_workshop_ids:
+        attendance_submission_filter = attendance_submission_filter | (
+            AttendanceSubmission.workshop_id.in_(hosted_workshop_ids)
+        )
+        reminder_filter = reminder_filter | (
+            ReminderLog.workshop_id.in_(hosted_workshop_ids)
+        )
+    AttendanceSubmission.query.filter(attendance_submission_filter).delete(
+        synchronize_session=False
+    )
+    ReminderLog.query.filter(reminder_filter).delete(
+        synchronize_session=False
+    )
+    db.session.execute(
+        workshop_signups.delete().where(workshop_signups.c.user_id == user_id)
+    )
+    if hosted_workshop_ids:
+        db.session.execute(
+            workshop_signups.delete().where(
+                workshop_signups.c.workshop_id.in_(hosted_workshop_ids)
+            )
+        )
+        Workshop.query.filter(
+            Workshop.id.in_(hosted_workshop_ids)
+        ).delete(synchronize_session=False)
+    Workshop.query.filter_by(creator_id=user_id).update(
+        {'creator_id': None}, synchronize_session=False
+    )
+
+    # Delete member progress only after rows that can reference commitments.
+    AHAttendance.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    WSAttendance.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    ChecklistItem.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    AnnualICPrepTracker.query.filter_by(member_id=user_id).delete(
+        synchronize_session=False
+    )
+    Commitment.query.filter_by(user_id=user_id).delete(
+        synchronize_session=False
+    )
+    MentorPod.query.filter(
+        (MentorPod.member_id == user_id) | (MentorPod.mentor_id == user_id)
+    ).delete(synchronize_session=False)
+    GeneralAttendance.query.filter(
+        (GeneralAttendance.officer_id == user_id)
+        | (
+            db.func.lower(GeneralAttendance.member_name)
+            == username.lower()
+        )
+    ).delete(synchronize_session=False)
+
+    # Preserve target-side audit history, but actor rows cannot survive because
+    # actor_id is required. Pod edit logs require both user references.
+    MDPAuditLog.query.filter_by(target_user_id=user_id).update(
+        {'target_user_id': None}, synchronize_session=False
+    )
+    MDPAuditLog.query.filter_by(actor_id=user_id).delete(
+        synchronize_session=False
+    )
+    MentorPodEditLog.query.filter(
+        (MentorPodEditLog.member_id == user_id)
+        | (MentorPodEditLog.actor_id == user_id)
+    ).delete(synchronize_session=False)
+
+    db.session.delete(user)
+    # Surface any missed constraint for this specific account before continuing
+    # to the next test account; the surrounding transaction still stays atomic.
+    db.session.flush()
+
+
 @app.route('/admin')
 @login_required
 @admin_required
@@ -3474,38 +3603,14 @@ def admin_delete_user(user_id):
         flash('You cannot delete your own account.', 'danger')
         return redirect(url_for('admin_panel'))
     username = user.username
-    AHAttendance.query.filter_by(user_id=user.id).delete()
-    WSAttendance.query.filter_by(user_id=user.id).delete()
-    MentorPod.query.filter(
-        (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
-    ).delete()
-    Commitment.query.filter_by(user_id=user.id).delete()
-    ReminderLog.query.filter_by(user_id=user.id).delete()
-    db.session.execute(
-        workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
-    )
-    ChecklistItem.query.filter_by(user_id=user.id).delete()
-    AnnualICPrepTracker.query.filter_by(member_id=user.id).delete()
-    ExamUpload.query.filter(ExamUpload.member_id == user.id).delete(synchronize_session=False)
-    ICPrepWebhookLog.query.filter(ICPrepWebhookLog.member_id == user.id).delete(synchronize_session=False)
-    PracticeLog.query.filter(
-        (PracticeLog.member_id == user.id) | (PracticeLog.officer_id == user.id)
-    ).delete(synchronize_session=False)
-    PracticeSession.query.filter(
-        (PracticeSession.member_id == user.id) | (PracticeSession.officer_id == user.id)
-    ).delete(synchronize_session=False)
-    MDPAuditLog.query.filter_by(target_user_id=user.id).update(
-        {'target_user_id': None}, synchronize_session=False
-    )
-    MDPAuditLog.query.filter_by(actor_id=user.id).delete(
-        synchronize_session=False
-    )
-    MentorPodEditLog.query.filter(
-        (MentorPodEditLog.member_id == user.id)
-        | (MentorPodEditLog.actor_id == user.id)
-    ).delete(synchronize_session=False)
-    db.session.delete(user)
-    db.session.commit()
+    try:
+        _delete_user_account_and_dependencies(user)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Admin Delete User] failed for {username}: {type(exc).__name__}: {exc}')
+        flash(f'Could not delete user "{username}". Check the Railway logs.', 'danger')
+        return redirect(url_for('admin_panel'))
     flash(f'User "{username}" deleted successfully.', 'success')
     return redirect(url_for('admin_panel'))
 
@@ -3517,34 +3622,24 @@ def admin_delete_test_users():
     """Delete accounts that look like test accounts (Officer1, Presentation1, etc.)"""
     test_prefixes = ['officer', 'member', 'test', 'presentation']
     deleted = []
-    for user in User.query.all():
-        if user.id == current_user.id:
-            continue
-        lower = user.username.lower()
-        if any(lower.startswith(p) and lower[len(p):].isdigit() for p in test_prefixes):
-            AHAttendance.query.filter_by(user_id=user.id).delete()
-            WSAttendance.query.filter_by(user_id=user.id).delete()
-            MentorPod.query.filter(
-                (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
-            ).delete()
-            Commitment.query.filter_by(user_id=user.id).delete()
-            ReminderLog.query.filter_by(user_id=user.id).delete()
-            db.session.execute(
-                workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
-            )
-            MDPAuditLog.query.filter_by(target_user_id=user.id).update(
-                {'target_user_id': None}, synchronize_session=False
-            )
-            MDPAuditLog.query.filter_by(actor_id=user.id).delete(
-                synchronize_session=False
-            )
-            MentorPodEditLog.query.filter(
-                (MentorPodEditLog.member_id == user.id)
-                | (MentorPodEditLog.actor_id == user.id)
-            ).delete(synchronize_session=False)
-            deleted.append(user.username)
-            db.session.delete(user)
-    db.session.commit()
+    try:
+        for user in User.query.all():
+            if user.id == current_user.id:
+                continue
+            lower = user.username.lower()
+            if any(
+                lower.startswith(prefix)
+                and lower[len(prefix):].isdigit()
+                for prefix in test_prefixes
+            ):
+                deleted.append(user.username)
+                _delete_user_account_and_dependencies(user)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Delete Test Users] failed: {type(exc).__name__}: {exc}')
+        flash('Test accounts could not be deleted. Check the Railway logs.', 'danger')
+        return redirect(url_for('admin_panel'))
     if deleted:
         flash(f'Deleted {len(deleted)} test account(s): {", ".join(deleted)}', 'success')
     else:
