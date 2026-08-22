@@ -1,64 +1,294 @@
-"""Import DECA tracker data from the MDP workbook.
-
-Examples:
-    python import_from_spreadsheet.py "FINAL MDP Deadline Tracking.xlsx"
-    python import_from_spreadsheet.py "FINAL MDP Deadline Tracking.xlsx" --commitments-only
-
-Spreadsheet parsing and member matching live in ``app.py`` so the website and
-this command always use the same positional conference-column mapping and
-requirement rules. The commitments-only mode is recommended when repairing
-progress counts because it leaves pods, competing status, and checklist data
-unchanged.
-"""
-
-import argparse
-import os
-
-from app import app, db, import_mdp_tracking_workbook
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('workbook', help='Path to the MDP tracking .xlsx file')
-    parser.add_argument(
-        '--commitments-only',
-        action='store_true',
-        help='Update commitment progress only; preserve pods and checklist data',
-    )
-    return parser.parse_args()
+{% extends "base.html" %}
+{% block title %}Member Commitments{% endblock %}
+{% block content %}
+<div class="card page-header-card mb-4">
+<div class="card-body p-4">
+<h2 class="mb-1">Member Commitments</h2>
+<p class="lead mb-0">Roleplay, exam, and written presentation completion for VCMC, SVCDC, and SCDC.</p>
+<div class="mt-3 p-3 bg-light rounded">
+<strong><i class="fas fa-info-circle"></i> Status Information:</strong>
+<ul class="mb-0 mt-2" style="font-size: 0.95rem;">
+<li><span class="badge bg-success">✓ On Track</span> - No RP/EX/WR deadline has been missed. The member can still have work remaining if the deadline has not passed.</li>
+<li><span class="badge bg-danger">⚠ At Risk</span> - At least one RP/EX/WR requirement is still remaining after its deadline.</li>
+<li><span class="badge bg-secondary">Non-Compete</span> - The member is shown for reference but is excluded from at-risk and incomplete counts.</li>
+<li><span class="badge bg-success">✓ Done</span> - No remaining RP/EX/WR requirements in the imported conference rows.</li>
+</ul>
+<div class="mt-3 pt-3 border-top small">
+<strong><i class="fas fa-calendar-alt"></i> Deadlines:</strong>
+<span class="ms-1">VCMC - Nov 15, 2025 | SVCDC - Jan 8, 2026 | SCDC - Feb 23, 2026</span>
+</div>
+</div>
+</div>
+</div>
 
 
-def main():
-    args = parse_args()
-    workbook_path = os.path.abspath(args.workbook)
-    if not os.path.isfile(workbook_path):
-        raise SystemExit(f'Workbook not found: {workbook_path}')
-
-    with app.app_context():
-        try:
-            stats = import_mdp_tracking_workbook(
-                workbook_path,
-                commitments_only=args.commitments_only,
-            )
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-            raise
-
-    mode = 'commitment repair' if args.commitments_only else 'full import'
-    print(f'MDP {mode} complete.')
-    print(f"Matched members: {stats['matched_members']}")
-    print(f"Commitments updated: {stats['commitments_updated']}")
-    if not args.commitments_only:
-        print(f"Pods updated: {stats['pods_updated']}")
-        print(f"Checklist requirements imported: {stats['checklist_requirements']}")
-        print(f"Checklist items updated: {stats['checklist_items_updated']}")
-    if stats['unmatched_members']:
-        print('Unmatched members: ' + ', '.join(stats['unmatched_members']))
-    if stats['unmatched_mentors']:
-        print('Unmatched mentors: ' + ', '.join(stats['unmatched_mentors']))
+{% with messages = get_flashed_messages(with_categories=true) %}
+ {% for category, message in messages %}
+<div class="alert alert-{{ category }} py-2">{{ message }}</div>
+ {% endfor %}
+{% endwith %}
 
 
-if __name__ == '__main__':
-    main()
+{# ── Summary cards ─────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+   <div class="col-md-3">
+       <div class="card summary-card light-blue">
+           <div class="card-body">
+               <div class="text-muted">Mentees</div>
+               <div class="display-6">{{ stats.total_members }}</div>
+               <div class="small text-muted mt-1">{{ stats.non_compete_count }} non-compete</div>
+           </div>
+       </div>
+   </div>
+   <div class="col-md-3">
+       <div class="card summary-card {{ 'bg-danger text-white' if stats.at_risk_count > 0 else 'light-blue' }}">
+           <div class="card-body">
+               <div class="{{ 'text-white-50' if stats.at_risk_count > 0 else 'text-muted' }}">At-Risk (Deadline)</div>
+               <div class="display-6">{{ stats.at_risk_count }}</div>
+           </div>
+       </div>
+   </div>
+   <div class="col-md-3">
+       {% set on_track_count = stats.total_members - stats.at_risk_count - stats.non_compete_count %}
+       <div class="card summary-card {{ 'bg-success text-white' if on_track_count > 0 else 'light-blue' }}">
+           <div class="card-body">
+               <div class="{{ 'text-white-50' if on_track_count > 0 else 'text-muted' }}">Deadline Safe</div>
+               <div class="display-6">{{ on_track_count }}</div>
+               <div class="small {{ 'text-white-50' if on_track_count > 0 else 'text-muted' }} mt-1">No missed RP/EX/WR deadlines</div>
+           </div>
+       </div>
+   </div>
+   <div class="col-md-3">
+       {% set fully_complete_count = stats.total_members - stats.incomplete_count - stats.non_compete_count %}
+       <div class="card summary-card {{ 'bg-success text-white' if fully_complete_count > 0 else 'light-blue' }}">
+           <div class="card-body">
+               <div class="{{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }}">Requirements Done</div>
+               <div class="display-6">{{ fully_complete_count }}</div>
+               <div class="small {{ 'text-white-50' if fully_complete_count > 0 else 'text-muted' }} mt-1">No remaining RP/EX/WR</div>
+           </div>
+       </div>
+   </div>
+</div>
+
+
+{# ── Filter Controls ─────────────────────────────────────────── #}
+<div class="mb-4">
+   <div class="row">
+       <div class="col-md-6">
+           <div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
+               <div>
+                   <label for="filterTypeSelect" class="form-label small mb-1">Filter by:</label>
+                   <select id="filterTypeSelect" class="form-select w-auto" onchange="updateFilterOptions()">
+                       <option value="">All Members</option>
+                       <option value="status">Status</option>
+                       <option value="level">Experience Level</option>
+                       <option value="event">Event</option>
+                       <option value="mentor">Mentor</option>
+                   </select>
+               </div>
+              
+               <div id="filterValueContainer" style="display: none;">
+                   <label for="filterValueSelect" class="form-label small mb-1">Select:</label>
+                   <select id="filterValueSelect" class="form-select w-auto" onchange="applyFilters()">
+                       <option value="">All</option>
+                   </select>
+               </div>
+           </div>
+       </div>
+       <div class="col-md-6 text-end">
+           <button class="btn btn-sm btn-outline-secondary" onclick="resetFilters()">Clear Filters</button>
+       </div>
+   </div>
+</div>
+
+
+
+{# ── Members Table ─────────────────────────────────────────── #}
+<div class="card border-0 shadow-sm rounded-4">
+<div class="card-body p-0">
+<div class="table-responsive">
+<table class="table table-hover table-sm mb-0 align-middle" id="memberCommitmentsTable">
+<thead class="table-light">
+<tr>
+<th>Member</th>
+<th>Status</th>
+<th>Mentor</th>
+<th>Level</th>
+<th>Event</th>
+<th colspan="3" class="text-center">VCMC</th>
+<th colspan="3" class="text-center">SVCDC</th>
+<th colspan="3" class="text-center">SCDC</th>
+</tr>
+<tr class="table-light" style="border-top: none;">
+<th colspan="5"></th>
+<th class="text-center small">RP</th>
+<th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
+<th class="text-center small">RP</th>
+<th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
+<th class="text-center small">RP</th>
+<th class="text-center small">EX</th>
+<th class="text-center small">WR</th>
+</tr>
+</thead>
+<tbody>
+                   {% for row in rows %}
+<tr class="{{ 'table-secondary' if row.status == 'non_compete' else ('table-danger' if row.status == 'at_risk' else '') }}" data-status="{{ row.status }}" data-level="{{ row.level }}" data-event="{{ row.event or '' }}" data-mentor="{{ row.mentor_name }}">
+<td class="fw-semibold">
+{{ row.member.username }}
+{% if row.status == 'non_compete' %}<span class="badge bg-secondary ms-1">Non-Compete</span>{% endif %}
+</td>
+<td>
+                           {% if row.status == 'non_compete' %}
+<span class="badge bg-secondary">Non-Compete</span>
+                           {% elif row.status == 'at_risk' %}
+<span class="badge bg-danger">⚠ At Risk</span>
+                           {% else %}
+<span class="badge bg-success">✓ On Track</span>
+                           {% endif %}
+</td>
+<td>{{ row.mentor_name }}</td>
+<td>
+<span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
+                               {{ 'Novice' if row.level == 'N' else 'Experienced' }}
+</span>
+</td>
+<td>{{ row.event or '—' }}</td>
+                       {% for conf in ['VCMC', 'SVCDC', 'SCDC'] %}
+                       {% set c = row.conferences[conf] %}
+<td class="text-center small">
+                           {% if c %}
+<span class="{{ 'text-success fw-semibold' if c.roleplay_done >= c.roleplay_req else 'text-danger fw-semibold' }}">{{ c.roleplay_done }}/{{ c.roleplay_req }}</span>
+                           {% else %}
+<span class="text-muted">—</span>
+                           {% endif %}
+</td>
+<td class="text-center small">
+                           {% if c %}
+<span class="{{ 'text-success fw-semibold' if c.exam_done >= c.exam_req else 'text-danger fw-semibold' }}">{{ c.exam_done }}/{{ c.exam_req }}</span>
+                           {% else %}
+<span class="text-muted">—</span>
+                           {% endif %}
+</td>
+<td class="text-center small">
+                           {% if c %}
+<span class="{{ 'text-success fw-semibold' if c.written_done >= c.written_req else 'text-danger fw-semibold' }}">{{ c.written_done }}/{{ c.written_req }}</span>
+                           {% else %}
+<span class="text-muted">—</span>
+                           {% endif %}
+</td>
+                       {% endfor %}
+</tr>
+                   {% else %}
+<tr><td colspan="14" class="text-muted text-center py-4">No members found.</td></tr>
+                   {% endfor %}
+</tbody>
+</table>
+</div>
+</div>
+</div>
+
+
+<script>
+// ── Cascading Filters ─────────────────────────────────────────
+function updateFilterOptions() {
+   const filterType = document.getElementById('filterTypeSelect').value;
+   const filterValueContainer = document.getElementById('filterValueContainer');
+   const filterValueSelect = document.getElementById('filterValueSelect');
+  
+   // Clear previous options
+   filterValueSelect.innerHTML = '<option value="">All</option>';
+  
+   if (!filterType) {
+       filterValueContainer.style.display = 'none';
+       applyFilters();
+       return;
+   }
+  
+   filterValueContainer.style.display = 'block';
+  
+   // Get unique values from the table for this filter type
+   const table = document.getElementById('memberCommitmentsTable');
+   const rows = Array.from(table.querySelectorAll('tbody tr:not(.detail-row)'));
+   const values = new Set();
+  
+   rows.forEach(row => {
+       let value = '';
+       if (filterType === 'status') {
+           value = row.dataset.status;
+       } else if (filterType === 'level') {
+           value = row.dataset.level;
+       } else if (filterType === 'event') {
+           value = row.dataset.event;
+       } else if (filterType === 'mentor') {
+           value = row.dataset.mentor;
+       }
+       if (value) values.add(value);
+   });
+  
+   // Populate dropdown with unique values
+   const valueMap = {
+       'status': { 'on_track': 'On Track', 'at_risk': 'At Risk', 'non_compete': 'Non-Compete' },
+       'level': { 'N': 'Novice', 'E': 'Experienced' },
+       'event': {},
+       'mentor': {}
+   };
+  
+   // Sort values alphabetically
+   const sortedValues = Array.from(values).sort();
+  
+   sortedValues.forEach(value => {
+       const label = valueMap[filterType][value] || value;
+       const option = document.createElement('option');
+       option.value = value;
+       option.textContent = label;
+       filterValueSelect.appendChild(option);
+   });
+}
+
+
+function applyFilters() {
+   const filterType = document.getElementById('filterTypeSelect').value;
+   const filterValue = document.getElementById('filterValueSelect').value;
+   const table = document.getElementById('memberCommitmentsTable');
+   const rows = Array.from(table.querySelectorAll('tbody tr'));
+  
+   rows.forEach(row => {
+       let show = true;
+      
+       if (filterType && filterValue) {
+           let rowValue = '';
+           if (filterType === 'status') {
+               rowValue = row.dataset.status;
+           } else if (filterType === 'level') {
+               rowValue = row.dataset.level;
+           } else if (filterType === 'event') {
+               rowValue = row.dataset.event;
+           } else if (filterType === 'mentor') {
+               rowValue = row.dataset.mentor;
+           }
+           show = rowValue === filterValue;
+       }
+      
+       row.style.display = show ? 'table-row' : 'none';
+   });
+}
+
+
+function resetFilters() {
+   document.getElementById('filterTypeSelect').value = '';
+   document.getElementById('filterValueSelect').value = '';
+   document.getElementById('filterValueContainer').style.display = 'none';
+  
+   // Show all rows
+   const table = document.getElementById('memberCommitmentsTable');
+   const rows = Array.from(table.querySelectorAll('tbody tr'));
+   rows.forEach(row => {
+       row.style.display = 'table-row';
+   });
+}
+</script>
+{% endblock %}
+
 
