@@ -5,7 +5,7 @@ except ImportError:
 else:
     truststore.inject_into_ssl()
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, abort
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, abort, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -249,6 +249,10 @@ class User(UserMixin, db.Model):
     remind_minutes_before = db.Column(db.Integer, default=60)
     must_change_password = db.Column(db.Boolean, default=False)
     is_admin = db.Column(db.Boolean, default=False)
+    # True only when this account is entitled to use officer functionality.
+    # This is separate from role because legacy admin-only accounts are stored
+    # with role='officer' plus is_admin=True.
+    has_officer_access = db.Column(db.Boolean, default=False, nullable=False)
     is_competing = db.Column(db.Boolean, default=True)
 
 class Commitment(db.Model):
@@ -487,10 +491,49 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 
+VIEW_MODE_SESSION_KEY = 'deca_account_view'
+
+
+def can_switch_account_view(user=None):
+    """Return whether the account genuinely has both admin and officer access."""
+    user = user or current_user
+    return bool(
+        user.is_authenticated
+        and user.is_admin
+        and user.role == 'officer'
+        and user.has_officer_access
+    )
+
+
+def get_account_view():
+    """Resolve the current UI/permission scope for this signed-in account."""
+    if not current_user.is_authenticated:
+        return None
+    if can_switch_account_view():
+        selected = session.get(VIEW_MODE_SESSION_KEY, 'admin')
+        return selected if selected in {'admin', 'officer'} else 'admin'
+    if current_user.is_admin:
+        return 'admin'
+    return current_user.role
+
+
+def is_admin_view():
+    return get_account_view() == 'admin'
+
+
+def is_officer_view():
+    return get_account_view() == 'officer'
+
+
 @app.context_processor
 def inject_notification_defaults():
-    """Keep legacy base.html notification checks safe while notifications are disabled."""
-    return {'notifications': [], 'unread_count': 0}
+    """Inject shared navigation state into every template."""
+    return {
+        'notifications': [],
+        'unread_count': 0,
+        'active_view': get_account_view(),
+        'can_switch_view': can_switch_account_view(),
+    }
 
 
 def _account_name_key(value):
@@ -628,6 +671,7 @@ def import_2026_27_officer_roster():
         user.username = username
         user.role = 'officer'
         user.is_admin = is_admin
+        user.has_officer_access = 'officer' in access.lower()
         user.password = generate_password_hash(temporary_password)
         user.must_change_password = True
         if user.is_competing is None:
@@ -664,6 +708,7 @@ def reconcile_removed_admin_access():
         if _account_name_key(user.username) in target_keys and user.is_admin:
             user.is_admin = False
             user.role = 'officer'
+            user.has_officer_access = True
             updated.append(user.username)
 
     db.session.add(DataMigration(
@@ -672,6 +717,34 @@ def reconcile_removed_admin_access():
     ))
     db.session.commit()
     print(f'[Admin Access] removed from: {", ".join(updated) or "no matching admins"}')
+
+
+def sync_officer_access_flags():
+    """Backfill the dual-access flag without changing passwords or admin status."""
+    roster_access = {}
+    for roster_name, access in OFFICER_ROSTER_2026_27:
+        allowed = 'officer' in access.lower()
+        roster_access[_account_name_key(roster_name)] = allowed
+        roster_access[_account_name_key(_canonical_officer_username(roster_name))] = allowed
+
+    changed = False
+    for user in User.query.all():
+        key = _account_name_key(user.username)
+        if key in roster_access:
+            desired = roster_access[key]
+        elif user.role == 'officer' and not user.is_admin:
+            # Preserve officer-only accounts created outside the roster import.
+            desired = True
+        else:
+            # Unknown legacy admins remain admin-only until explicitly granted
+            # officer access through the normal admin toggle workflow.
+            continue
+        if bool(user.has_officer_access) != desired:
+            user.has_officer_access = desired
+            changed = True
+
+    if changed:
+        db.session.commit()
 
 
 # ── Dependency-free MDP workbook import ─────────────────────────────────────
@@ -1611,6 +1684,15 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
+    if 'has_officer_access' not in user_cols:
+        try:
+            db.session.execute(sql_text(
+                'ALTER TABLE "user" ADD COLUMN has_officer_access BOOLEAN DEFAULT FALSE'
+            ))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
 
     if 'is_competing' not in user_cols:
         try:
@@ -1699,6 +1781,12 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Admin Access] reconciliation skipped: {exc}')
+
+    try:
+        sync_officer_access_flags()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Officer Access] synchronization skipped: {exc}')
 
     # Import the exact workbook values after officer reconciliation so members
     # who are also officers (for example Anay Kalchuri) retain their tracking
@@ -1976,7 +2064,7 @@ def get_commitments_incomplete(user, commitments=None):
 
 
 def _members_visible_to_current_user():
-    if current_user.is_admin:
+    if is_admin_view():
         tracked_ids = [row[0] for row in db.session.query(MentorPod.member_id).all()]
         query = User.query.filter(User.role == 'member')
         if tracked_ids:
@@ -2250,14 +2338,14 @@ def dashboard():
     dashboard_scope_label = 'Members in Pod'
     visible_members = []
 
-    if current_user.is_admin:
+    if is_admin_view():
         # Admin is a distinct dashboard scope. Show every member, not only
         # members assigned to the admin's underlying officer account. Tracked
         # student officers remain included through their MentorPod member row.
         dashboard_scope_label = 'All Members'
         visible_members = _members_visible_to_current_user()
 
-    elif current_user.role == 'officer':
+    elif is_officer_view():
         assigned_workshops = Workshop.query.filter_by(
             officer_id=current_user.id
         ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
@@ -2361,7 +2449,7 @@ def dashboard():
         member_stats = get_attendance_stats(current_user)
 
     # Admins see every member; officers see their pod/fallback members.
-    if current_user.is_admin or current_user.role == 'officer':
+    if is_admin_view() or is_officer_view():
         member_ids = [member.id for member in visible_members]
         pods_by_member = {}
         ah_by_user = defaultdict(list)
@@ -2472,7 +2560,7 @@ def dashboard():
         dashboard_scope_label=dashboard_scope_label,
         # Officers already see only their pod, so hide member/pod filters for
         # them. Admins retain filtering across all members.
-        show_member_filters=current_user.is_admin,
+        show_member_filters=is_admin_view(),
     )
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -2492,6 +2580,7 @@ def register():
             password=hashed_pw,
             role=selected_role,
             is_admin=False,
+            has_officer_access=(selected_role == 'officer'),
         )
         db.session.add(user)
         db.session.commit()
@@ -2508,6 +2597,7 @@ def login():
         user = User.query.filter_by(username=form.username.data.strip()).first()
         if user and check_password_hash(user.password, form.password.data):
             login_user(user)
+            session.pop(VIEW_MODE_SESSION_KEY, None)
             if user.must_change_password:
                 return redirect(url_for('change_password'))
             # Auto-create commitment rows for members on login
@@ -2592,8 +2682,23 @@ def reset_password(token):
 @app.route('/logout')
 @login_required
 def logout():
+    session.pop(VIEW_MODE_SESSION_KEY, None)
     logout_user()
     return redirect(url_for('login'))
+
+
+@app.route('/switch-view/<mode>', methods=['POST'])
+@login_required
+def switch_account_view(mode):
+    """Switch a dual-access account between isolated admin/officer scopes."""
+    if not can_switch_account_view():
+        flash('This account does not have both admin and officer access.', 'danger')
+        return redirect(url_for('dashboard'))
+    if mode not in {'admin', 'officer'}:
+        abort(400)
+    session[VIEW_MODE_SESSION_KEY] = mode
+    flash(f'Switched to {mode.title()} View.', 'success')
+    return redirect(url_for('dashboard'))
 
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
@@ -2748,7 +2853,7 @@ def cancel_signup(workshop_id):
 @app.route('/workshop/<int:workshop_id>/attendance', methods=['GET', 'POST'])
 @login_required
 def workshop_attendance(workshop_id):
-    if current_user.role != 'officer':
+    if not is_officer_view():
         flash('Only officers can take attendance.', 'danger')
         return redirect(url_for('dashboard'))
     workshop = Workshop.query.options(joinedload(Workshop.officer)).get_or_404(workshop_id)
@@ -2791,7 +2896,7 @@ def workshop_attendance(workshop_id):
 @app.route('/increment_general_attendance', methods=['POST'])
 @login_required
 def increment_general_attendance():
-    if current_user.role != 'officer':
+    if not is_officer_view():
         flash('Only officers can update attendance.', 'danger')
         return redirect(url_for('dashboard'))
     member_name_raw = request.form.get('member_name', '').strip()
@@ -2835,10 +2940,10 @@ def my_commitments():
 @login_required
 def practice_sessions():
     """Officer: post and manage practice slots. Member: view and sign up."""
-    if current_user.is_admin:
+    if is_admin_view():
         flash('Practice Sessions are available to officers and members, not admins.', 'info')
         return redirect(url_for('dashboard'))
-    if current_user.role == 'officer':
+    if is_officer_view():
         # POST: create a new practice session slot
         if request.method == 'POST':
             action = request.form.get('action')
@@ -2945,7 +3050,7 @@ def practice_session_cancel(session_id):
 @login_required
 def log_commitment(session_id):
     """Compatibility action: mark a signed-up practice slot complete in one click."""
-    if current_user.role != 'officer':
+    if not is_officer_view():
         flash('Only officers can log commitments.', 'danger')
         return redirect(url_for('practice_sessions'))
 
@@ -3027,7 +3132,7 @@ def log_commitment(session_id):
 @login_required
 def submit_practice_log():
     """Officer submits a completion form after a practice session."""
-    if current_user.role != 'officer':
+    if not is_officer_view():
         flash('Only officers can submit practice logs.', 'danger')
         return redirect(url_for('dashboard'))
 
@@ -3145,7 +3250,7 @@ def submit_practice_log():
 @login_required
 def mark_complete():
     """Compatibility action for the Reports page's open member selector."""
-    if current_user.role != 'officer':
+    if not is_officer_view():
         flash('Only officers can mark commitments complete.', 'danger')
         return redirect(url_for('dashboard'))
 
@@ -3226,7 +3331,7 @@ def mark_complete():
 @app.route('/reports')
 @login_required
 def reports():
-    if current_user.role != 'officer':
+    if not is_officer_view():
         flash('Only officers can view reports.', 'danger')
         return redirect(url_for('dashboard'))
     active_tab = request.args.get('tab', 'commitment')
@@ -3394,6 +3499,9 @@ def get_cloudinary():
 @login_required
 def exam_uploads():
     """Member: upload paper exam. Officer: view and review pod uploads."""
+    if is_admin_view():
+        flash('Switch to Officer View to access exam uploads.', 'info')
+        return redirect(url_for('dashboard'))
     if current_user.role == 'member':
         if request.method == 'POST':
             file = request.files.get('exam_file')
@@ -3479,7 +3587,7 @@ def exam_uploads():
 @login_required
 def review_exam_upload(upload_id):
     """Officer marks an exam upload as reviewed and optionally credits it."""
-    if current_user.role != 'officer':
+    if not is_officer_view():
         flash('Only officers can review exam uploads.', 'danger')
         return redirect(url_for('exam_uploads'))
     upload = ExamUpload.query.get_or_404(upload_id)
@@ -3512,7 +3620,7 @@ def review_exam_upload(upload_id):
 @app.route('/at-risk-report')
 @login_required
 def at_risk_report():
-    if not current_user.is_admin:
+    if not is_admin_view():
         flash('Only admins can view the Overall Risk Report.', 'danger')
         return redirect(url_for('dashboard'))
     # The dashboard's existing At-Risk Report link now exports a spreadsheet.
@@ -3551,7 +3659,7 @@ def at_risk_report():
 @login_required
 def export_at_risk_report():
     """Export the admin at-risk report as a Google Sheets-compatible CSV."""
-    if not current_user.is_admin:
+    if not is_admin_view():
         flash('Only admins can export the Overall Risk Report.', 'danger')
         return redirect(url_for('dashboard'))
 
@@ -3611,7 +3719,7 @@ def admin_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_authenticated or not current_user.is_admin:
+        if not current_user.is_authenticated or not is_admin_view():
             flash('Admin access required.', 'danger')
             return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
@@ -3754,7 +3862,7 @@ def admin_panel():
     users = User.query.order_by(User.role, User.username).all()
     stats = {
         'total_users': User.query.count(),
-        'officers': User.query.filter_by(role='officer').count(),
+        'officers': User.query.filter_by(has_officer_access=True).count(),
         'members': User.query.filter_by(role='member').count(),
         'admins': User.query.filter_by(is_admin=True).count(),
         'pods': MentorPod.query.count(),
@@ -3827,11 +3935,18 @@ def admin_toggle_admin(user_id):
     if user.id == current_user.id:
         flash('You cannot change your own admin status.', 'danger')
         return redirect(url_for('admin_panel'))
-    user.is_admin = not user.is_admin
-    if user.is_admin and user.role != 'officer':
+    if user.is_admin:
+        user.is_admin = False
+        user.role = 'officer' if user.has_officer_access else 'member'
+        status = 'removed'
+    else:
+        # Preserve whether the account was an officer before the legacy role
+        # field is normalized to 'officer' for admin compatibility.
+        user.has_officer_access = user.role == 'officer'
+        user.is_admin = True
         user.role = 'officer'
+        status = 'granted'
     db.session.commit()
-    status = 'granted' if user.is_admin else 'removed'
     flash(f'Admin access {status} for "{user.username}".', 'success')
     return redirect(url_for('admin_panel'))
 
@@ -3867,6 +3982,7 @@ def make_first_admin():
         if not user or not check_password_hash(user.password, password):
             flash('Incorrect username or password.', 'danger')
             return render_template('make_first_admin.html')
+        user.has_officer_access = user.role == 'officer'
         user.is_admin = True
         if user.role != 'officer':
             user.role = 'officer'
@@ -4029,7 +4145,7 @@ def _bool_from_form(value):
 @app.route('/toggle_checklist_item', methods=['POST'])
 @login_required
 def toggle_checklist_item():
-    if current_user.role != 'officer' and not current_user.is_admin:
+    if not (is_officer_view() or is_admin_view()):
         return jsonify({'success': False, 'message': 'Only officers/admins can update checklist items.'}), 403
     user_id = request.form.get('user_id', type=int)
     event = request.form.get('event', '').strip()
@@ -4140,7 +4256,7 @@ def admin_import_commitments():
 @app.route('/member_commitments')
 @login_required
 def admin_member_commitments():
-    if current_user.role != 'officer' and not current_user.is_admin:
+    if not (is_officer_view() or is_admin_view()):
         flash('Only officers/admins can view this.', 'danger')
         return redirect(url_for('dashboard'))
     members = _members_visible_to_current_user()
@@ -4281,7 +4397,7 @@ def admin_member_commitments():
         mdp_upload_enabled=is_mdp_upload_enabled(),
         mdp_upload_form=(
             MDPWorkbookUploadForm()
-            if current_user.is_admin and is_mdp_upload_enabled()
+            if is_admin_view() and is_mdp_upload_enabled()
             else None
         ),
     )
@@ -4290,7 +4406,7 @@ def admin_member_commitments():
 @app.route('/checklist_completion')
 @login_required
 def checklist_completion():
-    if current_user.role != 'officer' and not current_user.is_admin:
+    if not (is_officer_view() or is_admin_view()):
         flash('Only officers/admins can view this.', 'danger')
         return redirect(url_for('dashboard'))
     members = _members_visible_to_current_user()
