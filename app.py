@@ -441,17 +441,6 @@ class ExamUpload(db.Model):
     reviewer = db.relationship('User', foreign_keys=[reviewer_id])
 
 
-class Notification(db.Model):
-    """In-app notification for officers and members."""
-    __tablename__ = 'notification'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    message = db.Column(db.String(300), nullable=False)
-    read = db.Column(db.Boolean, default=False, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    user = db.relationship('User', backref='notifications')
-
-
 class ICPrepWebhookLog(db.Model):
     """Raw log of every inbound ICPrep webhook event."""
     __tablename__ = 'icprep_webhook_log'
@@ -498,23 +487,6 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 
-@app.context_processor
-def inject_notifications():
-    """Expose the signed-in user's latest unread notifications to templates."""
-    if current_user.is_authenticated:
-        unread = Notification.query.filter_by(
-            user_id=current_user.id,
-            read=False,
-        ).order_by(Notification.created_at.desc()).limit(10).all()
-        return {'notifications': unread, 'unread_count': len(unread)}
-    return {'notifications': [], 'unread_count': 0}
-
-
-def create_notification(user_id, message):
-    """Queue an in-app notification in the current database transaction."""
-    db.session.add(Notification(user_id=user_id, message=message))
-
-
 def _account_name_key(value):
     """Match names case-, whitespace-, and punctuation-insensitively."""
     return re.sub(r'[^a-z0-9]', '', (value or '').lower())
@@ -551,7 +523,6 @@ def _delete_duplicate_member_account(member):
     Commitment.query.filter_by(user_id=member.id).delete()
     ReminderLog.query.filter_by(user_id=member.id).delete()
     ChecklistItem.query.filter_by(user_id=member.id).delete()
-    Notification.query.filter_by(user_id=member.id).delete()
     AnnualICPrepTracker.query.filter_by(member_id=member.id).delete()
     ExamUpload.query.filter_by(member_id=member.id).delete()
     ExamUpload.query.filter_by(reviewer_id=member.id).update(
@@ -3017,19 +2988,6 @@ def log_commitment(session_id):
     ps.log_submitted = True
 
     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-    create_notification(
-        member.id,
-        f'{current_user.username} marked your {ps.practice_type} complete '
-        f'for {ps.conference} on {timestamp}.',
-    )
-    mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
-    if mentor_pod and mentor_pod.mentor_id != current_user.id:
-        create_notification(
-            mentor_pod.mentor_id,
-            f"{current_user.username} marked {member.username}'s "
-            f'{ps.practice_type} complete for {ps.conference}.',
-        )
-
     db.session.commit()
 
     email_body = (
@@ -3140,20 +3098,6 @@ def submit_practice_log():
                 ps.log_submitted = True
                 db.session.add(ps)
 
-        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-        create_notification(
-            member.id,
-            f'{current_user.username} logged your {practice_type} for '
-            f'{conference} on {timestamp}.',
-        )
-        mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
-        if mentor_pod and mentor_pod.mentor_id != current_user.id:
-            create_notification(
-                mentor_pod.mentor_id,
-                f"{current_user.username} logged {member.username}'s "
-                f'{practice_type} for {conference}.',
-            )
-
         db.session.commit()
 
         # Send email notification
@@ -3245,19 +3189,6 @@ def mark_complete():
     ))
 
     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-    create_notification(
-        member.id,
-        f'{current_user.username} marked your {practice_type} complete '
-        f'for {conference} on {timestamp}.',
-    )
-    mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
-    if mentor_pod and mentor_pod.mentor_id != current_user.id:
-        create_notification(
-            mentor_pod.mentor_id,
-            f"{current_user.username} marked {member.username}'s "
-            f'{practice_type} complete for {conference}.',
-        )
-
     db.session.commit()
 
     email_body = (
@@ -3284,17 +3215,6 @@ def mark_complete():
         'success',
     )
     return redirect(url_for('reports', tab='commitment'))
-
-
-@app.route('/notifications/mark_read', methods=['POST'])
-@login_required
-def mark_notifications_read():
-    Notification.query.filter_by(user_id=current_user.id, read=False).update(
-        {'read': True},
-        synchronize_session=False,
-    )
-    db.session.commit()
-    return ('', 204)
 
 
 @app.route('/reports')
@@ -3783,9 +3703,6 @@ def _delete_user_account_and_dependencies(user):
         synchronize_session=False
     )
     ChecklistItem.query.filter_by(user_id=user_id).delete(
-        synchronize_session=False
-    )
-    Notification.query.filter_by(user_id=user_id).delete(
         synchronize_session=False
     )
     AnnualICPrepTracker.query.filter_by(member_id=user_id).delete(
@@ -4481,3 +4398,4 @@ if not scheduler.running:
 
 if __name__ == '__main__':
     app.run(debug=True)
+
