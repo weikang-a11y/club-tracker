@@ -139,6 +139,26 @@
             background: rgba(239,68,68,.22);
         }
 
+        .sidebar .notif-btn {
+            color: var(--sidebar-muted);
+            border-radius: 12px;
+            padding: .7rem .85rem;
+            margin-bottom: .35rem;
+            font-weight: 500;
+            background: transparent;
+            border: none;
+            width: 100%;
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+        }
+
+        .sidebar .notif-btn:hover {
+            color: #fff;
+            background: var(--sidebar-active);
+        }
+
         .app-main {
             min-width: 0;
         }
@@ -392,6 +412,36 @@
                         {% endif %}
                     </nav>
 
+                    {# ── Notification bell ── #}
+                    <div class="dropdown mt-2 mb-2">
+                        <button class="notif-btn"
+                                id="notifDropdown"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                onclick="markNotifsRead()">
+                            <i class="bi bi-bell"></i>
+                            Notifications
+                            {% if unread_count > 0 %}
+                            <span class="badge bg-danger rounded-pill ms-auto" id="notif-badge">{{ unread_count }}</span>
+                            {% endif %}
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end shadow border-0 rounded-4 p-2"
+                            aria-labelledby="notifDropdown"
+                            style="min-width:300px; max-width:340px;">
+                            {% if notifications %}
+                                {% for n in notifications %}
+                                <li class="px-2 py-1">
+                                    <div class="small {{ 'fw-semibold' if not n.read else 'text-muted' }}">{{ n.message }}</div>
+                                    <div class="text-muted" style="font-size:0.7rem;">{{ n.created_at.strftime('%m/%d %H:%M') }}</div>
+                                </li>
+                                {% if not loop.last %}<li><hr class="dropdown-divider my-1"></li>{% endif %}
+                                {% endfor %}
+                            {% else %}
+                                <li class="px-2 py-2 text-muted small text-center">No notifications</li>
+                            {% endif %}
+                        </ul>
+                    </div>
+
                     <a
                         class="nav-link logout-link"
                         href="{{ url_for('logout') }}"
@@ -538,9 +588,15 @@
                 activeForm.submit();
             });
         });
+
+        function markNotifsRead() {
+            const badge = document.getElementById('notif-badge');
+            if (!badge) return;
+            fetch('/notifications/mark_read', { method: 'POST' })
+                .then(() => { badge.remove(); });
+        }
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
-
