@@ -487,6 +487,12 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 
+@app.context_processor
+def inject_notification_defaults():
+    """Keep legacy base.html notification checks safe while notifications are disabled."""
+    return {'notifications': [], 'unread_count': 0}
+
+
 def _account_name_key(value):
     """Match names case-, whitespace-, and punctuation-insensitively."""
     return re.sub(r'[^a-z0-9]', '', (value or '').lower())
