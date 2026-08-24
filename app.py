@@ -186,10 +186,10 @@ OFFICER_ROSTER_2026_27 = [
     ("Mrs. Parayno", "Admin"),
     ("Ms. Chicas", "Admin"),
     ("Ms. Wang", "Admin"),
-    ("Hannah Li", "Admin"),
-    ("Chloe Ding", "Admin"),
-    ("Arissa Cao", "Admin"),
-    ("Saron Amdeberhan", "Admin"),
+    ("Hanna Li", "Admin, Officer"),
+    ("Chloe Ding", "Admin, Officer"),
+    ("Arissa Cao", "Admin, Officer"),
+    ("Saron Amberhan", "Admin, Officer"),
     ("Revathi Mekkoth", "Officer"),
     ("Crystal Chen", "Officer"),
     ("Philina Chen", "Officer, Admin"),
@@ -720,27 +720,37 @@ def reconcile_removed_admin_access():
 
 
 def sync_officer_access_flags():
-    """Backfill the dual-access flag without changing passwords or admin status."""
+    """Backfill admin/officer access for old accounts without changing passwords."""
     roster_access = {}
     for roster_name, access in OFFICER_ROSTER_2026_27:
-        allowed = 'officer' in access.lower()
-        roster_access[_account_name_key(roster_name)] = allowed
-        roster_access[_account_name_key(_canonical_officer_username(roster_name))] = allowed
-
+        permissions = (
+            'admin' in access.lower(),
+            'officer' in access.lower(),
+        )
+        roster_access[_account_name_key(roster_name)] = permissions
+        roster_access[
+            _account_name_key(_canonical_officer_username(roster_name))
+        ] = permissions
     changed = False
     for user in User.query.all():
         key = _account_name_key(user.username)
         if key in roster_access:
-            desired = roster_access[key]
+            desired_admin, desired_officer = roster_access[key]
+            if bool(user.is_admin) != desired_admin:
+                user.is_admin = desired_admin
+                changed = True
+            if user.role != 'officer':
+                user.role = 'officer'
+                changed = True
         elif user.role == 'officer' and not user.is_admin:
             # Preserve officer-only accounts created outside the roster import.
-            desired = True
+            desired_officer = True
         else:
             # Unknown legacy admins remain admin-only until explicitly granted
             # officer access through the normal admin toggle workflow.
             continue
-        if bool(user.has_officer_access) != desired:
-            user.has_officer_access = desired
+        if bool(user.has_officer_access) != desired_officer:
+            user.has_officer_access = desired_officer
             changed = True
 
     if changed:
