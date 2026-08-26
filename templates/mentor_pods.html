@@ -63,9 +63,322 @@
 </div>
 
 
-<div style="background:#eef3f8; padding:12px 18px; border-radius:10px; margin-bottom:20px;">
-    <h2 style="margin:0;">Mentor Groups</h2>
+<style>
+.pod-toolbar {
+    display:flex;
+    justify-content:space-between;
+    align-items:end;
+    flex-wrap:wrap;
+    gap:12px;
+    margin-bottom:18px;
+}
+
+.pod-board {
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));
+    gap:18px;
+    align-items:start;
+}
+
+.pod-column {
+    background:#eef3f8;
+    border:2px solid transparent;
+    border-radius:16px;
+    min-height:180px;
+    overflow:hidden;
+    transition:border-color .15s, background .15s;
+}
+
+.pod-column.drag-over {
+    border-color:#0d6efd;
+    background:#e2edff;
+}
+
+.pod-column-header {
+    background:#496f9f;
+    color:white;
+    padding:14px 16px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:12px;
+}
+
+.pod-member-list {
+    padding:12px;
+    min-height:110px;
+}
+
+.pod-member-card {
+    background:white;
+    border:1px solid #dce3ea;
+    border-radius:12px;
+    padding:12px;
+    margin-bottom:10px;
+    box-shadow:0 2px 5px rgba(0,0,0,.06);
+}
+
+.drag-handle {
+    cursor:grab;
+    user-select:none;
+    color:#6c757d;
+    font-size:13px;
+}
+
+.drag-handle:active {
+    cursor:grabbing;
+}
+
+.pod-edit-grid {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+    margin-top:10px;
+}
+
+.pod-edit-grid .full-width {
+    grid-column:1 / -1;
+}
+
+@media (max-width:575px) {
+    .pod-edit-grid {
+        grid-template-columns:1fr;
+    }
+
+    .pod-edit-grid .full-width {
+        grid-column:auto;
+    }
+}
+</style>
+
+<div class="pod-toolbar">
+    <div>
+        <h2 class="mb-1">Mentor Pods</h2>
+        <p class="text-muted mb-0">
+            Drag a mentee card into another pod, or use the fields to update their pod, event, and competing status.
+        </p>
+    </div>
+
+    <div>
+        <label for="podSearch" class="form-label small mb-1">Find a mentee</label>
+        <input id="podSearch"
+               type="search"
+               class="form-control"
+               placeholder="Search username…"
+               oninput="filterPodMembers()">
+    </div>
 </div>
+
+<div class="pod-board">
+    {% for group in pod_groups %}
+    <section class="pod-column"
+             data-mentor-id="{{ group.mentor_id }}"
+             data-pod-number="{{ group.pod_number }}">
+
+        <div class="pod-column-header">
+            <div>
+                <div class="fw-bold">
+                    {{ group.mentor.username if group.mentor else 'No Mentor' }}
+                </div>
+                <small>Pod #{{ group.pod_number }} · {{ group.members|length }} mentee(s)</small>
+            </div>
+
+            {% if group.mentor %}
+            <form method="POST"
+                  action="{{ url_for('delete_pod_group', mentor_id=group.mentor_id, pod_number=group.pod_number) }}"
+                  onsubmit="return confirm('Remove every mentee assignment from this pod? User accounts will not be deleted.');">
+                <button type="submit" class="btn btn-sm btn-outline-light">
+                    Delete Pod
+                </button>
+            </form>
+            {% endif %}
+        </div>
+
+        <div class="pod-member-list">
+            {% for pod in group.members %}
+            <article class="pod-member-card"
+                     id="pod-member-{{ pod.id }}"
+                     data-member-name="{{ pod.member.username|lower }}"
+                     data-move-url="{{ url_for('move_pod_member', pod_id=pod.id) }}">
+
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                    <div>
+                        <strong>{{ pod.member.username }}</strong>
+                        <div class="mt-1">
+                            <span class="badge {{ 'bg-primary' if pod.experience_level == 'N' else 'bg-success' }}">
+                                {{ 'Novice' if pod.experience_level == 'N' else 'Experienced' }}
+                            </span>
+
+                            <span class="badge {{ 'bg-warning text-dark' if pod.member.is_competing else 'bg-secondary' }}">
+                                {{ 'Competing' if pod.member.is_competing else 'Non-Compete' }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <span class="drag-handle"
+                          draggable="true"
+                          data-card-id="pod-member-{{ pod.id }}"
+                          title="Drag to another pod">
+                        ☰ Drag
+                    </span>
+                </div>
+
+                <form method="POST"
+                      action="{{ url_for('edit_pod', pod_id=pod.id) }}"
+                      class="pod-edit-grid">
+
+                    <input type="hidden" name="member_id" value="{{ pod.member_id }}">
+                    <input type="hidden" name="experience_level" value="{{ pod.experience_level }}">
+                    <input type="hidden" name="year_in_deca" value="{{ pod.year_in_deca or '' }}">
+
+                    <div>
+                        <label class="form-label small mb-1">Mentor</label>
+                        <select name="mentor_id" class="form-select form-select-sm">
+                            {% for mentor_id, mentor_name in form.mentor_id.choices %}
+                            <option value="{{ mentor_id }}"
+                                    {% if mentor_id == pod.mentor_id %}selected{% endif %}>
+                                {{ mentor_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="form-label small mb-1">Pod #</label>
+                        <input type="number"
+                               name="pod_number"
+                               class="form-control form-control-sm"
+                               value="{{ pod.pod_number }}"
+                               min="1"
+                               required>
+                    </div>
+
+                    <div>
+                        <label class="form-label small mb-1">Event</label>
+                        <select name="event" class="form-select form-select-sm">
+                            {% if pod.event and pod.event not in event_choices %}
+                            <option value="{{ pod.event }}" selected>{{ pod.event }}</option>
+                            {% endif %}
+
+                            {% for event_name in event_choices %}
+                            <option value="{{ event_name }}"
+                                    {% if event_name == pod.event %}selected{% endif %}>
+                                {{ event_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="form-label small mb-1">Status</label>
+                        <select name="is_competing" class="form-select form-select-sm">
+                            <option value="yes" {% if pod.member.is_competing %}selected{% endif %}>
+                                Competing
+                            </option>
+                            <option value="no" {% if not pod.member.is_competing %}selected{% endif %}>
+                                Non-Compete
+                            </option>
+                        </select>
+                    </div>
+
+                    <button type="submit" class="btn btn-sm btn-primary full-width">
+                        Save Changes
+                    </button>
+                </form>
+            </article>
+            {% endfor %}
+        </div>
+    </section>
+    {% else %}
+    <div class="alert alert-info">
+        No mentor pods have been created yet.
+    </div>
+    {% endfor %}
+</div>
+
+<script>
+let draggedPodCard = null;
+
+document.querySelectorAll('.drag-handle').forEach(handle => {
+    handle.addEventListener('dragstart', event => {
+        draggedPodCard = document.getElementById(handle.dataset.cardId);
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', handle.dataset.cardId);
+    });
+
+    handle.addEventListener('dragend', () => {
+        document.querySelectorAll('.pod-column').forEach(column => {
+            column.classList.remove('drag-over');
+        });
+        draggedPodCard = null;
+    });
+});
+
+document.querySelectorAll('.pod-column').forEach(column => {
+    column.addEventListener('dragover', event => {
+        event.preventDefault();
+        column.classList.add('drag-over');
+    });
+
+    column.addEventListener('dragleave', () => {
+        column.classList.remove('drag-over');
+    });
+
+    column.addEventListener('drop', async event => {
+        event.preventDefault();
+        column.classList.remove('drag-over');
+
+        if (!draggedPodCard) {
+            return;
+        }
+
+        try {
+            const response = await fetch(draggedPodCard.dataset.moveUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    mentor_id: column.dataset.mentorId,
+                    pod_number: column.dataset.podNumber
+                })
+            });
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(result.error || 'The mentee could not be moved.');
+            }
+
+            window.location.reload();
+        } catch (error) {
+            alert(error.message);
+        }
+    });
+});
+
+function filterPodMembers() {
+    const query = document.getElementById('podSearch').value
+        .trim()
+        .toLowerCase();
+
+    document.querySelectorAll('.pod-column').forEach(column => {
+        let visibleCards = 0;
+
+        column.querySelectorAll('.pod-member-card').forEach(card => {
+            const matches = !query || card.dataset.memberName.includes(query);
+            card.style.display = matches ? '' : 'none';
+
+            if (matches) {
+                visibleCards += 1;
+            }
+        });
+
+        column.style.display = visibleCards > 0 || !query ? '' : 'none';
+    });
+}
+</script>
+
 
 
 <div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
