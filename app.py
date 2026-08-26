@@ -4066,22 +4066,37 @@ def admin_toggle_competing(user_id):
 @admin_required
 def mentor_pods():
     form = MentorPodForm()
+
     form.member_id.choices = [
         (user.id, user.username)
-        for user in User.query.filter_by(role='member').order_by(User.username).all()
+        for user in User.query.filter_by(role='member')
+        .order_by(User.username)
+        .all()
     ]
+
     form.mentor_id.choices = [
         (user.id, user.username)
         for user in User.query.filter(
             User.has_officer_access.is_(True)
-        ).order_by(User.username).all()
+        )
+        .order_by(User.username)
+        .all()
     ]
 
+    # Keep the existing add-assignment backend available,
+    # even though the Add Mentor Pod form is hidden from the page.
     if form.validate_on_submit():
-        existing = MentorPod.query.filter_by(member_id=form.member_id.data).first()
+        existing = MentorPod.query.filter_by(
+            member_id=form.member_id.data
+        ).first()
+
         if existing:
-            flash('That member already has a mentor-pod assignment.', 'warning')
-            return redirect(url_for('mentor_pods'))
+            flash(
+                'That member already has a mentor-pod assignment.',
+                'warning',
+            )
+            return redirect(url_for('mentor_pods', view='edit'))
+
         pod = MentorPod(
             pod_number=form.pod_number.data,
             member_id=form.member_id.data,
@@ -4091,41 +4106,51 @@ def mentor_pods():
             year_in_deca='',
         )
         db.session.add(pod)
+
         member = db.session.get(User, form.member_id.data)
         if member:
             member.is_competing = form.is_competing.data == 'yes'
             ensure_commitments(member)
+
         log_mdp_action(
-            current_user.id, 'pod_add', 'pod', target_user_id=pod.member_id,
+            current_user.id,
+            'pod_add',
+            'pod',
+            target_user_id=pod.member_id,
             details=f'Added to Pod {pod.pod_number}',
         )
+
         db.session.commit()
-        flash('Mentor pod saved.', 'success')
-        return redirect(url_for('mentor_pods'))
-        pods = MentorPod.query.options(
-            joinedload(MentorPod.mentor),
-            joinedload(MentorPod.member),
-        ).order_by(
-            MentorPod.mentor_id,
-            MentorPod.member_id,
-        ).all()
-    
-        grouped_pods = defaultdict(list)
-        for pod in pods:
-            grouped_pods[pod.mentor].append(pod)
-    
-        active_pod_view = request.args.get('view', 'finalized')
-        if active_pod_view not in {'finalized', 'edit'}:
-            active_pod_view = 'finalized'
-    
-        return render_template(
-            'mentor_pods.html',
-            form=form,
-            pods=pods,
-            grouped_pods=dict(grouped_pods),
-            event_choices=EVENT_TABS,
-            active_pod_view=active_pod_view,
-        )
+        flash('Mentor assignment saved.', 'success')
+        return redirect(url_for('mentor_pods', view='edit'))
+
+    # This section must be outside the form.validate_on_submit() block.
+    pods = MentorPod.query.options(
+        joinedload(MentorPod.mentor),
+        joinedload(MentorPod.member),
+    ).order_by(
+        MentorPod.mentor_id,
+        MentorPod.member_id,
+    ).all()
+
+    grouped_pods = defaultdict(list)
+    for pod in pods:
+        grouped_pods[pod.mentor].append(pod)
+
+    active_pod_view = request.args.get('view', 'finalized')
+    if active_pod_view not in {'finalized', 'edit'}:
+        active_pod_view = 'finalized'
+
+    return render_template(
+        'mentor_pods.html',
+        form=form,
+        pods=pods,
+        grouped_pods=dict(grouped_pods),
+        event_choices=EVENT_TABS,
+        active_pod_view=active_pod_view,
+    )
+
+
 
 
 
