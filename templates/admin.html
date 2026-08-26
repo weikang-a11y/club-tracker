@@ -152,18 +152,8 @@
                     <td>
                         <div class="d-flex gap-1 flex-wrap">
 
-                            {# Reset Password #}
                             {% if user.id != current_user.id %}
-                            <form method="POST" action="{{ url_for('admin_reset_password', user_id=user.id) }}"
-                                  class="js-confirm-form d-inline">
-                                <button type="button" class="btn btn-sm btn-outline-secondary js-open-confirm"
-                                        data-confirm-title="Send Password Reset"
-                                        data-confirm-message="Send a password-reset link to the email stored for {{ user.username }}?"
-                                        data-confirm-btn-text="Send Reset Link"
-                                        data-confirm-btn-class="btn-secondary">
-                                    Send Reset
-                                </button>
-                            </form>
+
 
                             {# Toggle Admin #}
                             <form method="POST" action="{{ url_for('admin_toggle_admin', user_id=user.id) }}"
