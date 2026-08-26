@@ -4137,6 +4137,23 @@ def mentor_pods():
     for pod in pods:
         grouped_pods[pod.mentor].append(pod)
 
+    assigned_member_ids = {pod.member_id for pod in pods}
+
+    unassigned_query = User.query.filter(
+        User.role == 'member'
+    )
+
+    if assigned_member_ids:
+        unassigned_query = unassigned_query.filter(
+            ~User.id.in_(assigned_member_ids)
+        )
+
+    unassigned_members = unassigned_query.order_by(
+        User.username
+    ).all()
+
+
+
     active_pod_view = request.args.get('view', 'finalized')
     if active_pod_view not in {'finalized', 'edit'}:
         active_pod_view = 'finalized'
@@ -4148,6 +4165,7 @@ def mentor_pods():
         grouped_pods=dict(grouped_pods),
         event_choices=EVENT_TABS,
         active_pod_view=active_pod_view,
+        unassigned_members=unassigned_members,
     )
 
 
@@ -4199,7 +4217,75 @@ def move_pod_member(pod_id):
         'message': f'{pod.member.username} was moved successfully.',
     })
 
+@app.route('/admin/mentor_pods/assign/<int:member_id>', methods=['POST'])
+@login_required
+@admin_required
+def assign_pod_member(member_id):
+    member = User.query.get_or_404(member_id)
 
+    if MentorPod.query.filter_by(member_id=member.id).first():
+        flash('That member already has a mentor assignment.', 'warning')
+        return redirect(url_for('mentor_pods', view='edit'))
+
+    mentor_id = request.form.get('mentor_id', type=int)
+
+    mentor = User.query.filter(
+        User.id == mentor_id,
+        User.has_officer_access.is_(True),
+    ).first()
+
+    if not mentor:
+        flash('Please select a valid mentor.', 'danger')
+        return redirect(url_for('mentor_pods', view='edit'))
+
+    experience_level = request.form.get('experience_level', 'N')
+    if experience_level not in {'N', 'E'}:
+        experience_level = 'N'
+
+    event = request.form.get('event', 'NA').strip().upper()
+    if event not in EVENT_TABS:
+        event = 'NA'
+
+    existing_mentor_assignment = MentorPod.query.filter_by(
+        mentor_id=mentor.id
+    ).first()
+
+    internal_pod_number = (
+        existing_mentor_assignment.pod_number
+        if existing_mentor_assignment
+        else 1
+    )
+
+    member.is_competing = (
+        request.form.get('is_competing', 'yes') == 'yes'
+    )
+
+    pod = MentorPod(
+        pod_number=internal_pod_number,
+        mentor_id=mentor.id,
+        member_id=member.id,
+        experience_level=experience_level,
+        event=event,
+        year_in_deca='',
+    )
+
+    db.session.add(pod)
+
+    log_mdp_action(
+        current_user.id,
+        'pod_add',
+        'pod',
+        target_user_id=member.id,
+        details=f'Assigned to mentor {mentor.username}',
+    )
+
+    db.session.commit()
+
+    flash(
+        f'{member.username} was assigned to {mentor.username}.',
+        'success',
+    )
+    return redirect(url_for('mentor_pods', view='edit'))
 
 
 @app.route('/admin/mentor_pods/edit/<int:pod_id>', methods=['POST'])
