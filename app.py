@@ -189,7 +189,7 @@ OFFICER_ROSTER_2026_27 = [
     ("Hanna Li", "Admin, Officer"),
     ("Chloe Ding", "Admin, Officer"),
     ("Arissa Cao", "Admin, Officer"),
-    ("Saron Amberhan", "Admin, Officer"),
+    ("Saron Amdeberhan", "Admin, Officer"),
     ("Revathi Mekkoth", "Officer"),
     ("Crystal Chen", "Officer"),
     ("Philina Chen", "Officer, Admin"),
@@ -755,7 +755,34 @@ def sync_officer_access_flags():
 
     if changed:
         db.session.commit()
+def reconcile_saron_access():
+    """Correct the old Saron username typo without changing the password."""
+    correct = User.query.filter(
+        db.func.lower(User.username) == 'saron.amdeberhan'
+    ).first()
 
+    typo = User.query.filter(
+        db.func.lower(User.username) == 'saron.amberhan'
+    ).first()
+
+    # If only the typo account exists, rename it so its password and data remain.
+    if correct is None and typo is not None:
+        typo.username = 'saron.amdeberhan'
+        correct = typo
+        typo = None
+
+    if correct is not None:
+        correct.role = 'officer'
+        correct.is_admin = True
+        correct.has_officer_access = True
+
+    # If both accounts exist, remove access from the unintended typo account.
+    if typo is not None and typo.id != correct.id:
+        typo.is_admin = False
+        typo.has_officer_access = False
+        typo.role = 'member'
+
+    db.session.commit()
 
 # ── Dependency-free MDP workbook import ─────────────────────────────────────
 
@@ -1537,7 +1564,6 @@ class RegisterForm(FlaskForm):
     password = PasswordField('Password', [DataRequired(), Length(min=6)])
     # Admin access is granted only by the canonical roster or an existing admin.
     # Public registration must never allow a visitor to self-select admin.
-    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member')], default='')
     submit = SubmitField('Register')
 
     def validate_role(self, field):
@@ -1797,6 +1823,13 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Officer Access] synchronization skipped: {exc}')
+    try:
+        reconcile_saron_access()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Saron Access] reconciliation skipped: {exc}')
+
+
 
     # Import the exact workbook values after officer reconciliation so members
     # who are also officers (for example Anay Kalchuri) retain their tracking
@@ -2584,13 +2617,13 @@ def register():
             flash('This username is already in use. Please choose a different username.', 'warning')
             return render_template('register.html', form=form)
         hashed_pw = generate_password_hash(form.password.data)
-        selected_role = form.role.data
         user = User(
             username=form.username.data.strip(),
             password=hashed_pw,
-            role=selected_role,
+            role='member',
             is_admin=False,
-            has_officer_access=(selected_role == 'officer'),
+            has_officer_access=False,
+            is_competing=True
         )
         db.session.add(user)
         db.session.commit()
