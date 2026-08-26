@@ -4073,9 +4073,10 @@ def mentor_pods():
     form.mentor_id.choices = [
         (user.id, user.username)
         for user in User.query.filter(
-            User.role == 'officer', User.is_admin.is_(False)
+            User.has_officer_access.is_(True)
         ).order_by(User.username).all()
     ]
+
     if form.validate_on_submit():
         existing = MentorPod.query.filter_by(member_id=form.member_id.data).first()
         if existing:
@@ -4105,15 +4106,76 @@ def mentor_pods():
         joinedload(MentorPod.mentor), joinedload(MentorPod.member)
     ).order_by(MentorPod.mentor_id, MentorPod.pod_number).all()
     grouped_pods = defaultdict(list)
+    pod_groups_map = defaultdict(list)
+
     for pod in pods:
         grouped_pods[pod.mentor].append(pod)
+        pod_groups_map[(pod.mentor_id, pod.pod_number)].append(pod)
+
+    pod_groups = []
+    for (mentor_id, pod_number), members in pod_groups_map.items():
+        pod_groups.append({
+            'mentor': members[0].mentor,
+            'mentor_id': mentor_id,
+            'pod_number': pod_number,
+            'members': members,
+        })
+
     return render_template(
         'mentor_pods.html',
         form=form,
         pods=pods,
         grouped_pods=dict(grouped_pods),
         event_choices=EVENT_TABS,
+        pod_groups=pod_groups,
     )
+
+@app.route('/admin/mentor_pods/move/<int:pod_id>', methods=['POST'])
+@login_required
+@admin_required
+def move_pod_member(pod_id):
+    pod = MentorPod.query.get_or_404(pod_id)
+    data = request.get_json(silent=True) or {}
+
+    try:
+        destination_mentor_id = int(data.get('mentor_id'))
+        destination_pod_number = int(data.get('pod_number'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid destination pod.'}), 400
+
+    destination = MentorPod.query.filter_by(
+        mentor_id=destination_mentor_id,
+        pod_number=destination_pod_number,
+    ).first()
+
+    if not destination:
+        return jsonify({'error': 'Destination pod was not found.'}), 404
+
+    old_mentor = pod.mentor.username if pod.mentor else 'Unknown'
+    old_pod_number = pod.pod_number
+
+    pod.mentor_id = destination_mentor_id
+    pod.pod_number = destination_pod_number
+
+    log_mdp_action(
+        current_user.id,
+        'pod_move',
+        'pod',
+        target_user_id=pod.member_id,
+        details=(
+            f'Moved from {old_mentor} Pod {old_pod_number} '
+            f'to {destination.mentor.username} Pod {destination_pod_number}'
+        ),
+    )
+
+    db.session.commit()
+
+    return jsonify({
+        'success': True,
+        'message': f'{pod.member.username} was moved successfully.',
+    })
+
+
 
 
 @app.route('/admin/mentor_pods/edit/<int:pod_id>', methods=['POST'])
