@@ -4102,33 +4102,32 @@ def mentor_pods():
         db.session.commit()
         flash('Mentor pod saved.', 'success')
         return redirect(url_for('mentor_pods'))
-    pods = MentorPod.query.options(
-        joinedload(MentorPod.mentor), joinedload(MentorPod.member)
-    ).order_by(MentorPod.mentor_id, MentorPod.pod_number).all()
-    grouped_pods = defaultdict(list)
-    pod_groups_map = defaultdict(list)
+        pods = MentorPod.query.options(
+            joinedload(MentorPod.mentor),
+            joinedload(MentorPod.member),
+        ).order_by(
+            MentorPod.mentor_id,
+            MentorPod.member_id,
+        ).all()
+    
+        grouped_pods = defaultdict(list)
+        for pod in pods:
+            grouped_pods[pod.mentor].append(pod)
+    
+        active_pod_view = request.args.get('view', 'finalized')
+        if active_pod_view not in {'finalized', 'edit'}:
+            active_pod_view = 'finalized'
+    
+        return render_template(
+            'mentor_pods.html',
+            form=form,
+            pods=pods,
+            grouped_pods=dict(grouped_pods),
+            event_choices=EVENT_TABS,
+            active_pod_view=active_pod_view,
+        )
 
-    for pod in pods:
-        grouped_pods[pod.mentor].append(pod)
-        pod_groups_map[(pod.mentor_id, pod.pod_number)].append(pod)
 
-    pod_groups = []
-    for (mentor_id, pod_number), members in pod_groups_map.items():
-        pod_groups.append({
-            'mentor': members[0].mentor,
-            'mentor_id': mentor_id,
-            'pod_number': pod_number,
-            'members': members,
-        })
-
-    return render_template(
-        'mentor_pods.html',
-        form=form,
-        pods=pods,
-        grouped_pods=dict(grouped_pods),
-        event_choices=EVENT_TABS,
-        pod_groups=pod_groups,
-    )
 
 @app.route('/admin/mentor_pods/move/<int:pod_id>', methods=['POST'])
 @login_required
@@ -4183,21 +4182,72 @@ def move_pod_member(pod_id):
 @admin_required
 def edit_pod(pod_id):
     pod = MentorPod.query.get_or_404(pod_id)
-    pod.pod_number = request.form.get('pod_number', pod.pod_number, type=int)
-    pod.member_id = request.form.get('member_id', pod.member_id, type=int)
-    pod.mentor_id = request.form.get('mentor_id', pod.mentor_id, type=int)
-    pod.experience_level = request.form.get('experience_level', pod.experience_level)
-    pod.year_in_deca = request.form.get('year_in_deca', pod.year_in_deca or '')
-    pod.event = request.form.get('event', pod.event or '').strip()
-    if 'is_competing' in request.form and pod.member:
-        pod.member.is_competing = request.form.get('is_competing') == 'yes'
-    log_mdp_action(
-        current_user.id, 'pod_edit', 'pod', target_user_id=pod.member_id,
-        details=f'Updated Pod {pod.pod_number}',
+
+    new_mentor_id = request.form.get(
+        'mentor_id',
+        pod.mentor_id,
+        type=int,
     )
+
+    new_mentor = User.query.filter_by(
+        id=new_mentor_id,
+        has_officer_access=True,
+    ).first()
+
+    if not new_mentor:
+        flash('The selected mentor does not have officer access.', 'danger')
+        return redirect(url_for('mentor_pods', view='edit'))
+
+    old_mentor_name = pod.mentor.username if pod.mentor else 'Unassigned'
+
+    pod.mentor_id = new_mentor.id
+
+    # Pod numbers are handled internally and are no longer shown or edited.
+    destination_assignment = MentorPod.query.filter(
+        MentorPod.mentor_id == new_mentor.id,
+        MentorPod.id != pod.id,
+    ).first()
+
+    pod.pod_number = (
+        destination_assignment.pod_number
+        if destination_assignment
+        else 1
+    )
+
+    experience_level = request.form.get(
+        'experience_level',
+        pod.experience_level,
+    )
+    if experience_level in {'N', 'E'}:
+        pod.experience_level = experience_level
+
+    event = request.form.get('event', pod.event or '').strip().upper()
+    if event in EVENT_TABS:
+        pod.event = event
+
+    if pod.member and 'is_competing' in request.form:
+        pod.member.is_competing = (
+            request.form.get('is_competing') == 'yes'
+        )
+
+    log_mdp_action(
+        current_user.id,
+        'pod_edit',
+        'pod',
+        target_user_id=pod.member_id,
+        details=(
+            f'Updated mentor from {old_mentor_name} to '
+            f'{new_mentor.username}; event={pod.event}; '
+            f'experience={pod.experience_level}; '
+            f'competing={pod.member.is_competing if pod.member else "unknown"}'
+        ),
+    )
+
     db.session.commit()
-    flash('Pod updated.', 'success')
-    return redirect(url_for('mentor_pods'))
+    flash(f'Changes saved for {pod.member.username}.', 'success')
+    return redirect(url_for('mentor_pods', view='edit'))
+
+
 
 
 @app.route('/admin/mentor_pods/delete/<int:pod_id>', methods=['POST'])
