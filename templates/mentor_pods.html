@@ -192,7 +192,7 @@
 
 
 
-<div id="finalizedPodView">
+<div id="finalizedPodView"
     class="{{ 'd-none' if active_pod_view != 'finalized' else '' }}">
     <div class="mb-3">
         <h3 class="mb-1">Finalized Pods</h3>
@@ -289,7 +289,7 @@
 {# End finalizedPodView #}
 
 
-<div id="editPodView">
+<div id="editPodView"
     class="{{ 'd-none' if active_pod_view != 'edit' else '' }}">
     <div class="mb-3">
         <h3 class="mb-1">Edit Assignments</h3>
@@ -484,182 +484,6 @@
 {% endif %}
 </div>
 
-<script>
-function showPodView(viewName) {
-    const finalizedView = document.getElementById('finalizedPodView');
-    const editView = document.getElementById('editPodView');
-    const finalizedButton = document.getElementById('finalizedViewButton');
-    const editButton = document.getElementById('editViewButton');
-
-    const showFinalized = viewName === 'finalized';
-
-    finalizedView.classList.toggle('d-none', !showFinalized);
-    editView.classList.toggle('d-none', showFinalized);
-
-    finalizedButton.className = showFinalized
-        ? 'btn btn-sm btn-primary'
-        : 'btn btn-sm btn-outline-primary';
-
-    editButton.className = showFinalized
-        ? 'btn btn-sm btn-outline-primary'
-        : 'btn btn-sm btn-primary';
-
-    const url = new URL(window.location.href);
-    url.searchParams.set('view', viewName);
-    window.history.replaceState({}, '', url);
-}
-
-<script>
-function updatePodFilterControl() {
-    const filterType = document.getElementById('podFilterType').value;
-    const searchContainer = document.getElementById(
-        'podFilterSearchContainer'
-    );
-    const dropdownContainer = document.getElementById(
-        'podFilterDropdownContainer'
-    );
-    const searchInput = document.getElementById('podFilterSearch');
-    const dropdown = document.getElementById('podFilterDropdown');
-
-    searchInput.value = '';
-    dropdown.innerHTML = '<option value="">All</option>';
-
-    if (!filterType) {
-        searchContainer.style.display = 'none';
-        dropdownContainer.style.display = 'none';
-        applyPodFilters();
-        return;
-    }
-
-    if (filterType === 'mentee' || filterType === 'mentor') {
-        searchContainer.style.display = 'block';
-        dropdownContainer.style.display = 'none';
-
-        searchInput.placeholder = filterType === 'mentee'
-            ? 'Search for a mentee…'
-            : 'Search for a mentor…';
-
-        searchInput.focus();
-        applyPodFilters();
-        return;
-    }
-
-    searchContainer.style.display = 'none';
-    dropdownContainer.style.display = 'block';
-
-    const labelMaps = {
-        level: {
-            N: 'Novice',
-            E: 'Experienced'
-        },
-        competing: {
-            competing: 'Competing',
-            non_compete: 'Non-Compete'
-        },
-        event: {}
-    };
-
-    const values = new Set();
-
-    document.querySelectorAll('.js-pod-filter-card').forEach(card => {
-        const value = card.dataset[filterType] || '';
-        if (value) {
-            values.add(value);
-        }
-    });
-
-    Array.from(values).sort().forEach(value => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent =
-            labelMaps[filterType]?.[value] || value;
-        dropdown.appendChild(option);
-    });
-
-    applyPodFilters();
-}
-
-function applyPodFilters() {
-    const filterType = document.getElementById('podFilterType').value;
-    const searchValue = document
-        .getElementById('podFilterSearch')
-        .value
-        .trim()
-        .toLowerCase();
-
-    const dropdownValue = document
-        .getElementById('podFilterDropdown')
-        .value;
-
-    document.querySelectorAll('.js-pod-filter-card').forEach(card => {
-        let show = true;
-
-        if (filterType === 'mentee' || filterType === 'mentor') {
-            const cardValue = (
-                card.dataset[filterType] || ''
-            ).toLowerCase();
-
-            show = !searchValue || cardValue.includes(searchValue);
-        } else if (filterType) {
-            const cardValue = card.dataset[filterType] || '';
-            show = !dropdownValue || cardValue === dropdownValue;
-        }
-
-        card.hidden = !show;
-    });
-
-    document.querySelectorAll('.js-filter-group').forEach(group => {
-        const hasVisibleMentee = Array.from(
-            group.querySelectorAll('.js-pod-filter-card')
-        ).some(card => !card.hidden);
-
-        group.hidden = !hasVisibleMentee;
-    });
-}
-
-function resetPodFilters() {
-    document.getElementById('podFilterType').value = '';
-    document.getElementById('podFilterSearch').value = '';
-    document.getElementById('podFilterDropdown').value = '';
-    document.getElementById(
-        'podFilterSearchContainer'
-    ).style.display = 'none';
-    document.getElementById(
-        'podFilterDropdownContainer'
-    ).style.display = 'none';
-
-    applyPodFilters();
-}
-</script>
-
-    
-        .getElementById('mentorFilter')
-        .value
-        .toLowerCase();
-
-    document.querySelectorAll('.js-mentee').forEach(mentee => {
-        const memberMatches =
-            !searchValue ||
-            mentee.dataset.member.includes(searchValue);
-
-        const mentorMatches =
-            !mentorValue ||
-            mentee.dataset.mentor === mentorValue;
-
-        mentee.hidden = !(memberMatches && mentorMatches);
-    });
-
-    document.querySelectorAll('.js-mentor-group').forEach(group => {
-        const visibleMentees = Array.from(
-            group.querySelectorAll('.js-mentee')
-        ).some(mentee => !mentee.hidden);
-
-        group.hidden = !visibleMentees;
-    });
-}
-
-
-</script>
 
 <script>
 function showPodView(viewName) {
