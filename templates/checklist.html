@@ -71,14 +71,33 @@
 <div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
   <div>
     <label for="filterTypeSelect" class="form-label small mb-1">Filter by:</label>
-    <select id="filterTypeSelect" class="form-select w-auto" onchange="updateFilterOptions()">
-      <option value="">All Members</option>
-      <option value="status">Status</option>
-      <option value="level">Experience Level</option>
-      <option value="mentor">Mentor</option>
-      <option value="event">Event</option>
-    </select>
+    <select id="filterTypeSelect"
+        class="form-select w-auto"
+        onchange="updateFilterOptions()">
+    <option value="">All Members</option>
+    <option value="member">Member</option>
+    <option value="status">Status</option>
+    <option value="level">Experience Level</option>
+    <option value="mentor">Mentor</option>
+    <option value="event">Event</option>
+    <option value="competing">Competing Status</option>
+</select>
   </div>
+
+  <div id="filterSearchContainer" style="display:none;">
+    <label for="filterSearchInput"
+           class="form-label small mb-1">
+        Search:
+    </label>
+
+    <input type="search"
+           id="filterSearchInput"
+           class="form-control"
+           placeholder="Type a name…"
+           oninput="applyFilters()">
+  </div>
+
+
 
   <div id="filterValueContainer" style="display: none;">
     <label for="filterValueSelect" class="form-label small mb-1">Select:</label>
@@ -131,10 +150,14 @@
                 <tbody>
                   {% for row in event_rows %}
                     <tr class="{{ 'table-secondary' if row.status == 'non_compete' else ('table-danger' if row.status == 'overdue' else ('table-warning' if row.status == 'needs_attention' else '')) }}"
+                        data-member="{{ row.member.username }}"
                         data-status="{{ row.status }}"
                         data-level="{{ row.level }}"
                         data-mentor="{{ row.mentor_name }}"
-                        data-event="{{ event }}">
+                        data-event="{{ event }}"
+                        data-competing="{{ 'competing' if row.is_competing else 'non_compete' }}">
+
+
                       <td class="fw-semibold">{{ row.member.username }}</td>
                       <td>
                         {% if row.status == 'non_compete' %}
@@ -216,69 +239,130 @@ document.querySelectorAll('.checklist-toggle').forEach(checkbox => {
 });
 
 function updateFilterOptions() {
-  const filterType = document.getElementById('filterTypeSelect').value;
-  const filterValueContainer = document.getElementById('filterValueContainer');
-  const filterValueSelect = document.getElementById('filterValueSelect');
+    const filterType =
+        document.getElementById('filterTypeSelect').value;
 
-  filterValueSelect.innerHTML = '<option value="">All</option>';
+    const searchContainer =
+        document.getElementById('filterSearchContainer');
 
-  if (!filterType) {
-    filterValueContainer.style.display = 'none';
+    const searchInput =
+        document.getElementById('filterSearchInput');
+
+    const filterValueContainer =
+        document.getElementById('filterValueContainer');
+
+    const filterValueSelect =
+        document.getElementById('filterValueSelect');
+
+    searchInput.value = '';
+    filterValueSelect.innerHTML =
+        '<option value="">All</option>';
+
+    if (!filterType) {
+        searchContainer.style.display = 'none';
+        filterValueContainer.style.display = 'none';
+        applyFilters();
+        return;
+    }
+
+    // Member and Mentor use a typed search.
+    if (filterType === 'member' || filterType === 'mentor') {
+        searchContainer.style.display = 'block';
+        filterValueContainer.style.display = 'none';
+
+        searchInput.placeholder = filterType === 'member'
+            ? 'Search for a member…'
+            : 'Search for a mentor…';
+
+        searchInput.focus();
+        applyFilters();
+        return;
+    }
+
+    // Status, Experience, Event, and Competing use dropdowns.
+    searchContainer.style.display = 'none';
+    filterValueContainer.style.display = 'block';
+
+    const values = new Set();
+
+    document.querySelectorAll(
+        '.checklist-table tbody tr[data-status]'
+    ).forEach(row => {
+        const value = row.dataset[filterType] || '';
+
+        if (value) {
+            values.add(value);
+        }
+    });
+
+    const valueMap = {
+        status: {
+            complete: 'Complete',
+            needs_attention: 'Needs Attention',
+            overdue: 'Overdue',
+            non_compete: 'Non-Compete'
+        },
+        level: {
+            N: 'Novice',
+            E: 'Experienced'
+        },
+        competing: {
+            competing: 'Competing',
+            non_compete: 'Non-Compete'
+        },
+        event: {}
+    };
+
+    Array.from(values).sort().forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent =
+            valueMap[filterType]?.[value] || value;
+
+        filterValueSelect.appendChild(option);
+    });
+
     applyFilters();
-    return;
-  }
-
-  filterValueContainer.style.display = 'block';
-
-  const values = new Set();
-  document.querySelectorAll('.checklist-table tbody tr[data-status]').forEach(row => {
-    let value = '';
-    if (filterType === 'status') value = row.dataset.status;
-    if (filterType === 'level') value = row.dataset.level;
-    if (filterType === 'mentor') value = row.dataset.mentor;
-    if (filterType === 'event') value = row.dataset.event;
-    if (value) values.add(value);
-  });
-
-  const valueMap = {
-    status: {
-      complete: 'Complete',
-      needs_attention: 'Needs Attention',
-      overdue: 'Overdue',
-      non_compete: 'Non-Compete'
-    },
-    level: { N: 'Novice', E: 'Experienced' },
-    mentor: {},
-    event: {}
-  };
-
-  Array.from(values).sort().forEach(value => {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = valueMap[filterType][value] || value;
-    filterValueSelect.appendChild(option);
-  });
 }
 
 function applyFilters() {
-  const filterType = document.getElementById('filterTypeSelect').value;
-  const filterValue = document.getElementById('filterValueSelect').value;
+    const filterType =
+        document.getElementById('filterTypeSelect').value;
 
-  document.querySelectorAll('.checklist-table tbody tr[data-status]').forEach(row => {
-    let show = true;
-    if (filterType && filterValue) {
-      let rowValue = '';
-      if (filterType === 'status') rowValue = row.dataset.status;
-      if (filterType === 'level') rowValue = row.dataset.level;
-      if (filterType === 'mentor') rowValue = row.dataset.mentor;
-      if (filterType === 'event') rowValue = row.dataset.event;
-      show = rowValue === filterValue;
-    }
-    row.style.display = show ? 'table-row' : 'none';
-  });
+    const searchValue =
+        document.getElementById('filterSearchInput')
+        .value
+        .trim()
+        .toLowerCase();
 
-  updateEventSectionVisibility();
+    const filterValue =
+        document.getElementById('filterValueSelect').value;
+
+    document.querySelectorAll(
+        '.checklist-table tbody tr[data-status]'
+    ).forEach(row => {
+        const rowValue =
+            row.dataset[filterType] || '';
+
+        let show = true;
+
+        if (filterType === 'member' || filterType === 'mentor') {
+            show =
+                !searchValue ||
+                rowValue.toLowerCase().includes(searchValue);
+        } else if (filterType) {
+            show =
+                !filterValue ||
+                rowValue === filterValue;
+        }
+
+        row.style.display = show ? 'table-row' : 'none';
+    });
+
+    updateEventSectionVisibility();
 }
+
+
 
 function updateEventSectionVisibility() {
   document.querySelectorAll('.event-section').forEach(section => {
@@ -289,18 +373,40 @@ function updateEventSectionVisibility() {
 }
 
 function resetFilters() {
-  document.getElementById('filterTypeSelect').value = '';
-  document.getElementById('filterValueSelect').value = '';
-  document.getElementById('filterValueContainer').style.display = 'none';
+    document.getElementById(
+        'filterTypeSelect'
+    ).value = '';
 
-  document.querySelectorAll('.checklist-table tbody tr[data-status]').forEach(row => {
-    row.style.display = 'table-row';
-  });
+    document.getElementById(
+        'filterSearchInput'
+    ).value = '';
 
-  document.querySelectorAll('.event-section').forEach(section => {
-    section.style.display = '';
-  });
+    document.getElementById(
+        'filterValueSelect'
+    ).value = '';
+
+    document.getElementById(
+        'filterSearchContainer'
+    ).style.display = 'none';
+
+    document.getElementById(
+        'filterValueContainer'
+    ).style.display = 'none';
+
+    document.querySelectorAll(
+        '.checklist-table tbody tr[data-status]'
+    ).forEach(row => {
+        row.style.display = 'table-row';
+    });
+
+    document.querySelectorAll(
+        '.event-section'
+    ).forEach(section => {
+        section.style.display = '';
+    });
 }
+
+
 </script>
 {% endblock %}
 
