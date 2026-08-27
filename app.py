@@ -253,7 +253,7 @@ NEW_OFFICERS_2026_27 = (
     "Zihan Liu",
 )
 
-NEW_OFFICER_DEMO_PODS_KEY = "2026-27-new-officer-demo-pods-v1"
+NEW_OFFICER_DEMO_PODS_KEY = "2026-27-new-officer-demo-pods-v2"
 
 
 
@@ -793,7 +793,7 @@ def sync_officer_access_flags():
 
 
 def create_new_officer_demo_pods():
-    """Give newly added officers two demo mentees when they have no real pod."""
+    """Ensure every newly added officer has six demo mentees."""
     if db.session.get(DataMigration, NEW_OFFICER_DEMO_PODS_KEY):
         return
 
@@ -814,19 +814,18 @@ def create_new_officer_demo_pods():
         next_test_number += 1
         return username
 
+    # Six sample mentees covering different events and experience levels.
     demo_profiles = (
-        {
-            "experience_level": "N",
-            "event": "BOR",
-        },
-        {
-            "experience_level": "E",
-            "event": "IMC",
-        },
+        {"experience_level": "N", "event": "BOR"},
+        {"experience_level": "E", "event": "IMC"},
+        {"experience_level": "N", "event": "EIP"},
+        {"experience_level": "E", "event": "PM"},
+        {"experience_level": "N", "event": "PSE"},
+        {"experience_level": "E", "event": "EFB"},
     )
 
     created_members = []
-    skipped_officers = []
+    completed_officers = []
     missing_officers = []
 
     for officer_name in NEW_OFFICERS_2026_27:
@@ -840,16 +839,21 @@ def create_new_officer_demo_pods():
             missing_officers.append(officer_username)
             continue
 
-        # Do not add fake mentees if this officer already has a real pod.
-        existing_pod = MentorPod.query.filter_by(
-            mentor_id=officer.id
-        ).first()
+        # Count only test mentees previously created by this feature.
+        existing_demo_count = MentorPod.query.filter_by(
+            mentor_id=officer.id,
+            year_in_deca="Demo",
+        ).count()
 
-        if existing_pod:
-            skipped_officers.append(officer.username)
+        if existing_demo_count >= 6:
+            completed_officers.append(officer.username)
             continue
 
-        for profile in demo_profiles:
+        # If two were created previously, this starts at profile three and
+        # creates only the four missing demo mentees.
+        profiles_to_create = demo_profiles[existing_demo_count:]
+
+        for profile in profiles_to_create:
             username = next_test_username()
 
             demo_member = User(
@@ -865,15 +869,14 @@ def create_new_officer_demo_pods():
             db.session.add(demo_member)
             db.session.flush()
 
-            pod = MentorPod(
+            db.session.add(MentorPod(
                 pod_number=1,
                 mentor_id=officer.id,
                 member_id=demo_member.id,
                 experience_level=profile["experience_level"],
                 event=profile["event"],
                 year_in_deca="Demo",
-            )
-            db.session.add(pod)
+            ))
 
             requirements = EVENT_REQUIREMENTS[
                 profile["experience_level"]
@@ -906,8 +909,8 @@ def create_new_officer_demo_pods():
         key=NEW_OFFICER_DEMO_PODS_KEY,
         details=(
             f"Created {len(created_members)} demo members; "
-            f"skipped {len(skipped_officers)} officers with pods; "
-            f"missing {len(missing_officers)} officers"
+            f"already complete {len(completed_officers)}; "
+            f"missing officers {len(missing_officers)}"
         ),
     ))
 
@@ -915,22 +918,15 @@ def create_new_officer_demo_pods():
 
     print(
         f"[Demo Pods] created={len(created_members)}, "
-        f"skipped={len(skipped_officers)}, "
+        f"already_complete={len(completed_officers)}, "
         f"missing={len(missing_officers)}"
     )
-
-    if skipped_officers:
-        print(
-            "[Demo Pods] already had pods: "
-            + ", ".join(skipped_officers)
-        )
 
     if missing_officers:
         print(
             "[Demo Pods] officer accounts not found: "
             + ", ".join(missing_officers)
         )
-
 
 
 def reconcile_saron_access():
@@ -1657,42 +1653,155 @@ WRITTEN_DEADLINES_BY_FAMILY = {
 
 WRITTEN_EVENT_FAMILY = {
     # Business Operations Research
-    'BOR': 'BOR',
-    'BMOR': 'BOR',
-    'FOR': 'BOR',
-    'HTOR': 'BOR',
-    'SEOR': 'BOR',
+    "BOR": "BOR",
+    "BMOR": "BOR",
+    "FOR": "BOR",
+    "HTOR": "BOR",
+    "SEOR": "BOR",
 
     # Integrated Marketing Campaign
-    'IMC': 'IMC',
-    'IMCE': 'IMC',
-    'IMCP': 'IMC',
-    'IMCS': 'IMC',
+    "IMC": "IMC",
+    "IMCE": "IMC",
+    "IMCP": "IMC",
+    "IMCS": "IMC",
 
     # Entrepreneurship
-    'ENT': 'ENT',
-    'EBG': 'ENT',
-    'EFB': 'ENT',
-    'EIB': 'ENT',
-    'EIP': 'ENT',
-    'ESB': 'ENT',
-    'IBP': 'ENT',
+    "ENT": "ENT",
+    "EBG": "ENT",
+    "EFB": "ENT",
+    "EIB": "ENT",
+    "EIP": "ENT",
+    "ESB": "ENT",
+    "IBP": "ENT",
 
     # Project Management
-    'PM': 'PM',
-    'PMBS': 'PM',
-    'PMCD': 'PM',
-    'PMCA': 'PM',
-    'PMCG': 'PM',
-    'PMFL': 'PM',
-    'PMSP': 'PM',
+    "PM": "PM",
+    "PMBS": "PM",
+    "PMCD": "PM",
+    "PMCA": "PM",
+    "PMCG": "PM",
+    "PMFL": "PM",
+    "PMSP": "PM",
 
     # Professional Selling and Consulting
-    'PS': 'PS',
-    'FCE': 'PS',
-    'HTPS': 'PS',
-    'PSE': 'PS',
+    "PS": "PS",
+    "FCE": "PS",
+    "HTPS": "PS",
+    "PSE": "PS",
 }
+
+CURRENT_WRITTEN_STORAGE_PREFIX = "2026-27:"
+
+LEGACY_WRITTEN_REQUIREMENTS_2025_26 = {
+    "ESB": [
+        ("Company", "2025-10-01"),
+        ("Overview", "2025-10-30"),
+        ("Problem", "2025-10-05"),
+        ("Customer", "2025-10-12"),
+        ("UVP", "2025-10-19"),
+        ("Solutions", "2025-10-26"),
+        ("Channels", "2025-11-02"),
+        ("Revenue", "2025-11-09"),
+        ("Cost Str", "2025-11-16"),
+        ("Key Met", "2025-11-23"),
+        ("Com. Adv", "2025-11-30"),
+        ("Conclusion", "2025-12-02"),
+        ("Revise", "2025-12-06"),
+    ],
+    "IMC": [
+        ("Exec Sum", "2025-10-30"),
+        ("Description & Objectives", "2025-10-07"),
+        ("Target Market", "2025-10-19"),
+        ("Campaign Activities & Schedule", "2025-10-26"),
+        ("Budget", "2025-10-30"),
+        ("Key Metrics", "2025-11-02"),
+    ],
+    "EFB": [
+        ("Exec Sum", "2025-10-30"),
+        ("Company", "2025-10-01"),
+        ("Biz. History", "2025-10-05"),
+        ("Environ", "2025-10-12"),
+        ("Products", "2025-10-19"),
+        ("Market", "2025-10-26"),
+        ("Comp", "2025-11-02"),
+        ("Plan", "2025-11-09"),
+        ("Man&Org", "2025-11-16"),
+        ("Resources", "2025-11-23"),
+        ("Financial", "2025-11-30"),
+        ("Conclusion", "2025-12-02"),
+        ("Revise", "2025-12-06"),
+    ],
+    "EIP": [
+        ("Overview", "2025-10-30"),
+        ("Problem", "2025-10-12"),
+        ("Customer", "2025-10-19"),
+        ("UVP", "2025-10-26"),
+        ("Solutions", "2025-11-09"),
+        ("Conclusion", "2025-11-16"),
+        ("Revise", "2025-12-06"),
+    ],
+    "BOR": [
+        ("Exec Sum", "2025-10-30"),
+        ("Intro", "2025-10-12"),
+        ("Research Methods", "2025-10-19"),
+        ("Findings & Conclusions", "2025-10-26"),
+        ("Strategic Plan", "2025-11-16"),
+        ("Budget", "2025-11-23"),
+        ("Bibliography", "2025-11-30"),
+        ("Revise", "2025-12-06"),
+    ],
+    "EIB": [
+        ("Exec Sum", "2025-10-30"),
+        ("Problem", "2025-10-05"),
+        ("Customer", "2025-10-12"),
+        ("UVP", "2025-10-19"),
+        ("Solutions", "2025-10-26"),
+        ("Channels", "2025-11-02"),
+        ("Revenue", "2025-11-09"),
+        ("Cost Str", "2025-11-16"),
+        ("Financials", "2025-11-16"),
+        ("Key Met", "2025-11-23"),
+        ("Com. Adv", "2025-11-30"),
+        ("Conclusion", "2025-12-02"),
+        ("Revise", "2025-12-06"),
+    ],
+    "IBP": [
+        ("Exec Sum", "2025-10-30"),
+        ("An. of IBS", "2025-10-01"),
+        ("Problem", "2025-10-07"),
+        ("Customer", "2025-10-12"),
+        ("UVP", "2025-10-19"),
+        ("Solution", "2025-10-26"),
+        ("Channels", "2025-11-02"),
+        ("RStreams", "2025-11-09"),
+        ("Cost Stru", "2025-11-16"),
+        ("Financials", "2025-11-16"),
+        ("Key Metric", "2025-11-23"),
+        ("Com Adv", "2025-11-30"),
+        ("Conclusion", "2025-12-02"),
+        ("Revision", "2025-12-06"),
+    ],
+    "PM": [
+        ("Exec Sum", "2025-10-30"),
+        ("Initiating", "2025-09-07"),
+        ("Planning & Organizing", "2025-09-30"),
+        ("Execution", "2025-11-02"),
+        ("Monitoring & Controlling", "2025-11-23"),
+        ("Closing of Project", "2025-11-28"),
+        ("Bibliography", "2025-12-02"),
+    ],
+    "PSE": [
+        ("Intro", "2025-10-01"),
+        ("Client Overview", "2025-10-12"),
+        ("Needs + Pain Points", "2025-10-19"),
+        ("Solutions", "2025-10-26"),
+        ("Product/Service Breakdown", "2025-11-02"),
+        ("Demonstration", "2025-11-09"),
+        ("Value & ROI", "2025-11-16"),
+        ("Closing/CTA", "2025-11-23"),
+    ],
+}
+
 
 
 def sync_written_deadline_catalog():
@@ -2608,6 +2717,34 @@ def get_written_checklist_catalog():
         if deadline:
             event_deadlines[event][item_name] = deadline
     return dict(event_items), dict(event_deadlines)
+
+def get_legacy_written_checklist_catalog():
+    """Return the exact 2025-26 spreadsheet checklist structure."""
+    event_items = {}
+    event_deadlines = {}
+
+    for event, requirements in LEGACY_WRITTEN_REQUIREMENTS_2025_26.items():
+        event_items[event] = [
+            item_name
+            for item_name, _ in requirements
+        ]
+        event_deadlines[event] = {
+            item_name: deadline
+            for item_name, deadline in requirements
+        }
+
+    # Events such as BMOR and IMCE used the checklist belonging to their
+    # broader spreadsheet category.
+    for event_code, family in WRITTEN_EVENT_FAMILY.items():
+        if event_code not in event_items and family in event_items:
+            event_items[event_code] = list(event_items[family])
+            event_deadlines[event_code] = dict(
+                event_deadlines[family]
+            )
+
+    return event_items, event_deadlines
+
+
 
 
 def _conference_summary_for_user(user, today=None, commitments=None):
@@ -4792,14 +4929,25 @@ def _bool_from_form(value):
 @login_required
 def toggle_checklist_item():
     if not (is_officer_view() or is_admin_view()):
-        return jsonify({'success': False, 'message': 'Only officers/admins can update checklist items.'}), 403
+        return jsonify({
+            'success': False,
+            'message': 'Only officers/admins can update checklist items.',
+        }), 403
+
     user_id = request.form.get('user_id', type=int)
-    event = request.form.get('event', '').strip()
+    storage_event = request.form.get('event', '').strip()
     item_name = request.form.get('item_name', '').strip()
-    requested_completed = _bool_from_form(request.form.get('completed'))
-    if not user_id or not event or not item_name:
-        return jsonify({'success': False, 'message': 'Missing checklist item details.'}), 400
-        # Officers may update only members assigned to their own pod.
+    requested_completed = _bool_from_form(
+        request.form.get('completed')
+    )
+
+    if not user_id or not storage_event or not item_name:
+        return jsonify({
+            'success': False,
+            'message': 'Missing checklist item details.',
+        }), 400
+
+    # Officers can update only members assigned to their own pod.
     if is_officer_view():
         assigned_to_officer = MentorPod.query.filter_by(
             mentor_id=current_user.id,
@@ -4809,34 +4957,80 @@ def toggle_checklist_item():
         if not assigned_to_officer:
             return jsonify({
                 'success': False,
-                'message': 'That member is not assigned to your pod.',
+                'message': 'You can only update members in your own pod.',
             }), 403
 
-    event_items, _ = get_written_checklist_catalog()
-    if item_name not in event_items.get(event, []):
-        return jsonify({'success': False, 'message': 'That item is not part of this event checklist.'}), 400
+    if storage_event.startswith(CURRENT_WRITTEN_STORAGE_PREFIX):
+        display_event = storage_event[
+            len(CURRENT_WRITTEN_STORAGE_PREFIX):
+        ]
+
+        event_items, _ = get_written_checklist_catalog()
+
+        for event_code, family in WRITTEN_EVENT_FAMILY.items():
+            if event_code not in event_items and family in event_items:
+                event_items[event_code] = list(
+                    event_items[family]
+                )
+    else:
+        display_event = storage_event
+        event_items, _ = get_legacy_written_checklist_catalog()
+
+    if item_name not in event_items.get(display_event, []):
+        return jsonify({
+            'success': False,
+            'message': 'That item is not part of this event checklist.',
+        }), 400
+
     item = ChecklistItem.query.filter_by(
-        user_id=user_id, event=event, item_name=item_name
+        user_id=user_id,
+        event=storage_event,
+        item_name=item_name,
     ).first()
+
     if item is None:
         item = ChecklistItem(
             user_id=user_id,
-            event=event,
+            event=storage_event,
             item_name=item_name,
-            completed=requested_completed if requested_completed is not None else True,
+            completed=(
+                requested_completed
+                if requested_completed is not None
+                else True
+            ),
         )
         db.session.add(item)
     else:
-        item.completed = (not item.completed) if requested_completed is None else requested_completed
+        item.completed = (
+            not item.completed
+            if requested_completed is None
+            else requested_completed
+        )
+
+    checklist_year = (
+        '2026-27'
+        if storage_event.startswith(CURRENT_WRITTEN_STORAGE_PREFIX)
+        else '2025-26'
+    )
+
     log_mdp_action(
         current_user.id,
         'checklist_update',
         'written_progress',
         target_user_id=user_id,
-        details=f'{event} - {item_name}: ' + ('complete' if item.completed else 'incomplete'),
+        details=(
+            f'{checklist_year} {display_event} - {item_name}: '
+            + ('complete' if item.completed else 'incomplete')
+        ),
     )
+
     db.session.commit()
-    return jsonify({'success': True, 'completed': bool(item.completed)})
+
+    return jsonify({
+        'success': True,
+        'completed': bool(item.completed),
+    })
+
 
 
 @app.route('/admin/import_commitments', methods=['POST'])
@@ -5068,18 +5262,52 @@ def checklist_completion():
     if not (is_officer_view() or is_admin_view()):
         flash('Only officers/admins can view this.', 'danger')
         return redirect(url_for('dashboard'))
+
+    written_view = request.args.get(
+        'written_view',
+        'legacy',
+    ).strip().lower()
+
+    if written_view not in {'legacy', 'current'}:
+        written_view = 'legacy'
+
     members = _members_visible_to_current_user()
-    event_items, event_deadlines = get_written_checklist_catalog()
+
+    if written_view == 'legacy':
+        event_items, event_deadlines = (
+            get_legacy_written_checklist_catalog()
+        )
+        academic_year_label = "2025-26"
+    else:
+        event_items, event_deadlines = (
+            get_written_checklist_catalog()
+        )
+
+        # Allow specific events to use their broader deadline family.
+        for event_code, family in WRITTEN_EVENT_FAMILY.items():
+            if event_code not in event_items and family in event_items:
+                event_items[event_code] = list(
+                    event_items[family]
+                )
+                event_deadlines[event_code] = dict(
+                    event_deadlines.get(family, {})
+                )
+
+        academic_year_label = "2026-27"
+
     today = datetime.now(LOCAL_TZ).date()
     rows = []
     grouped_rows = defaultdict(list)
     member_ids = [member.id for member in members]
+
     pods_by_member = {}
     checklist_by_user_event = defaultdict(dict)
     commitments_by_user = defaultdict(list)
 
     if member_ids:
-        for pod in MentorPod.query.options(joinedload(MentorPod.mentor)).filter(
+        for pod in MentorPod.query.options(
+            joinedload(MentorPod.mentor)
+        ).filter(
             MentorPod.member_id.in_(member_ids)
         ).all():
             pods_by_member.setdefault(pod.member_id, pod)
@@ -5087,35 +5315,55 @@ def checklist_completion():
         for item in ChecklistItem.query.filter(
             ChecklistItem.user_id.in_(member_ids)
         ).all():
-            checklist_by_user_event[(item.user_id, item.event)][item.item_name] = bool(
-                item.completed
-            )
+            checklist_by_user_event[
+                (item.user_id, item.event)
+            ][item.item_name] = bool(item.completed)
 
         for commitment in Commitment.query.filter(
             Commitment.user_id.in_(member_ids)
         ).all():
-            commitments_by_user[commitment.user_id].append(commitment)
+            commitments_by_user[
+                commitment.user_id
+            ].append(commitment)
 
     for member in members:
         is_competing = member.is_competing is not False
         pod = pods_by_member.get(member.id)
         level = pod.experience_level if pod else 'N'
         event = (pod.event or '').strip() if pod else ''
+
         if not event or event not in event_items:
             continue
 
         item_names = event_items.get(event, [])
-        imported_completion = checklist_by_user_event.get((member.id, event), {})
+
+        if written_view == 'legacy':
+            checklist_storage_event = event
+        else:
+            checklist_storage_event = (
+                f"{CURRENT_WRITTEN_STORAGE_PREFIX}{event}"
+            )
+
+        imported_completion = checklist_by_user_event.get(
+            (member.id, checklist_storage_event),
+            {},
+        )
+
         completed = {
-            name: imported_completion.get(name, False)
-            for name in item_names
+            item_name: imported_completion.get(
+                item_name,
+                False,
+            )
+            for item_name in item_names
         }
+
         written = _written_status(
             item_names,
             completed,
             event_deadlines.get(event, {}),
             today=today,
         )
+
         if not is_competing:
             display_status = 'non_compete'
             display_status_label = 'Non-Compete'
@@ -5126,38 +5374,65 @@ def checklist_completion():
             display_status_label = written['status_label']
             overdue_items = written['overdue_items']
             deadline_safe = written['deadline_safe']
+
         conference = _conference_summary_for_user(
             member,
             today=today,
-            commitments=commitments_by_user.get(member.id, []),
+            commitments=commitments_by_user.get(
+                member.id,
+                [],
+            ),
         )
+
         row = {
             'member': member,
             'mentor_name': (
-                pod.mentor.username if pod and pod.mentor else 'Unassigned'
+                pod.mentor.username
+                if pod and pod.mentor
+                else 'Unassigned'
             ),
             'level': level,
             'event': event,
+            'checklist_storage_event': checklist_storage_event,
             'is_competing': is_competing,
             'status': display_status,
             'status_label': display_status_label,
-            'checklists': {event: completed},
+            'checklists': {
+                event: completed,
+            },
             'missing_items': written['missing_items'],
             'overdue_items': overdue_items,
             'deadline_safe': deadline_safe,
             'grades': conference['grades'],
         }
+
         rows.append(row)
         grouped_rows[event].append(row)
+
     written_stats = {
         'total_members': len(rows),
-        'complete_count': sum(row['status'] == 'complete' for row in rows),
-        'needs_attention_count': sum(row['status'] == 'needs_attention' for row in rows),
-        'overdue_count': sum(row['status'] == 'overdue' for row in rows),
-        'non_compete_count': sum(row['status'] == 'non_compete' for row in rows),
-        'deadline_safe_count': sum(row['deadline_safe'] for row in rows),
+        'complete_count': sum(
+            row['status'] == 'complete'
+            for row in rows
+        ),
+        'needs_attention_count': sum(
+            row['status'] == 'needs_attention'
+            for row in rows
+        ),
+        'overdue_count': sum(
+            row['status'] == 'overdue'
+            for row in rows
+        ),
+        'non_compete_count': sum(
+            row['status'] == 'non_compete'
+            for row in rows
+        ),
+        'deadline_safe_count': sum(
+            row['deadline_safe']
+            for row in rows
+        ),
     }
-    start_year = _written_academic_start_year(today=today)
+
     return render_template(
         'checklist.html',
         rows=rows,
@@ -5166,7 +5441,8 @@ def checklist_completion():
         event_deadlines=event_deadlines,
         written_stats=written_stats,
         report_date=today,
-        written_academic_year_label=f"{start_year}-{str(start_year + 1)[-2:]}",
+        written_view=written_view,
+        written_academic_year_label=academic_year_label,
     )
 
 
