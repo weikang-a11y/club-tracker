@@ -32,6 +32,33 @@
   {% endfor %}
 {% endwith %}
 
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-body">
+    <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between">
+      <div>
+        <div class="fw-semibold">Written Progress Year</div>
+        <div class="small text-muted">
+          Currently viewing {{ written_academic_year_label }}
+        </div>
+      </div>
+
+      <div class="btn-group" role="group" aria-label="Written progress year">
+        <a href="{{ url_for('checklist_completion', written_view='legacy') }}"
+           class="btn {{ 'btn-primary' if written_view == 'legacy' else 'btn-outline-primary' }}">
+          2025–26 Spreadsheet
+        </a>
+
+        <a href="{{ url_for('checklist_completion', written_view='current') }}"
+           class="btn {{ 'btn-primary' if written_view == 'current' else 'btn-outline-primary' }}">
+          2026–27 New Deadlines
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
 <div class="row g-3 mb-4">
   <div class="col-sm-6 col-xl-3">
     <div class="card border-0 shadow-sm h-100">
@@ -115,7 +142,7 @@
   {% for event, event_rows in grouped_rows.items() %}
     {% set items = event_items.get(event, []) %}
     {% if items %}
-      <div class="mb-5 event-section" data-event-section="{{ event }}">
+      <div class="mb-5 event-section" data-event-section="{{ row.checklist_storage_event }}">
         <h3 class="mb-3">{{ event }}</h3>
 
         <div class="card border-0 shadow-sm rounded-4 mb-4">
