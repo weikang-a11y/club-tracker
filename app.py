@@ -1508,8 +1508,30 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
             commitment.remaining_written = max(0, required['written'] - done.get('written', 0))
             commitment.remaining_exam = max(0, required['exam'] - done.get('exam', 0))
             commitment.deadline = datetime.strptime(rule['deadline'], '%Y-%m-%d').date()
-            if grades.get(conference) is not None:
-                commitment.grade = grades[conference]
+            imported_grade = grades.get(conference)
+
+            if imported_grade is not None:
+                # Update the selected commitment and every legacy duplicate.
+                # Some older databases contain more than one commitment row
+                # for the same member and conference.
+                matching_grade_rows = Commitment.query.filter(
+                    Commitment.event == conference,
+                    db.or_(
+                        Commitment.user_id == member.id,
+                        db.func.lower(Commitment.member_name)
+                        == member.username.lower(),
+                    ),
+                ).all()
+
+                if commitment not in matching_grade_rows:
+                    matching_grade_rows.append(commitment)
+
+                for grade_row in matching_grade_rows:
+                    grade_row.grade = imported_grade
+                    grade_row.user_id = member.id
+                    grade_row.member_name = member.username
+
+
             commitments_updated += 1
 
         if not commitments_only:
@@ -2898,6 +2920,9 @@ def dashboard():
         # student officers remain included through their MentorPod member row.
         dashboard_scope_label = 'All Members'
         visible_members = _members_visible_to_current_user()
+            # Demo users belong only to the 2026-27 view.
+    
+
 
     elif is_officer_view():
         assigned_workshops = Workshop.query.filter_by(
@@ -5266,6 +5291,28 @@ def checklist_completion():
         written_view = 'legacy'
 
     members = _members_visible_to_current_user()
+        # Demo users belong only to the 2026-27 view.
+    if written_view == 'legacy':
+        demo_member_ids = {
+            pod.member_id
+            for pod in MentorPod.query.filter_by(
+                year_in_deca='Demo'
+            ).all()
+        }
+
+        members = [
+            member
+            for member in members
+            if (
+                member.id not in demo_member_ids
+                and not re.fullmatch(
+                    r'test\d+',
+                    member.username.lower(),
+                )
+            )
+        ]
+
+
 
     if written_view == 'legacy':
         event_items, event_deadlines = (
