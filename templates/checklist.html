@@ -142,7 +142,7 @@
   {% for event, event_rows in grouped_rows.items() %}
     {% set items = event_items.get(event, []) %}
     {% if items %}
-      <div class="mb-5 event-section" data-event-section="{{ row.checklist_storage_event }}">
+      <div class="mb-5 event-section" data-event-section="{{ event }}">
         <h3 class="mb-3">{{ event }}</h3>
 
         <div class="card border-0 shadow-sm rounded-4 mb-4">
@@ -213,7 +213,7 @@
                             type="checkbox"
                             class="form-check-input checklist-toggle"
                             data-user-id="{{ row.member.id }}"
-                            data-event="{{ event }}"
+                            data-event="{{ row.checklist_storage_event }}"
                             data-item-name="{{ item_name }}"
                             aria-label="{{ row.member.username }}: {{ item_name }}"
                             {% if row.checklists.get(event, {}).get(item_name, False) %}checked{% endif %}
