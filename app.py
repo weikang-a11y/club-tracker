@@ -1425,6 +1425,145 @@ def sync_mdp_tracking_workbook():
         print('[MDP Import] unmatched mentors: ' + ', '.join(stats['unmatched_mentors']))
     return stats
 
+WRITTEN_DEADLINES_BY_FAMILY = {
+    'IMC': [
+        ('Product/Service Description & Campaign Objectives', '10/4'),
+        ('Target Market', '10/11'),
+        ('Campaign Activities & Schedule', '10/18'),
+        ('Budget', '10/25'),
+        ('Executive Summary', '10/29'),
+        ('Key Metrics & Final Review (100% Complete)', '10/29'),
+        ('VCMC Written Submission Due', '10/31'),
+    ],
+
+    'BOR': [
+        ('Research Methods', '10/4'),
+        ('Findings & Conclusions (Target Market)', '10/11'),
+        ('Strategic Plan', '10/18'),
+        ('Budget', '10/25'),
+        ('Executive Summary', '10/29'),
+        ('Performance Metrics & Final Review', '10/29'),
+        ('VCMC Written Submission Due', '10/31'),
+    ],
+
+    'ENT': [
+        ('Customer Segments', '10/4'),
+        ('SWOT Analysis', '10/11'),
+        ('Unique Value Proposition & Competition', '10/18'),
+        ('Revenue & Cost Structure (Financials)', '10/25'),
+        ('Executive Summary & Business Concept', '10/29'),
+        ('Key Metrics, Marketing Channels & Final Review', '10/29'),
+        ('VCMC Written Submission Due', '10/31'),
+    ],
+
+    'PM': [
+        ('Planning & Organization', '10/4'),
+        ('Execution Timeline', '10/11'),
+        ('Monitoring & Controlling', '10/18'),
+        ('Closing the Project', '10/25'),
+        ('Executive Summary & Initiating', '10/29'),
+        ('Final Review & Presentation Readiness', '10/29'),
+        ('VCMC Written Submission Due', '10/31'),
+    ],
+
+    'PS': [
+        ('Customer Needs / Problem Statement', '10/4'),
+        ('Solution Development', '10/11'),
+        ('Timeline & Implementation', '10/18'),
+        ('Financials & Budget', '10/25'),
+        ('Final Review & Presentation Readiness', '10/29'),
+        ('VCMC Written Submission Due', '10/31'),
+    ],
+}
+
+
+WRITTEN_EVENT_FAMILY = {
+    # Business Operations Research
+    'BOR': 'BOR',
+    'BMOR': 'BOR',
+    'FOR': 'BOR',
+    'HTOR': 'BOR',
+    'SEOR': 'BOR',
+
+    # Integrated Marketing Campaign
+    'IMC': 'IMC',
+    'IMCE': 'IMC',
+    'IMCP': 'IMC',
+    'IMCS': 'IMC',
+
+    # Entrepreneurship
+    'ENT': 'ENT',
+    'EBG': 'ENT',
+    'EFB': 'ENT',
+    'EIB': 'ENT',
+    'EIP': 'ENT',
+    'ESB': 'ENT',
+    'IBP': 'ENT',
+
+    # Project Management
+    'PM': 'PM',
+    'PMBS': 'PM',
+    'PMCD': 'PM',
+    'PMCA': 'PM',
+    'PMCG': 'PM',
+    'PMFL': 'PM',
+    'PMSP': 'PM',
+
+    # Professional Selling and Consulting
+    'PS': 'PS',
+    'FCE': 'PS',
+    'HTPS': 'PS',
+    'PSE': 'PS',
+}
+
+
+def sync_written_deadline_catalog():
+    """Install the written deadlines from the chapter deadline document."""
+    desired_rows = []
+
+    for event, family in WRITTEN_EVENT_FAMILY.items():
+        for item_name, deadline in WRITTEN_DEADLINES_BY_FAMILY[family]:
+            desired_rows.append((event, item_name, deadline))
+
+    tracked_events = list(WRITTEN_EVENT_FAMILY)
+
+    existing_requirements = ChecklistRequirement.query.filter(
+        ChecklistRequirement.event.in_(tracked_events)
+    ).order_by(ChecklistRequirement.id).all()
+
+    existing_rows = [
+        (
+            requirement.event,
+            requirement.item_name,
+            requirement.deadline,
+        )
+        for requirement in existing_requirements
+    ]
+
+    # Avoid rewriting the table on every deployment if it is already correct.
+    if existing_rows == desired_rows:
+        return
+
+    ChecklistRequirement.query.filter(
+        ChecklistRequirement.event.in_(tracked_events)
+    ).delete(synchronize_session=False)
+
+    for event, item_name, deadline in desired_rows:
+        db.session.add(ChecklistRequirement(
+            event=event,
+            item_name=item_name,
+            deadline=deadline,
+        ))
+
+    db.session.commit()
+
+    print(
+        f'[Written Deadlines] installed '
+        f'{len(desired_rows)} event checklist requirement(s).'
+    )
+
+
+
 # ── Commitment helpers ───────────────────────────────────────────────────────
 
 def get_active_conference():
@@ -1882,6 +2021,14 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Grade Repair] skipped: {exc}')
+
+    try:
+        sync_written_deadline_catalog()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Written Deadlines] synchronization skipped: {exc}')
+
+
 
 
 
@@ -4464,6 +4611,19 @@ def toggle_checklist_item():
     requested_completed = _bool_from_form(request.form.get('completed'))
     if not user_id or not event or not item_name:
         return jsonify({'success': False, 'message': 'Missing checklist item details.'}), 400
+        # Officers may update only members assigned to their own pod.
+    if is_officer_view():
+        assigned_to_officer = MentorPod.query.filter_by(
+            mentor_id=current_user.id,
+            member_id=user_id,
+        ).first()
+
+        if not assigned_to_officer:
+            return jsonify({
+                'success': False,
+                'message': 'That member is not assigned to your pod.',
+            }), 403
+
     event_items, _ = get_written_checklist_catalog()
     if item_name not in event_items.get(event, []):
         return jsonify({'success': False, 'message': 'That item is not part of this event checklist.'}), 400
@@ -4489,6 +4649,90 @@ def toggle_checklist_item():
     )
     db.session.commit()
     return jsonify({'success': True, 'completed': bool(item.completed)})
+
+@app.route('/admin/mentor_pods/create_demo_pods', methods=['POST'])
+@login_required
+@admin_required
+def create_demo_pods():
+    officers = User.query.filter(
+        User.has_officer_access.is_(True)
+    ).order_by(User.username).all()
+
+    officers_without_pods = [
+        officer
+        for officer in officers
+        if not MentorPod.query.filter_by(
+            mentor_id=officer.id
+        ).first()
+    ]
+
+    if not officers_without_pods:
+        flash('Every officer already has at least one mentee.', 'info')
+        return redirect(url_for('mentor_pods'))
+
+    next_test_number = 1
+
+    def next_test_username():
+        nonlocal next_test_number
+
+        while User.query.filter_by(
+            username=f'test{next_test_number}'
+        ).first():
+            next_test_number += 1
+
+        username = f'test{next_test_number}'
+        next_test_number += 1
+        return username
+
+    created_members = []
+
+    for officer in officers_without_pods:
+        demo_profiles = [
+            ('N', 'EIP'),
+            ('E', 'PSE'),
+        ]
+
+        for experience_level, event in demo_profiles:
+            demo_member = User(
+                username=next_test_username(),
+                password=generate_password_hash(
+                    os.urandom(32).hex()
+                ),
+                role='member',
+                is_admin=False,
+                has_officer_access=False,
+                is_competing=False,
+                must_change_password=True,
+            )
+
+            db.session.add(demo_member)
+            db.session.flush()
+
+            db.session.add(MentorPod(
+                pod_number=1,
+                mentor_id=officer.id,
+                member_id=demo_member.id,
+                experience_level=experience_level,
+                year_in_deca='Demo',
+                event=event,
+            ))
+
+            created_members.append(demo_member)
+
+    db.session.commit()
+
+    # Give the demo accounts normal commitment rows for dashboard visuals.
+    for demo_member in created_members:
+        ensure_commitments(demo_member)
+
+    flash(
+        f'Created {len(created_members)} demo mentees for '
+        f'{len(officers_without_pods)} officer(s).',
+        'success',
+    )
+    return redirect(url_for('mentor_pods'))
+
+
 
 
 @app.route('/admin/import_commitments', methods=['POST'])
