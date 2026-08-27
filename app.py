@@ -5061,14 +5061,15 @@ def admin_import_commitments():
     # Keep accidental uploads bounded without changing limits for other routes.
     if request.content_length and request.content_length > 25 * 1024 * 1024:
         flash('The workbook is too large. The maximum upload size is 25 MB.', 'danger')
-        return redirect(url_for('admin_member_commitments'))
+        return redirect(url_for('checklist_completion', written_view='legacy'))
+
 
     form = MDPWorkbookUploadForm()
     if not form.validate_on_submit():
         for messages in form.errors.values():
             for message in messages:
                 flash(message, 'danger')
-        return redirect(url_for('admin_member_commitments'))
+        return redirect(url_for('checklist_completion', written_view='legacy'))
 
     temporary_path = None
     try:
@@ -5096,7 +5097,7 @@ def admin_import_commitments():
         db.session.rollback()
         print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
         flash('The import failed. Check the Railway deployment logs for details.', 'danger')
-        return redirect(url_for('admin_member_commitments'))
+        return redirect(url_for('checklist_completion', written_view='legacy'))
     finally:
         if temporary_path:
             try:
@@ -5120,7 +5121,7 @@ def admin_import_commitments():
             + ', '.join(stats['members_without_completion']),
             'warning',
         )
-    return redirect(url_for('admin_member_commitments'))
+    return redirect(url_for('checklist_completion', written_view='legacy'))
 
 
 @app.route('/member_commitments')
@@ -5264,12 +5265,6 @@ def admin_member_commitments():
         rows=rows,
         stats=stats,
         checklist_items_by_conf=CHECKLIST_ITEMS,
-        mdp_upload_enabled=is_mdp_upload_enabled(),
-        mdp_upload_form=(
-            MDPWorkbookUploadForm()
-            if is_admin_view()
-            else None
-        ),
     )
 
 
@@ -5482,6 +5477,14 @@ def checklist_completion():
         report_date=today,
         written_view=written_view,
         written_academic_year_label=academic_year_label,
+        mdp_upload_enabled=is_mdp_upload_enabled(),
+        mdp_upload_form=(
+            MDPWorkbookUploadForm()
+            if is_admin_view() and is_mdp_upload_enabled()
+            else None
+        ),
+
+
     )
 
 
