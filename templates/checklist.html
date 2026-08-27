@@ -256,8 +256,13 @@ Only upload when the workbook is the source of truth; importing again overwrites
     {% endif %}
   {% endfor %}
 {% else %}
-  <div class="alert alert-warning">
-    No written checklist data was found. Run the spreadsheet import, then reload this page.
+  <div class="alert alert-info">
+    {% if written_view == 'legacy' %}
+      No 2025–26 real mentees are assigned to this officer.
+      Demo test mentees appear only under 2026–27 New Deadlines. 
+    {% else %}
+      No 2026–27 mentees are currently assigned to this officer.
+    {% endif %}
   </div>
 {% endif %}
 
