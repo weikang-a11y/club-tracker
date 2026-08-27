@@ -1227,12 +1227,13 @@ def _format_spreadsheet_grade(value):
     except (TypeError, ValueError):
         return _spreadsheet_text(value) or None
 
-    # Spreadsheet percentage cells are stored as decimal ratios.
-    # Examples: 0.85 = 85%, 1.10 = 110%, 1.20 = 120%.
     if -2 <= number <= 2:
         number *= 100
 
-    return f'{number:.1f}%'
+    formatted = f'{number:.3f}'.rstrip('0').rstrip('.')
+    return f'{formatted}%'
+
+
 
 def normalize_stored_conference_grades():
     """Repair older imported grades such as 1.1 that mean 110%."""
@@ -2311,13 +2312,6 @@ with app.app_context():
         db.session.rollback()
         print(f'[Demo Pods] skipped: {exc}')
 
-
-
-    try:
-        normalize_stored_conference_grades()
-    except Exception as exc:
-        db.session.rollback()
-        print(f'[Grade Repair] skipped: {exc}')
 
     try:
         sync_written_deadline_catalog()
