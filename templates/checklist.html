@@ -32,6 +32,31 @@
   {% endfor %}
 {% endwith %}
 
+{% if current_user.is_admin and mdp_upload_enabled and mdp_upload_form and written_view == 'legacy' %}
+<div class="card border-warning shadow-sm mb-4">
+<div class="card-body">
+<div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-center">
+<div>
+<h5 class="mb-1"><i class="fas fa-file-import"></i> Temporary Commitment Import</h5>
+<div class="text-muted small">
+Upload the official MDP <code>.xlsx</code> workbook to replace RP/EX/WR progress.
+The temporary server copy is deleted immediately after processing.
+</div>
+</div>
+<form method="post" action="{{ url_for('admin_import_commitments') }}" enctype="multipart/form-data" class="d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
+{{ mdp_upload_form.hidden_tag() }}
+{{ mdp_upload_form.workbook(class="form-control", accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") }}
+{{ mdp_upload_form.submit(class="btn btn-warning text-nowrap") }}
+</form>
+</div>
+<div class="small text-danger mt-2">
+Only upload when the workbook is the source of truth; importing again overwrites current commitment counts.
+</div>
+</div>
+</div>
+{% endif %}
+
+
 <div class="card border-0 shadow-sm mb-4">
   <div class="card-body">
     <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between">
