@@ -222,6 +222,41 @@ OFFICER_ROSTER_2026_27 = [
     ("Zubin Lakhia", "Officer"),
 ]
 
+# Officers who appear in the current 2026-27 roster but were not mentors in
+# either of the 2025-26 MDP mentor/pod sheets.
+#
+# Hannah/Hanna Li and Elizabeth/Lizzie Huang are returning officers and are
+# intentionally excluded.
+NEW_OFFICERS_2026_27 = (
+    "Crystal Chen",
+    "Thatcher Kim",
+    "Yen-Nhi Tran",
+    "Eva Gu",
+    "Evelyn Bai",
+    "Allen Tu",
+    "Jessica Ma",
+    "Neela Koneru",
+    "Sophie Yu",
+    "Anay Kalchuri",
+    "Sophie Ji",
+    "Sarah Xu",
+    "Jason Huang",
+    "Purab Shah",
+    "Armaan Arya",
+    "Audrey Sansone",
+    "Riya Khattri",
+    "Zubin Lakhia",
+
+    # Current officer additions already approved in this app.
+    "Aryahi Sharma",
+    "Olivia Kang",
+    "Zihan Liu",
+)
+
+NEW_OFFICER_DEMO_PODS_KEY = "2026-27-new-officer-demo-pods-v1"
+
+
+
 # Shared temporary passwords requested for the roster import. Railway variables
 # can override these values without changing source code. Every imported user is
 # required to choose an individual password on first login.
@@ -755,6 +790,149 @@ def sync_officer_access_flags():
 
     if changed:
         db.session.commit()
+
+
+def create_new_officer_demo_pods():
+    """Give newly added officers two demo mentees when they have no real pod."""
+    if db.session.get(DataMigration, NEW_OFFICER_DEMO_PODS_KEY):
+        return
+
+    used_usernames = {
+        user.username.lower()
+        for user in User.query.all()
+    }
+    next_test_number = 1
+
+    def next_test_username():
+        nonlocal next_test_number
+
+        while f"test{next_test_number}" in used_usernames:
+            next_test_number += 1
+
+        username = f"test{next_test_number}"
+        used_usernames.add(username)
+        next_test_number += 1
+        return username
+
+    demo_profiles = (
+        {
+            "experience_level": "N",
+            "event": "BOR",
+        },
+        {
+            "experience_level": "E",
+            "event": "IMC",
+        },
+    )
+
+    created_members = []
+    skipped_officers = []
+    missing_officers = []
+
+    for officer_name in NEW_OFFICERS_2026_27:
+        officer_username = _canonical_officer_username(officer_name)
+
+        officer = User.query.filter(
+            db.func.lower(User.username) == officer_username.lower()
+        ).first()
+
+        if not officer or not officer.has_officer_access:
+            missing_officers.append(officer_username)
+            continue
+
+        # Do not add fake mentees if this officer already has a real pod.
+        existing_pod = MentorPod.query.filter_by(
+            mentor_id=officer.id
+        ).first()
+
+        if existing_pod:
+            skipped_officers.append(officer.username)
+            continue
+
+        for profile in demo_profiles:
+            username = next_test_username()
+
+            demo_member = User(
+                username=username,
+                password=generate_password_hash(os.urandom(32).hex()),
+                role="member",
+                is_admin=False,
+                has_officer_access=False,
+                is_competing=False,
+                must_change_password=False,
+                notify_enabled=False,
+            )
+            db.session.add(demo_member)
+            db.session.flush()
+
+            pod = MentorPod(
+                pod_number=1,
+                mentor_id=officer.id,
+                member_id=demo_member.id,
+                experience_level=profile["experience_level"],
+                event=profile["event"],
+                year_in_deca="Demo",
+            )
+            db.session.add(pod)
+
+            requirements = EVENT_REQUIREMENTS[
+                profile["experience_level"]
+            ]
+
+            for conference, rule in requirements.items():
+                db.session.add(Commitment(
+                    member_name=demo_member.username,
+                    event=conference,
+                    required_roleplay=rule["roleplay"],
+                    required_written=rule["written"],
+                    required_exam=rule["exam"],
+                    remaining_roleplay=rule["roleplay"],
+                    remaining_written=rule["written"],
+                    remaining_exam=rule["exam"],
+                    deadline=datetime.strptime(
+                        rule["deadline"],
+                        "%Y-%m-%d",
+                    ).date(),
+                    user_id=demo_member.id,
+                ))
+
+            db.session.add(AnnualICPrepTracker(
+                member_id=demo_member.id,
+            ))
+
+            created_members.append(demo_member.username)
+
+    db.session.add(DataMigration(
+        key=NEW_OFFICER_DEMO_PODS_KEY,
+        details=(
+            f"Created {len(created_members)} demo members; "
+            f"skipped {len(skipped_officers)} officers with pods; "
+            f"missing {len(missing_officers)} officers"
+        ),
+    ))
+
+    db.session.commit()
+
+    print(
+        f"[Demo Pods] created={len(created_members)}, "
+        f"skipped={len(skipped_officers)}, "
+        f"missing={len(missing_officers)}"
+    )
+
+    if skipped_officers:
+        print(
+            "[Demo Pods] already had pods: "
+            + ", ".join(skipped_officers)
+        )
+
+    if missing_officers:
+        print(
+            "[Demo Pods] officer accounts not found: "
+            + ", ".join(missing_officers)
+        )
+
+
+
 def reconcile_saron_access():
     """Correct the old Saron username typo without changing the password."""
     correct = User.query.filter(
@@ -2015,6 +2193,16 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[MDP Import] skipped: {exc}')
+
+    # Give newly added 2026-27 officers demo mentees only when they do not
+    # already have real mentor-pod assignments.
+    try:
+        create_new_officer_demo_pods()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Demo Pods] skipped: {exc}')
+
+
 
     try:
         normalize_stored_conference_grades()
@@ -4649,90 +4837,6 @@ def toggle_checklist_item():
     )
     db.session.commit()
     return jsonify({'success': True, 'completed': bool(item.completed)})
-
-@app.route('/admin/mentor_pods/create_demo_pods', methods=['POST'])
-@login_required
-@admin_required
-def create_demo_pods():
-    officers = User.query.filter(
-        User.has_officer_access.is_(True)
-    ).order_by(User.username).all()
-
-    officers_without_pods = [
-        officer
-        for officer in officers
-        if not MentorPod.query.filter_by(
-            mentor_id=officer.id
-        ).first()
-    ]
-
-    if not officers_without_pods:
-        flash('Every officer already has at least one mentee.', 'info')
-        return redirect(url_for('mentor_pods'))
-
-    next_test_number = 1
-
-    def next_test_username():
-        nonlocal next_test_number
-
-        while User.query.filter_by(
-            username=f'test{next_test_number}'
-        ).first():
-            next_test_number += 1
-
-        username = f'test{next_test_number}'
-        next_test_number += 1
-        return username
-
-    created_members = []
-
-    for officer in officers_without_pods:
-        demo_profiles = [
-            ('N', 'EIP'),
-            ('E', 'PSE'),
-        ]
-
-        for experience_level, event in demo_profiles:
-            demo_member = User(
-                username=next_test_username(),
-                password=generate_password_hash(
-                    os.urandom(32).hex()
-                ),
-                role='member',
-                is_admin=False,
-                has_officer_access=False,
-                is_competing=False,
-                must_change_password=True,
-            )
-
-            db.session.add(demo_member)
-            db.session.flush()
-
-            db.session.add(MentorPod(
-                pod_number=1,
-                mentor_id=officer.id,
-                member_id=demo_member.id,
-                experience_level=experience_level,
-                year_in_deca='Demo',
-                event=event,
-            ))
-
-            created_members.append(demo_member)
-
-    db.session.commit()
-
-    # Give the demo accounts normal commitment rows for dashboard visuals.
-    for demo_member in created_members:
-        ensure_commitments(demo_member)
-
-    flash(
-        f'Created {len(created_members)} demo mentees for '
-        f'{len(officers_without_pods)} officer(s).',
-        'success',
-    )
-    return redirect(url_for('mentor_pods'))
-
-
 
 
 @app.route('/admin/import_commitments', methods=['POST'])
