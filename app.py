@@ -5057,8 +5057,6 @@ def toggle_checklist_item():
 @admin_required
 def admin_import_commitments():
     """Temporarily accept an MDP workbook and repair commitment progress."""
-    if not is_mdp_upload_enabled():
-        abort(404)
 
     # Keep accidental uploads bounded without changing limits for other routes.
     if request.content_length and request.content_length > 25 * 1024 * 1024:
@@ -5269,7 +5267,7 @@ def admin_member_commitments():
         mdp_upload_enabled=is_mdp_upload_enabled(),
         mdp_upload_form=(
             MDPWorkbookUploadForm()
-            if is_admin_view() and is_mdp_upload_enabled()
+            if is_admin_view()
             else None
         ),
     )
