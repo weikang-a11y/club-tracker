@@ -1047,11 +1047,48 @@ def _written_columns(headers):
 def _format_spreadsheet_grade(value):
     if value in (None, ''):
         return None
+
     try:
         number = float(value)
     except (TypeError, ValueError):
         return _spreadsheet_text(value) or None
-    return f'{number * 100:.1f}%' if number <= 1 else f'{number:.1f}'
+
+    # Spreadsheet percentage cells are stored as decimal ratios.
+    # Examples: 0.85 = 85%, 1.10 = 110%, 1.20 = 120%.
+    if -2 <= number <= 2:
+        number *= 100
+
+    return f'{number:.1f}%'
+
+def normalize_stored_conference_grades():
+    """Repair older imported grades such as 1.1 that mean 110%."""
+    changed = 0
+
+    for commitment in Commitment.query.filter(
+        Commitment.grade.is_not(None)
+    ).all():
+        raw = str(commitment.grade).strip()
+        numeric_text = raw.replace('%', '').strip()
+
+        try:
+            number = float(numeric_text)
+        except ValueError:
+            continue
+
+        # Values without a percent sign between -2 and 2 came from
+        # spreadsheet percentage ratios.
+        if '%' not in raw and -2 <= number <= 2:
+            number *= 100
+
+        normalized = f'{number:.1f}%'
+
+        if commitment.grade != normalized:
+            commitment.grade = normalized
+            changed += 1
+
+    if changed:
+        db.session.commit()
+        print(f'[Grade Repair] normalized {changed} conference grade(s).')
 
 
 def import_mdp_tracking_workbook(path, commitments_only=False):
@@ -1839,6 +1876,14 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[MDP Import] skipped: {exc}')
+
+    try:
+        normalize_stored_conference_grades()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Grade Repair] skipped: {exc}')
+
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
