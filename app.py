@@ -432,12 +432,14 @@ def load_user(user_id):
 @app.context_processor
 def inject_notification_defaults():
     """Inject shared navigation state into every template."""
-    return {
-        'notifications': [],
-        'unread_count': 0,
-        'active_view': get_account_view(),
-        'can_switch_view': can_switch_account_view(),
-    }
+    if current_user.is_authenticated:
+        unread = Notification.query.filter_by(
+            user_id=current_user.id, read=False).order_by(
+            Notification.created_at.desc()).limit(10).all()
+        return {'notifications': unread, 'unread_count': len(unread),
+                'active_view': None, 'can_switch_view': False}
+    return {'notifications': [], 'unread_count': 0,
+            'active_view': None, 'can_switch_view': False}
 
 
 def _account_name_key(value):
