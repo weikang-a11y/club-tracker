@@ -1,50 +1,27 @@
-try:
-    import truststore
-except ImportError:
-    truststore = None
-else:
-    truststore.inject_into_ssl()
-
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, abort, session
+from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf import FlaskForm
-from flask_wtf.file import FileAllowed, FileField, FileRequired
 from wtforms import StringField, PasswordField, DateField, SelectField, IntegerField, SubmitField
 from wtforms.validators import DataRequired, Length, NumberRange, ValidationError
 from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
+from sqlalchemy.pool import NullPool
 from apscheduler.schedulers.background import BackgroundScheduler
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
-import hashlib
-import hmac
-import csv
-import io
 import os
-import posixpath
-import re
-import requests
-import tempfile
-import zipfile
-import xml.etree.ElementTree as ET
-from collections import defaultdict
 
 load_dotenv()
 
 app = Flask(__name__)
-
-# Set SECRET_KEY in .env in production. The fallback keeps existing local
-# friend2 installations bootable while they migrate their environment.
-app.config['SECRET_KEY'] = os.getenv(
-    'SECRET_KEY',
-    'super-secret-key-change-me-98765',
-)
+app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
 
 # Database config with Railway/Postgres support + local SQLite fallback
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -53,12 +30,9 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql+psycopg://', 1)
     elif DATABASE_URL.startswith('postgresql://'):
         DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
-    print("[DB] Using external PostgreSQL database.")
+    print(f"[DB] Using external database: {DATABASE_URL[:60]}...")
     app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_pre_ping': True,
-        'pool_recycle': 300,
-    }
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
 else:
     local_db = os.path.join(os.path.dirname(__file__), 'club.db')
     print('[DB] No DATABASE_URL found, using local SQLite database.')
@@ -67,9 +41,7 @@ else:
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 FROM_EMAIL = os.getenv("FROM_EMAIL")
-FROM_NAME = os.getenv("FROM_NAME", "DECA Tracker")
-BREVO_API_KEY = os.getenv("BREVO_API_KEY")
-BREVO_EMAIL_ENDPOINT = "https://api.brevo.com/v3/smtp/email"
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -100,70 +72,27 @@ ICPREP_TARGETS = {
 }
 
 # Per-conference requirements split by experience level (non-cumulative)
-# Novice:     VCMC(RP:1,W:1,E:2), SVCDC(RP:1,W:1,E:2), SCDC(RP:2,W:1,E:2)
-# Experienced:VCMC(N/A),          SVCDC(RP:1,W:1,E:2), SCDC(RP:1,W:1,E:1)
+# Novice:     VCMC(RP:2,W:1,E:2), SVCDC(RP:1,W:1,E:2), SCDC(RP:2,W:1,E:2)
+# Experienced:VCMC(RP:0,W:1,E:0), SVCDC(RP:2,W:1,E:2), SCDC(RP:1,W:1,E:1)
 # RP/Exam counts include both in-person and ICPrep (members choose which to use for ICPrep quota)
 EVENT_REQUIREMENTS = {
     "N": {  # Novice
-        "VCMC":  {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2025-11-15"},
-        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-01-08"},
-        "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-02-23"},
+        "VCMC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-11-15"},
+        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
+        "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-02-23"},
     },
     "E": {  # Experienced
-        "VCMC":  {"roleplay": 0, "written": 0, "exam": 0, "deadline": "2025-11-15"},
-        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-01-08"},
-        "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2026-02-23"},
+        "VCMC":  {"roleplay": 0, "written": 1, "exam": 0, "deadline": "2026-11-15"},
+        "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-01-08"},
+        "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2027-02-23"},
     },
 }
 
 CONFERENCE_ORDER = ["VCMC", "SVCDC", "SCDC"]
 CONFERENCE_DEADLINES = {
-    "VCMC":  "2025-11-15",
-    "SVCDC": "2026-01-08",
-    "SCDC":  "2026-02-23",
-}
-
-# Competitive-event labels used by mentor-pod administration.
-EVENT_TABS = ['BOR', 'EIP', 'EFB', 'EIB', 'ESB', 'IBP', 'IMC', 'PM', 'PSE', 'NA']
-
-MDP_TRACKING_FILE = os.getenv(
-    'MDP_TRACKING_FILE',
-    os.path.join(os.path.dirname(__file__), 'FINAL MDP Deadline Tracking.xlsx'),
-)
-MDP_IMPORT_KEY_PREFIX = 'mdp-tracking-xlsx-positional-v3-canonical-members-'
-
-
-def is_mdp_upload_enabled():
-    """Return True only while the temporary admin import page is enabled."""
-    return os.getenv('ENABLE_MDP_UPLOAD', '').strip().lower() in {
-        '1', 'true', 'yes', 'on',
-    }
-
-# Spreadsheet names that intentionally differ from account usernames. Joey's
-# source row is labelled "Joey Zhu" but the existing account is joey.shu.
-SPREADSHEET_ACCOUNT_OVERRIDES = {
-    'amber chang': ('ambery.chang',),
-    # The live account uses the workbook/email spelling. Do not fall back to
-    # the old ``avaneesh.nagare`` typo: if both accounts exist, that would
-    # update the wrong user's commitments and leave avaneesh.nangare stale.
-    'avaneesh nangare': ('avaneesh.nangare',),
-    'chun ka yu': ('chunka.yu',),
-    'elizabeth huang': ('lizzie.huang', 'elizabeth.huang'),
-    'joey zhu': ('joey.shu', 'joey.zhu'),
-    'lincoln tran': ('lincolnjacob.tran',),
-    'lucas wang': ('lucasj.wang',),
-    'ruhaan parandekar': ('r.parandekar',),
-    'sidharth swaminathan': ('s.swaminathan',),
-    'srinivasan satagopan': ('sk.satagopan',),
-    'varshini subramanian': ('v.subramanian',),
-    'yen-nhi tran': ('yennhi.tran',),
-}
-
-# Fallback catalog. Imported ChecklistRequirement rows drive Written Progress.
-CHECKLIST_ITEMS = {
-    "VCMC": ["Exec Summary", "Registration Form"],
-    "SVCDC": ["Exec Summary", "Written Statement", "Registration Form"],
-    "SCDC": ["Exec Summary", "Written Statement", "Registration Form", "Judge Sign-up"],
+    "VCMC":  "2026-11-15",
+    "SVCDC": "2027-01-08",
+    "SCDC":  "2027-02-23",
 }
 
 # Email that receives practice log completion notifications
@@ -284,11 +213,6 @@ class User(UserMixin, db.Model):
     remind_minutes_before = db.Column(db.Integer, default=60)
     must_change_password = db.Column(db.Boolean, default=False)
     is_admin = db.Column(db.Boolean, default=False)
-    # True only when this account is entitled to use officer functionality.
-    # This is separate from role because legacy admin-only accounts are stored
-    # with role='officer' plus is_admin=True.
-    has_officer_access = db.Column(db.Boolean, default=False, nullable=False)
-    is_competing = db.Column(db.Boolean, default=True)
 
 class Commitment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -301,7 +225,6 @@ class Commitment(db.Model):
     remaining_written = db.Column(db.Integer, default=0)
     remaining_exam = db.Column(db.Integer, default=0)
     deadline = db.Column(db.Date)
-    grade = db.Column(db.String(10))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     user = db.relationship('User', backref='added_commitments')
 
@@ -386,52 +309,6 @@ class MentorPod(db.Model):
     year_in_deca = db.Column(db.String(20))
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
-    event = db.Column(db.String(20))
-
-
-class MentorPodEditLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    action = db.Column(db.String(50), nullable=False)
-    details = db.Column(db.String(255))
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    actor = db.relationship('User', foreign_keys=[actor_id])
-    member = db.relationship('User', foreign_keys=[member_id])
-
-
-class MDPAuditLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    target_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
-    action = db.Column(db.String(50), nullable=False)
-    category = db.Column(db.String(50), nullable=False)
-    details = db.Column(db.String(255))
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    actor = db.relationship('User', foreign_keys=[actor_id])
-    target_user = db.relationship('User', foreign_keys=[target_user_id])
-
-
-class ChecklistItem(db.Model):
-    """Per-member written-progress item."""
-    __tablename__ = 'checklist_item'
-    __table_args__ = (
-        db.UniqueConstraint('user_id', 'event', 'item_name', name='uq_checklist_item'),
-    )
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    event = db.Column(db.String(20), nullable=False)
-    item_name = db.Column(db.String(50), nullable=False)
-    completed = db.Column(db.Boolean, default=False)
-    user = db.relationship('User', backref='checklist_items')
-
-
-class ChecklistRequirement(db.Model):
-    __tablename__ = 'checklist_requirement'
-    id = db.Column(db.Integer, primary_key=True)
-    event = db.Column(db.String(50), nullable=False)
-    item_name = db.Column(db.String(100), nullable=False)
-    deadline = db.Column(db.String(20))
 
 
 class PracticeSession(db.Model):
@@ -480,25 +357,49 @@ class ExamUpload(db.Model):
     reviewer = db.relationship('User', foreign_keys=[reviewer_id])
 
 
+class Notification(db.Model):
+    """In-app notification for officers and members."""
+    __tablename__ = 'notification'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    message = db.Column(db.String(300), nullable=False)
+    read = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    user = db.relationship('User', backref='notifications')
+
+
 class ICPrepWebhookLog(db.Model):
-    """Raw log of every inbound ICPrep webhook event."""
+    """Raw log of every inbound ICPrep webhook event (kept for backwards compat)."""
     __tablename__ = 'icprep_webhook_log'
     id = db.Column(db.Integer, primary_key=True)
     received_at = db.Column(db.DateTime, default=datetime.utcnow)
-    payload = db.Column(db.Text)          # raw JSON string
+    payload = db.Column(db.Text)
     member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
-    activity_type = db.Column(db.String(30), nullable=True)  # 'ICPrep Roleplay' or 'ICPrep Exam'
+    activity_type = db.Column(db.String(30), nullable=True)
     processed = db.Column(db.Boolean, default=False)
     error = db.Column(db.Text, nullable=True)
-    member = db.relationship('User', backref='icprep_webhook_logs')
+    member = db.relationship('User', foreign_keys=[member_id], backref='icprep_webhook_logs')
 
 
-class DataMigration(db.Model):
-    """Records one-time data imports so redeploys do not reset accounts again."""
-    __tablename__ = 'data_migration'
-    key = db.Column(db.String(100), primary_key=True)
-    applied_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    details = db.Column(db.String(255))
+class ICPrepEvent(db.Model):
+    """Structured record of each verified ICPrep webhook event."""
+    __tablename__ = 'icprep_event'
+    id = db.Column(db.Integer, primary_key=True)
+    delivery_id = db.Column(db.String(200), unique=True, nullable=False)  # dedup key
+    received_at = db.Column(db.DateTime, default=datetime.utcnow)
+    event_type = db.Column(db.String(100), nullable=True)   # X-ICprep-Event header
+    student_full_name = db.Column(db.String(200), nullable=True)
+    student_email = db.Column(db.String(200), nullable=True)
+    event = db.Column(db.String(100), nullable=True)         # payload "event" field
+    event_code = db.Column(db.String(100), nullable=True)
+    event_name = db.Column(db.String(200), nullable=True)
+    score = db.Column(db.Float, nullable=True)
+    max_score = db.Column(db.Float, nullable=True)
+    date = db.Column(db.String(50), nullable=True)
+    raw_payload = db.Column(db.Text, nullable=True)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    matched = db.Column(db.Boolean, default=False)  # True if email matched a User
+    member = db.relationship('User', backref='icprep_events')
 
 
 class PracticeLog(db.Model):
@@ -525,40 +426,7 @@ class PracticeLog(db.Model):
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-
-VIEW_MODE_SESSION_KEY = 'deca_account_view'
-
-
-def can_switch_account_view(user=None):
-    """Return whether the account genuinely has both admin and officer access."""
-    user = user or current_user
-    return bool(
-        user.is_authenticated
-        and user.is_admin
-        and user.role == 'officer'
-        and user.has_officer_access
-    )
-
-
-def get_account_view():
-    """Resolve the current UI/permission scope for this signed-in account."""
-    if not current_user.is_authenticated:
-        return None
-    if can_switch_account_view():
-        selected = session.get(VIEW_MODE_SESSION_KEY, 'admin')
-        return selected if selected in {'admin', 'officer'} else 'admin'
-    if current_user.is_admin:
-        return 'admin'
-    return current_user.role
-
-
-def is_admin_view():
-    return get_account_view() == 'admin'
-
-
-def is_officer_view():
-    return get_account_view() == 'officer'
-
+# ── Context processor: inject notification count into all templates ───────────
 
 @app.context_processor
 def inject_notification_defaults():
@@ -1556,71 +1424,22 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                     checklist_items_by_key[item_key] = item
                 item.completed = completed
                 checklist_items_updated += 1
-
-    return {
-        'matched_members': len(matched_user_ids),
-        'unmatched_members': sorted(set(filter(None, unmatched_members))),
-        'members_without_completion': sorted(set(filter(None, members_without_completion))),
-        'unmatched_mentors': sorted(set(filter(None, unmatched_mentors))),
-        'pods_updated': pods_updated,
-        'commitments_updated': commitments_updated,
-        'checklist_requirements': len(written_requirements),
-        'checklist_items_updated': checklist_items_updated,
-    }
+def inject_notifications():
+    if current_user.is_authenticated:
+        unread = Notification.query.filter_by(
+            user_id=current_user.id, read=False).order_by(
+            Notification.created_at.desc()).limit(10).all()
+        return {'notifications': unread, 'unread_count': len(unread)}
+    return {'notifications': [], 'unread_count': 0}
 
 
-def sync_mdp_tracking_workbook():
-    """Import each workbook version once without adding pandas to production."""
-    candidates = [MDP_TRACKING_FILE]
-    bundled = os.path.join(
-        os.path.dirname(__file__),
-        'source_workbook',
-        'FINAL MDP Deadline Tracking.xlsx',
-    )
-    if bundled not in candidates:
-        candidates.append(bundled)
-    path = next((candidate for candidate in candidates if candidate and os.path.isfile(candidate)), None)
-    if not path:
-        print('[MDP Import] workbook not found; set MDP_TRACKING_FILE to enable sync.')
-        return None
+# ── Notification helper ──────────────────────────────────────────────────────
 
-    digest = hashlib.sha256()
-    with open(path, 'rb') as workbook_file:
-        for chunk in iter(lambda: workbook_file.read(1024 * 1024), b''):
-            digest.update(chunk)
-    migration_key = MDP_IMPORT_KEY_PREFIX + digest.hexdigest()[:32]
-    if db.session.get(DataMigration, migration_key):
-        return None
+def create_notification(user_id, message):
+    """Create an in-app notification for a user."""
+    notif = Notification(user_id=user_id, message=message)
+    db.session.add(notif)
 
-    stats = import_mdp_tracking_workbook(path, commitments_only=True)
-    db.session.add(DataMigration(
-        key=migration_key,
-        details=(
-            f"Matched {stats['matched_members']}; pods {stats['pods_updated']}; "
-            f"commitments {stats['commitments_updated']}; "
-            f"unmatched members {len(stats['unmatched_members'])}; "
-            f"missing completion rows {len(stats['members_without_completion'])}"
-        ),
-    ))
-    db.session.commit()
-    print(
-        '[MDP Import] complete: '
-        f"matched={stats['matched_members']}, pods={stats['pods_updated']}, "
-        f"commitments={stats['commitments_updated']}, "
-        f"unmatched_members={len(stats['unmatched_members'])}, "
-        f"missing_completion={len(stats['members_without_completion'])}, "
-        f"unmatched_mentors={len(stats['unmatched_mentors'])}"
-    )
-    if stats['unmatched_members']:
-        print('[MDP Import] unmatched members: ' + ', '.join(stats['unmatched_members']))
-    if stats['members_without_completion']:
-        print(
-            '[MDP Import] members without completion rows: '
-            + ', '.join(stats['members_without_completion'])
-        )
-    if stats['unmatched_mentors']:
-        print('[MDP Import] unmatched mentors: ' + ', '.join(stats['unmatched_mentors']))
-    return stats
 
 WRITTEN_DEADLINES_BY_FAMILY = {
     'IMC': [
@@ -1887,20 +1706,15 @@ def get_active_conference():
 
 
 def ensure_commitments(member):
-    """Create or reconcile commitment rows while preserving completed work."""
+    """Auto-create commitment rows and ICPrep tracker for all conferences if missing."""
     pod = MentorPod.query.filter_by(member_id=member.id).first()
     level = pod.experience_level if pod else 'N'
     reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
-    changed = False
-
+    created = False
     for conf, rule in reqs.items():
-        existing = Commitment.query.filter_by(
-            member_name=member.username,
-            event=conf,
-        ).first()
-
+        existing = Commitment.query.filter_by(member_name=member.username, event=conf).first()
         if not existing:
-            db.session.add(Commitment(
+            com = Commitment(
                 member_name=member.username,
                 event=conf,
                 required_roleplay=rule["roleplay"],
@@ -1910,44 +1724,14 @@ def ensure_commitments(member):
                 remaining_written=rule["written"],
                 remaining_exam=rule["exam"],
                 deadline=datetime.strptime(rule["deadline"], "%Y-%m-%d").date(),
-                user_id=member.id,
-            ))
-            changed = True
-            continue
-
-        if existing.user_id != member.id:
-            existing.user_id = member.id
-            changed = True
-        if existing.member_name != member.username:
-            existing.member_name = member.username
-            changed = True
-        configured_deadline = datetime.strptime(
-            rule["deadline"], "%Y-%m-%d"
-        ).date()
-        if existing.deadline != configured_deadline:
-            existing.deadline = configured_deadline
-            changed = True
-
-        # Apply the current matrix to existing rows. Preserve the number already
-        # completed in each bucket, and clear both values when a bucket is N/A.
-        for bucket in ("roleplay", "written", "exam"):
-            required_attr = f"required_{bucket}"
-            remaining_attr = f"remaining_{bucket}"
-            old_required = getattr(existing, required_attr) or 0
-            old_remaining = getattr(existing, remaining_attr) or 0
-            completed = max(old_required - old_remaining, 0)
-            new_required = rule[bucket]
-            new_remaining = max(new_required - completed, 0)
-            if old_required != new_required or old_remaining != new_remaining:
-                setattr(existing, required_attr, new_required)
-                setattr(existing, remaining_attr, new_remaining)
-                changed = True
-
+            )
+            db.session.add(com)
+            created = True
+    # Ensure annual ICPrep tracker exists
     if not AnnualICPrepTracker.query.filter_by(member_id=member.id).first():
         db.session.add(AnnualICPrepTracker(member_id=member.id))
-        changed = True
-
-    if changed:
+        created = True
+    if created:
         try:
             db.session.commit()
         except Exception:
@@ -1975,70 +1759,44 @@ def get_icprep_status(member):
 
 # ── Attendance helper ─────────────────────────────────────────────────────────
 
-def get_attendance_stats(
-    user,
-    ah_records=None,
-    ws_records=None,
-    pod=None,
-    pod_loaded=False,
-):
-    """Return detailed AH/WS attendance counts, rates, and risk status."""
-    if ah_records is None:
-        ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
-    if ws_records is None:
-        ws_records = WSAttendance.query.filter_by(user_id=user.id).all()
+def get_attendance_stats(user):
+    """Return AH rate, WS rate, and at-risk flag for a member."""
+    ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
+    ws_records = WSAttendance.query.filter_by(user_id=user.id).all()
 
-    ah_present = sum(1 for row in ah_records if row.value == 1.0)
-    ah_excused = sum(1 for row in ah_records if row.value == 0.5)
-    ah_absent = sum(1 for row in ah_records if row.value == 0.0)
-    ws_present = sum(1 for row in ws_records if row.value == 1.0)
-    ws_excused = sum(1 for row in ws_records if row.value == 0.5)
-    ws_absent = sum(1 for row in ws_records if row.value == 0.0)
+    total_ah = len(ah_records)
+    total_ws = len(ws_records)
 
-    # Excused absences remain visible and count as scheduled sessions, but they
-    # are not counted as present in the attendance percentage.
-    ah_total = ah_present + ah_excused + ah_absent
-    ws_total = ws_present + ws_excused + ws_absent
-    ah_rate = round((ah_present / ah_total) * 100, 1) if ah_total else 0.0
-    ws_rate = round((ws_present / ws_total) * 100, 1) if ws_total else 0.0
+    ah_sum = sum(r.value for r in ah_records)
+    ws_sum = sum(r.value for r in ws_records)
 
-    if not pod_loaded:
-        pod = MentorPod.query.filter_by(member_id=user.id).first()
-    level = pod.experience_level if pod and pod.experience_level else 'N'
+    ah_rate = round((ah_sum / total_ah) * 100, 1) if total_ah > 0 else 0.0
+    ws_rate = round((ws_sum / total_ws) * 100, 1) if total_ws > 0 else 0.0
+
+    # Get experience level from pod
+    pod = MentorPod.query.filter_by(member_id=user.id).first()
+    level = pod.experience_level if pod else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
-    is_competing = user.is_competing is not False
     ah_ok = ah_rate >= (AH_THRESHOLD * 100)
     ws_ok = ws_rate >= ws_threshold_pct
-    at_risk = is_competing and (not ah_ok or not ws_ok)
+
+    at_risk = not ah_ok or not ws_ok
     risk_reasons = []
-    if is_competing and not ah_ok:
-        risk_reasons.append(
-            f"AH attendance {ah_rate}% < {AH_THRESHOLD * 100:.0f}% required"
-        )
-    if is_competing and not ws_ok:
-        risk_reasons.append(
-            f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required"
-        )
+    if not ah_ok:
+        risk_reasons.append(f"AH attendance {ah_rate}% < {AH_THRESHOLD*100:.0f}% required")
+    if not ws_ok:
+        risk_reasons.append(f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required")
 
     return {
-        'ah_total': ah_total,
-        'ah_present': ah_present,
-        'ah_excused': ah_excused,
-        'ah_absent': ah_absent,
-        'ah_sum': ah_present,
+        'ah_total': total_ah,
+        'ah_sum': ah_sum,
         'ah_rate': ah_rate,
-        'ws_total': ws_total,
-        'ws_present': ws_present,
-        'ws_excused': ws_excused,
-        'ws_absent': ws_absent,
-        'ws_sum': ws_present,
+        'ws_total': total_ws,
+        'ws_sum': ws_sum,
         'ws_rate': ws_rate,
         'level': level,
         'ws_threshold_pct': ws_threshold_pct,
-        'is_competing': is_competing,
-        'status': 'non_compete' if not is_competing else ('at_risk' if at_risk else 'on_track'),
-        'status_label': 'Non-Compete' if not is_competing else ('At Risk' if at_risk else 'On Track'),
         'at_risk': at_risk,
         'risk_reasons': risk_reasons,
     }
@@ -2050,6 +1808,7 @@ class RegisterForm(FlaskForm):
     password = PasswordField('Password', [DataRequired(), Length(min=6)])
     # Admin access is granted only by the canonical roster or an existing admin.
     # Public registration must never allow a visitor to self-select admin.
+    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member')], default='')
     submit = SubmitField('Register')
 
     def validate_role(self, field):
@@ -2061,31 +1820,14 @@ class LoginForm(FlaskForm):
     password = PasswordField('Password', [DataRequired()])
     submit = SubmitField('Login')
 
-class SetPasswordForm(FlaskForm):
-    new_password = PasswordField(
-        'New Password',
-        [DataRequired(), Length(min=8, max=128)],
-    )
+class ChangePasswordForm(FlaskForm):
+    new_password = PasswordField('New Password', [DataRequired(), Length(min=6)])
     confirm_password = PasswordField('Confirm Password', [DataRequired()])
-    submit = SubmitField('Save Password')
-
-    def validate_new_password(self, field):
-        password = field.data or ''
-        if not re.search(r'[A-Z]', password):
-            raise ValidationError('Include at least one uppercase letter.')
-        if not re.search(r'[a-z]', password):
-            raise ValidationError('Include at least one lowercase letter.')
-        if not re.search(r'\d', password):
-            raise ValidationError('Include at least one number.')
+    submit = SubmitField('Set Password')
 
     def validate_confirm_password(self, field):
         if field.data != self.new_password.data:
             raise ValidationError('Passwords do not match.')
-
-
-class ForgotPasswordForm(FlaskForm):
-    email = StringField('Email', [DataRequired(), Length(max=120)])
-    submit = SubmitField('Send Reset Link')
 
 class CommitmentForm(FlaskForm):
     member_name = StringField('Member Name', [DataRequired()])
@@ -2118,35 +1860,6 @@ class WorkshopForm(FlaskForm):
     def validate_officer_id(self, field):
         if not field.data:
             raise ValidationError('Please select an officer.')
-
-
-class MentorPodForm(FlaskForm):
-    pod_number = IntegerField('Pod Number', validators=[DataRequired()])
-    member_id = SelectField('Member', coerce=int, validators=[DataRequired()])
-    mentor_id = SelectField('Mentor', coerce=int, validators=[DataRequired()])
-    experience_level = SelectField(
-        'Level', choices=[('N', 'Novice'), ('E', 'Experienced')]
-    )
-    event = StringField('Event', validators=[DataRequired(), Length(max=20)])
-    is_competing = SelectField(
-        'Competing',
-        choices=[('yes', 'Competing'), ('no', 'Non-Compete')],
-        default='yes',
-    )
-    submit = SubmitField('Save')
-
-
-class MDPWorkbookUploadForm(FlaskForm):
-    """Temporary, admin-only upload form for commitment repairs."""
-    workbook = FileField(
-        'MDP tracking workbook',
-        validators=[
-            FileRequired(message='Please select the MDP tracking workbook.'),
-            FileAllowed(['xlsx'], message='Please upload an .xlsx workbook.'),
-        ],
-    )
-    submit = SubmitField('Import Commitments')
-
 
 # ── Schema migration ──────────────────────────────────────────────────────────
 
@@ -2206,31 +1919,6 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
-    if 'has_officer_access' not in user_cols:
-        try:
-            db.session.execute(sql_text(
-                'ALTER TABLE "user" ADD COLUMN has_officer_access BOOLEAN DEFAULT FALSE'
-            ))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
-
-    if 'is_competing' not in user_cols:
-        try:
-            db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN is_competing BOOLEAN DEFAULT TRUE'))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
-    mentor_pod_cols = {c['name'] for c in db.inspect(db.engine).get_columns('mentor_pod')}
-    if 'event' not in mentor_pod_cols:
-        try:
-            db.session.execute(sql_text('ALTER TABLE mentor_pod ADD COLUMN event VARCHAR(20)'))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
     commitment_cols = {c['name'] for c in db.inspect(db.engine).get_columns('commitment')}
 
     if 'event' not in commitment_cols:
@@ -2239,23 +1927,6 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
-
-    if 'grade' not in commitment_cols:
-        try:
-            db.session.execute(sql_text('ALTER TABLE commitment ADD COLUMN grade VARCHAR(10)'))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
-    # Older friend2 rows were sometimes created without the member user_id.
-    # Normalize ownership from the stable member_name field.
-    for member in User.query.filter_by(role='member').all():
-        for commitment in Commitment.query.filter_by(member_name=member.username).all():
-            commitment.user_id = member.id
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
 
     # Backfill missing creator signups for existing workshops
     for ws in Workshop.query.all():
@@ -2320,11 +1991,32 @@ with app.app_context():
     # Import the exact workbook values after officer reconciliation so members
     # who are also officers (for example Anay Kalchuri) retain their tracking
     # rows. Each workbook byte-version is imported only once.
+    # Migrate: fix existing commitment rows whose required counts don't match current matrix
+    for member in User.query.filter_by(role='member').all():
+        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        level = pod.experience_level if pod else 'N'
+        reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
+        for conf, rule in reqs.items():
+            com = Commitment.query.filter_by(member_name=member.username, event=conf).first()
+            if com:
+                # Only update required counts; adjust remaining proportionally
+                old_req_rp = com.required_roleplay
+                old_req_ex = com.required_exam
+                old_req_wr = com.required_written
+                completed_rp = old_req_rp - com.remaining_roleplay
+                completed_ex = old_req_ex - com.remaining_exam
+                completed_wr = old_req_wr - com.remaining_written
+                com.required_roleplay = rule["roleplay"]
+                com.required_written  = rule["written"]
+                com.required_exam     = rule["exam"]
+                com.remaining_roleplay = max(0, rule["roleplay"] - completed_rp)
+                com.remaining_written  = max(0, rule["written"]  - completed_wr)
+                com.remaining_exam     = max(0, rule["exam"]     - completed_ex)
+                db.session.add(com)
     try:
-        sync_mdp_tracking_workbook()
-    except Exception as exc:
+        db.session.commit()
+    except Exception:
         db.session.rollback()
-        print(f'[MDP Import] skipped: {exc}')
 
     # Give newly added 2026-27 officers demo mentees only when they do not
     # already have real mentor-pod assignments.
@@ -2386,131 +2078,17 @@ def validate_workshop_slot(workshop_time, officer_id, exclude_workshop_id=None):
         return "This officer already has a workshop booked for that date and time slot. Please choose a different time or officer."
     return None
 
-PASSWORD_RESET_SALT = 'password-reset-v2'
-PASSWORD_RESET_MAX_AGE_SECONDS = 3600
-
-
-def _password_fingerprint(user):
-    return hashlib.sha256(user.password.encode('utf-8')).hexdigest()
-
-
-def generate_reset_token(user):
-    serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-    payload = {
-        'user_id': user.id,
-        'password_fingerprint': _password_fingerprint(user),
-    }
-    return serializer.dumps(payload, salt=PASSWORD_RESET_SALT)
-
-
-def verify_reset_token(token, expiration=PASSWORD_RESET_MAX_AGE_SECONDS):
-    serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-    try:
-        payload = serializer.loads(
-            token,
-            salt=PASSWORD_RESET_SALT,
-            max_age=expiration,
-        )
-    except (SignatureExpired, BadSignature, TypeError, ValueError):
-        return None
-
-    if not isinstance(payload, dict):
-        return None
-
-    user_id = payload.get('user_id')
-    expected_fingerprint = payload.get('password_fingerprint')
-    if not user_id or not expected_fingerprint:
-        return None
-
-    try:
-        user_id = int(user_id)
-    except (TypeError, ValueError):
-        return None
-
-    user = db.session.get(User, user_id)
-    if not user:
-        return None
-
-    if not hmac.compare_digest(
-        expected_fingerprint,
-        _password_fingerprint(user),
-    ):
-        return None
-
-    return user
-
-
 def send_email(to_email, subject, html_content):
-    if not BREVO_API_KEY:
-        app.logger.error('Email not sent: BREVO_API_KEY is missing.')
+    if not SENDGRID_API_KEY or not FROM_EMAIL or not to_email:
         return False
-    if not FROM_EMAIL:
-        app.logger.error('Email not sent: FROM_EMAIL is missing.')
-        return False
-    if not to_email:
-        app.logger.error('Email not sent: recipient email is missing.')
-        return False
-
-    payload = {
-        'sender': {'name': FROM_NAME, 'email': FROM_EMAIL},
-        'to': [{'email': to_email}],
-        'subject': subject,
-        'htmlContent': html_content,
-    }
-    headers = {
-        'accept': 'application/json',
-        'api-key': BREVO_API_KEY,
-        'content-type': 'application/json',
-    }
-
     try:
-        response = requests.post(
-            BREVO_EMAIL_ENDPOINT,
-            headers=headers,
-            json=payload,
-            timeout=20,
-        )
-    except requests.RequestException:
-        app.logger.exception(
-            'Brevo request failed while sending email to %s.',
-            to_email,
-        )
-        return False
-
-    if response.status_code == 201:
-        try:
-            message_id = response.json().get('messageId', 'unknown')
-        except ValueError:
-            message_id = 'unknown'
-        app.logger.info(
-            'Brevo accepted email for %s; message id=%s.',
-            to_email,
-            message_id,
-        )
+        message = Mail(from_email=FROM_EMAIL, to_emails=to_email, subject=subject, html_content=html_content)
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
         return True
-
-    app.logger.error(
-        'Brevo rejected email for %s: HTTP %s: %s',
-        to_email,
-        response.status_code,
-        response.text[:1000],
-    )
-    return False
-
-
-def send_password_reset_email(user):
-    if not user.email:
+    except Exception as e:
+        print("SEND_EMAIL error:", e)
         return False
-
-    token = generate_reset_token(user)
-    reset_url = url_for('reset_password', token=token, _external=True)
-    html_content = f'''
-        <p>A password reset was requested for your account.</p>
-        <p><a href="{reset_url}">Reset your password</a></p>
-        <p>This link expires in 1 hour and stops working after the password changes.</p>
-        <p>If you did not request this, you can ignore this email.</p>
-    '''
-    return send_email(user.email, 'Reset your password', html_content)
 
 def send_email_reminder(user, workshop):
     local_time_str = utc_to_local(workshop.time).strftime('%Y-%m-%d %I:%M %p')
@@ -2928,197 +2506,118 @@ def dashboard():
         assigned_workshops = Workshop.query.filter_by(
             officer_id=current_user.id
         ).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
+    ah_ws_data = []      # NEW: AH/WS attendance per member for officer view
+    member_stats = None  # NEW: AH/WS stats for member's own view
+
+    if current_user.role == 'officer':
+        commitments = Commitment.query.filter_by(user_id=current_user.id).order_by(Commitment.deadline).all()
+        assigned_workshops = Workshop.query.filter_by(officer_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
         workshops = assigned_workshops
-        attendance_locked_ids = {
-            row.workshop_id
-            for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()
-        }
+        attendance_locked_ids = {row.workshop_id for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()}
 
-        pod_rows = MentorPod.query.filter_by(mentor_id=current_user.id).all()
-        visible_members = [db.session.get(User, row.member_id) for row in pod_rows]
-        visible_members = [member for member in visible_members if member]
+        # Build member list from pod assignments
+        pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
+        pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
+        pod_member_users = [u for u in pod_member_users if u]
 
-        # Preserve friend2's fallback for officers whose pod rows have not yet
-        # been imported but who already have workshop signups.
-        if not visible_members:
-            member_ids = set()
-            for workshop in assigned_workshops:
-                member_ids.update(member.id for member in workshop.signups)
-            visible_members = [db.session.get(User, user_id) for user_id in member_ids]
-            visible_members = [member for member in visible_members if member]
+        # Fall back to commitment-based member names if no pod assignments
+        if not pod_member_users:
+            member_names = {c.member_name for c in commitments}
+            for ws in assigned_workshops:
+                for member in ws.signups:
+                    member_names.add(member.username)
+            pod_member_users = [User.query.filter_by(username=n).first() for n in sorted(member_names)]
+            pod_member_users = [u for u in pod_member_users if u]
 
-        for member in sorted(visible_members, key=lambda row: row.username.lower()):
-            actual_attended = db.session.query(workshop_signups).filter_by(
-                user_id=member.id,
-                attended=True,
-            ).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
-            general = GeneralAttendance.query.filter_by(
-                officer_id=current_user.id,
-                member_name=member.username,
-            ).first()
-            manual_count = general.manual_count if general else 0
+        # Workshop attendance (existing logic)
+        for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
+            actual_attended = db.session.query(workshop_signups).filter_by(user_id=member.id, attended=True).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
+            ga = GeneralAttendance.query.filter_by(officer_id=current_user.id, member_name=member.username).first()
+            manual_count = ga.manual_count if ga else 0
+            total_attended = actual_attended + manual_count
             workshop_attendance_data.append({
                 'member_name': member.username,
-                'total_attended': actual_attended + manual_count,
+                'total_attended': total_attended,
                 'manual_count': manual_count,
-                'actual_attended': actual_attended,
+                'actual_attended': actual_attended
+            })
+
+        # NEW: AH/WS attendance stats per pod member
+        for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
+            stats = get_attendance_stats(member)
+            pod = MentorPod.query.filter_by(member_id=member.id).first()
+            ah_ws_data.append({
+                'member': member,
+                'pod_number': pod.pod_number if pod else '?',
+                'level': stats['level'],
+                'ah_rate': stats['ah_rate'],
+                'ah_sum': stats['ah_sum'],
+                'ah_total': stats['ah_total'],
+                'ws_rate': stats['ws_rate'],
+                'ws_sum': stats['ws_sum'],
+                'ws_total': stats['ws_total'],
+                'ws_threshold_pct': stats['ws_threshold_pct'],
+                'at_risk': stats['at_risk'],
+                'risk_reasons': stats['risk_reasons'],
             })
 
     else:
-        # Member dashboard.
+        # Use the active conference commitment only
         active_conf = get_active_conference()
         ensure_commitments(current_user)
         commitments = Commitment.query.filter_by(
-            member_name=current_user.username,
-            event=active_conf,
-        ).all()
-        all_commitments = Commitment.query.filter_by(
-            member_name=current_user.username
-        ).order_by(Commitment.deadline).all()
-        workshops = current_user.workshops.options(
-            joinedload(Workshop.officer),
-            joinedload(Workshop.creator),
-        ).order_by(Workshop.time).all()
+            member_name=current_user.username, event=active_conf).all()
+        all_commitments = Commitment.query.filter_by(member_name=current_user.username).order_by(Commitment.deadline).all()
+        workshops = current_user.workshops.options(joinedload(Workshop.officer), joinedload(Workshop.creator)).order_by(Workshop.time).all()
+        created_workshops = []
 
         if commitments:
-            commitment = commitments[0]
+            c = commitments[0]
             progress_summary = {
-                'roleplay': (
-                    'N/A' if commitment.required_roleplay == 0 else
-                    f"{commitment.required_roleplay - commitment.remaining_roleplay}/"
-                    f"{commitment.required_roleplay}"
-                ),
-                'written': (
-                    'N/A' if commitment.required_written == 0 else
-                    f"{commitment.required_written - commitment.remaining_written}/"
-                    f"{commitment.required_written}"
-                ),
-                'exam': (
-                    'N/A' if commitment.required_exam == 0 else
-                    f"{commitment.required_exam - commitment.remaining_exam}/"
-                    f"{commitment.required_exam}"
-                ),
-                'deadline': (
-                    commitment.deadline.strftime('%Y-%m-%d')
-                    if commitment.deadline else 'N/A'
-                ),
-                'event': commitment.event,
+                'roleplay': f"{c.required_roleplay - c.remaining_roleplay}/{c.required_roleplay}",
+                'written': f"{c.required_written - c.remaining_written}/{c.required_written}",
+                'exam': f"{c.required_exam - c.remaining_exam}/{c.required_exam}",
+                'deadline': c.deadline.strftime('%Y-%m-%d') if c.deadline else 'N/A',
+                'event': c.event
             }
 
+        # Workshop attendance summary (kept for AH/WS section)
         pod = MentorPod.query.filter_by(member_id=current_user.id).first()
         officer_id = pod.mentor_id if pod else None
         actual_attended = 0
         manual_count = 0
         if officer_id:
-            actual_attended = db.session.query(workshop_signups).filter_by(
-                user_id=current_user.id,
-                attended=True,
-            ).join(Workshop).filter(Workshop.officer_id == officer_id).count()
-            general = GeneralAttendance.query.filter_by(
-                officer_id=officer_id,
-                member_name=current_user.username,
-            ).first()
-            manual_count = general.manual_count if general else 0
+            actual_attended = db.session.query(workshop_signups).filter_by(user_id=current_user.id, attended=True).join(Workshop).filter(Workshop.officer_id == officer_id).count()
+            ga = GeneralAttendance.query.filter_by(officer_id=officer_id, member_name=current_user.username).first()
+            manual_count = ga.manual_count if ga else 0
         total_attended = actual_attended + manual_count
+        total_signed = len(current_user.workshops.all())
         attendance_summary = {
-            'signed': len(current_user.workshops.all()),
+            'signed': total_signed,
             'attended': total_attended,
-            'rate': round((total_attended / 18) * 100, 1),
+            'rate': round((total_attended / 18 * 100) if 18 > 0 else 0.0, 1)
         }
+
+        # AH/WS stats for member's own dashboard
         member_stats = get_attendance_stats(current_user)
 
-    # Admins see every member; officers see their pod/fallback members.
-    if is_admin_view() or is_officer_view():
-        member_ids = [member.id for member in visible_members]
-        pods_by_member = {}
-        ah_by_user = defaultdict(list)
-        ws_by_user = defaultdict(list)
-        commitments_by_user = defaultdict(list)
+    for ws in workshops:
+        ws.end_time = ws.time + timedelta(minutes=20)
+    for ws in created_workshops:
+        ws.end_time = ws.time + timedelta(minutes=20)
 
-        if member_ids:
-            for pod in MentorPod.query.options(joinedload(MentorPod.mentor)).filter(
-                MentorPod.member_id.in_(member_ids)
-            ).all():
-                pods_by_member.setdefault(pod.member_id, pod)
+    my_signups = current_user.workshops.all() if current_user.role == 'member' else []
+    mentees_workshops = {}
+    if current_user.role == 'officer':
+        mentee_names = {c.member_name for c in commitments}
+        for name in mentee_names:
+            member = User.query.filter_by(username=name).first()
+            mentees_workshops[name] = member.workshops.order_by(Workshop.time).all() if member else []
 
-            for record in AHAttendance.query.filter(
-                AHAttendance.user_id.in_(member_ids)
-            ).all():
-                ah_by_user[record.user_id].append(record)
+    signed_times = [(w.time, w.time + timedelta(minutes=20)) for w in my_signups] if current_user.role == 'member' else []
 
-            for record in WSAttendance.query.filter(
-                WSAttendance.user_id.in_(member_ids)
-            ).all():
-                ws_by_user[record.user_id].append(record)
-
-            for commitment in Commitment.query.filter(
-                Commitment.user_id.in_(member_ids)
-            ).all():
-                commitments_by_user[commitment.user_id].append(commitment)
-
-        for member in sorted(visible_members, key=lambda row: row.username.lower()):
-            pod = pods_by_member.get(member.id)
-            stats = get_attendance_stats(
-                member,
-                ah_records=ah_by_user.get(member.id, []),
-                ws_records=ws_by_user.get(member.id, []),
-                pod=pod,
-                pod_loaded=True,
-            )
-            ah_ws_data.append({
-                'member': member,
-                'pod_number': pod.pod_number if pod else None,
-                'mentor_name': (
-                    pod.mentor.username if pod and pod.mentor else 'Unassigned'
-                ),
-                'event': pod.event if pod and pod.event else 'Unassigned',
-                'level': stats['level'],
-                'ah_rate': stats['ah_rate'],
-                'ah_present': stats['ah_present'],
-                'ah_excused': stats['ah_excused'],
-                'ah_absent': stats['ah_absent'],
-                'ah_sum': stats['ah_sum'],
-                'ah_total': stats['ah_total'],
-                'ws_rate': stats['ws_rate'],
-                'ws_present': stats['ws_present'],
-                'ws_excused': stats['ws_excused'],
-                'ws_absent': stats['ws_absent'],
-                'ws_sum': stats['ws_sum'],
-                'ws_total': stats['ws_total'],
-                'ws_threshold_pct': stats['ws_threshold_pct'],
-                'is_competing': stats['is_competing'],
-                'status': stats['status'],
-                'status_label': stats['status_label'],
-                'at_risk': stats['at_risk'],
-                'risk_reasons': stats['risk_reasons'],
-                'below_commitments': get_commitments_incomplete(
-                    member,
-                    commitments=commitments_by_user.get(member.id, []),
-                ),
-            })
-
-    for workshop in workshops:
-        workshop.end_time = workshop.time + timedelta(minutes=20)
-    for workshop in created_workshops:
-        workshop.end_time = workshop.time + timedelta(minutes=20)
-
-    my_signups = (
-        current_user.workshops.all()
-        if current_user.role == 'member' and not current_user.is_admin
-        else []
-    )
-    signed_times = [
-        (workshop.time, workshop.time + timedelta(minutes=20))
-        for workshop in my_signups
-    ]
-    active_conf = (
-        get_active_conference()
-        if current_user.role == 'member' and not current_user.is_admin
-        else None
-    )
-
-    return render_template(
-        'dashboard.html',
+    active_conf = get_active_conference() if current_user.role == 'member' else None
+    return render_template('dashboard.html',
         commitments=commitments,
         progress_summary=progress_summary,
         attendance_summary=attendance_summary,
@@ -3126,7 +2625,7 @@ def dashboard():
         workshop_attendance_data=workshop_attendance_data,
         workshops=workshops,
         my_signups=my_signups,
-        mentees_workshops={},
+        mentees_workshops=mentees_workshops,
         signed_times=signed_times,
         user=current_user,
         created_workshops=created_workshops,
@@ -3134,12 +2633,8 @@ def dashboard():
         ah_ws_data=ah_ws_data,
         member_stats=member_stats,
         active_conf=active_conf,
-        all_commitments=all_commitments,
+        all_commitments=all_commitments if current_user.role == 'member' else [],
         conference_order=CONFERENCE_ORDER,
-        dashboard_scope_label=dashboard_scope_label,
-        # Officers already see only their pod, so hide member/pod filters for
-        # them. Admins retain filtering across all members.
-        show_member_filters=is_admin_view(),
     )
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -3161,6 +2656,7 @@ def register():
             has_officer_access=False,
             is_competing=True
         )
+        user = User(username=form.username.data.strip(), password=hashed_pw, role=form.role.data)
         db.session.add(user)
         db.session.commit()
         flash('Registration successful. Please sign in.', 'success')
@@ -3176,7 +2672,6 @@ def login():
         user = User.query.filter_by(username=form.username.data.strip()).first()
         if user and check_password_hash(user.password, form.password.data):
             login_user(user)
-            session.pop(VIEW_MODE_SESSION_KEY, None)
             if user.must_change_password:
                 return redirect(url_for('change_password'))
             # Auto-create commitment rows for members on login
@@ -3189,101 +2684,26 @@ def login():
 @app.route('/change-password', methods=['GET', 'POST'])
 @login_required
 def change_password():
-    form = SetPasswordForm()
+    form = ChangePasswordForm()
     if form.validate_on_submit():
         current_user.password = generate_password_hash(form.new_password.data)
         current_user.must_change_password = False
         db.session.commit()
-        flash('Your password has been updated.', 'success')
+        flash('Password updated successfully. Welcome!', 'success')
         return redirect(url_for('dashboard'))
-    return render_template(
-        'set_password.html',
-        form=form,
-        page_title='Change Password',
-        page_description='Choose a new password for your account.',
-        submit_label='Change Password',
-        show_login_link=False,
-    )
-
-
-@app.route('/forgot-password', methods=['GET', 'POST'])
-def forgot_password():
-    if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
-
-    form = ForgotPasswordForm()
-    if form.validate_on_submit():
-        email = form.email.data.strip().lower()
-        user = User.query.filter(db.func.lower(User.email) == email).first()
-
-        # Deliberately use the same response whether or not an account exists.
-        if user and not send_password_reset_email(user):
-            app.logger.error('Reset email failed for user id %s.', user.id)
-
-        flash(
-            'If an account matches that email, a reset link has been sent.',
-            'info',
-        )
-        return redirect(url_for('forgot_password'))
-
-    return render_template('forgot_password.html', form=form)
-
-
-@app.route('/reset-password/<token>', methods=['GET', 'POST'])
-def reset_password(token):
-    user = verify_reset_token(token)
-    if not user:
-        flash('This password reset link is invalid or has expired.', 'danger')
-        return redirect(url_for('forgot_password'))
-
-    form = SetPasswordForm()
-    if form.validate_on_submit():
-        user.password = generate_password_hash(form.new_password.data)
-        user.must_change_password = False
-        db.session.commit()
-
-        if current_user.is_authenticated:
-            logout_user()
-
-        flash('Your password has been reset. You can now sign in.', 'success')
-        return redirect(url_for('login'))
-
-    return render_template(
-        'set_password.html',
-        form=form,
-        page_title='Reset Password',
-        page_description=f'Choose a new password for {user.username}.',
-        submit_label='Reset Password',
-        show_login_link=True,
-    )
-
+    return render_template('change_password.html', form=form)
 
 @app.route('/logout')
 @login_required
 def logout():
-    session.pop(VIEW_MODE_SESSION_KEY, None)
     logout_user()
     return redirect(url_for('login'))
-
-
-@app.route('/switch-view/<mode>', methods=['POST'])
-@login_required
-def switch_account_view(mode):
-    """Switch a dual-access account between isolated admin/officer scopes."""
-    if not can_switch_account_view():
-        flash('This account does not have both admin and officer access.', 'danger')
-        return redirect(url_for('dashboard'))
-    if mode not in {'admin', 'officer'}:
-        abort(400)
-    session[VIEW_MODE_SESSION_KEY] = mode
-    flash(f'Switched to {mode.title()} View.', 'success')
-    return redirect(url_for('dashboard'))
 
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
-    if current_user.role != 'member' and not current_user.is_admin:
-        flash('Only members and admins can access settings.', 'danger')
+    if current_user.role != 'member':
+        flash('Only members can access settings.', 'danger')
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
         current_user.email = request.form.get('email', '').strip() or None
@@ -3432,7 +2852,7 @@ def cancel_signup(workshop_id):
 @app.route('/workshop/<int:workshop_id>/attendance', methods=['GET', 'POST'])
 @login_required
 def workshop_attendance(workshop_id):
-    if not is_officer_view():
+    if current_user.role != 'officer':
         flash('Only officers can take attendance.', 'danger')
         return redirect(url_for('dashboard'))
     workshop = Workshop.query.options(joinedload(Workshop.officer)).get_or_404(workshop_id)
@@ -3475,7 +2895,7 @@ def workshop_attendance(workshop_id):
 @app.route('/increment_general_attendance', methods=['POST'])
 @login_required
 def increment_general_attendance():
-    if not is_officer_view():
+    if current_user.role != 'officer':
         flash('Only officers can update attendance.', 'danger')
         return redirect(url_for('dashboard'))
     member_name_raw = request.form.get('member_name', '').strip()
@@ -3497,19 +2917,22 @@ def increment_general_attendance():
 
 @app.route('/my_commitments')
 @login_required
-def my_commitments():
-    if current_user.is_admin or current_user.role != 'member':
+def member_commitments():
+    if current_user.role != 'member':
         return redirect(url_for('dashboard'))
     ensure_commitments(current_user)
     active_conf = get_active_conference()
     all_commitments = Commitment.query.filter_by(member_name=current_user.username).all()
     all_commitments_map = {com.event: com for com in all_commitments}
     icprep_status = get_icprep_status(current_user)
-    return render_template('my_commitments.html',
+    icprep_events = ICPrepEvent.query.filter_by(member_id=current_user.id).order_by(
+        ICPrepEvent.received_at.desc()).limit(50).all()
+    return render_template('member_commitments.html',
         all_commitments_map=all_commitments_map,
         conference_order=CONFERENCE_ORDER,
         active_conf=active_conf,
         icprep_status=icprep_status,
+        icprep_events=icprep_events,
     )
 
 
@@ -3519,10 +2942,7 @@ def my_commitments():
 @login_required
 def practice_sessions():
     """Officer: post and manage practice slots. Member: view and sign up."""
-    if is_admin_view():
-        flash('Practice Sessions are available to officers and members, not admins.', 'info')
-        return redirect(url_for('dashboard'))
-    if is_officer_view():
+    if current_user.role == 'officer':
         # POST: create a new practice session slot
         if request.method == 'POST':
             action = request.form.get('action')
@@ -3625,11 +3045,12 @@ def practice_session_cancel(session_id):
     return redirect(url_for('practice_sessions'))
 
 
+
 @app.route('/log_commitment/<int:session_id>', methods=['POST'])
 @login_required
 def log_commitment(session_id):
-    """Compatibility action: mark a signed-up practice slot complete in one click."""
-    if not is_officer_view():
+    """Officer checks off a commitment directly from the session slot — no form."""
+    if current_user.role != 'officer':
         flash('Only officers can log commitments.', 'danger')
         return redirect(url_for('practice_sessions'))
 
@@ -3645,214 +3066,12 @@ def log_commitment(session_id):
         return redirect(request.referrer or url_for('practice_sessions'))
 
     member = ps.member
-    ensure_commitments(member)
+    conference = ps.conference
+    practice_type = ps.practice_type
+
+    # Decrement conference commitment
     commitment = Commitment.query.filter_by(
-        member_name=member.username,
-        event=ps.conference,
-    ).first()
-    if commitment:
-        if ps.practice_type in ROLEPLAY_TYPES and commitment.remaining_roleplay > 0:
-            commitment.remaining_roleplay -= 1
-        elif ps.practice_type in WRITTEN_TYPES and commitment.remaining_written > 0:
-            commitment.remaining_written -= 1
-        elif ps.practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
-            commitment.remaining_exam -= 1
-
-    if ps.practice_type in ICPREP_TYPES:
-        tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
-        if tracker:
-            if ps.practice_type == 'ICPrep Roleplay':
-                tracker.icprep_rp_completed += 1
-            elif ps.practice_type == 'ICPrep Exam':
-                tracker.icprep_exam_completed += 1
-
-    db.session.add(PracticeLog(
-        practice_session_id=ps.id,
-        officer_id=current_user.id,
-        member_id=member.id,
-        commitment_id=commitment.id if commitment else None,
-        practice_type=ps.practice_type,
-        conference=ps.conference,
-        session_date=ps.session_date,
-    ))
-    ps.log_submitted = True
-
-    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-    db.session.commit()
-
-    email_body = (
-        f'<p><strong>{ps.practice_type}</strong> marked complete for '
-        f'<strong>{ps.conference}</strong> on {timestamp}.</p>'
-        f'<p>Member: {member.username}</p>'
-        f'<p>Logged by: {current_user.username}</p>'
-    )
-    send_email(
-        PRACTICE_LOG_EMAIL,
-        f'[DECA] Commitment logged: {member.username} – '
-        f'{ps.practice_type} ({ps.conference})',
-        email_body,
-    )
-    if member.email:
-        send_email(
-            member.email,
-            f'[DECA] Your {ps.practice_type} for {ps.conference} was completed',
-            email_body,
-        )
-
-    flash(
-        f'Marked {ps.practice_type} complete for {member.username} '
-        f'({ps.conference}).',
-        'success',
-    )
-    return redirect(request.referrer or url_for('practice_sessions'))
-
-
-@app.route('/practice_log/submit', methods=['GET', 'POST'])
-@login_required
-def submit_practice_log():
-    """Officer submits a completion form after a practice session."""
-    if not is_officer_view():
-        flash('Only officers can submit practice logs.', 'danger')
-        return redirect(url_for('dashboard'))
-
-    pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
-    pod_member_users = sorted(
-        [db.session.get(User, pm.member_id) for pm in pod_members if db.session.get(User, pm.member_id)],
-        key=lambda u: u.username.lower()
-    )
-
-    if request.method == 'POST':
-        member_username = request.form.get('member_username', '').strip()
-        practice_type = request.form.get('practice_type', '')
-        conference = request.form.get('conference', '')
-        session_date_str = request.form.get('session_date', '')
-        score_str = request.form.get('score', '').strip()
-        officer_notes = request.form.get('officer_notes', '').strip()
-        feedback = request.form.get('feedback', '').strip()
-
-        member = User.query.filter_by(username=member_username).first()
-        if not member:
-            flash('Member not found.', 'danger')
-            return redirect(url_for('submit_practice_log'))
-
-        try:
-            session_date = datetime.strptime(session_date_str, '%Y-%m-%d').date()
-        except ValueError:
-            flash('Invalid date.', 'danger')
-            return redirect(url_for('submit_practice_log'))
-
-        score = float(score_str) if score_str else None
-
-        # Find matching commitment and decrement based on type bucket
-        commitment = Commitment.query.filter_by(
-            member_name=member.username, event=conference).first()
-        if commitment:
-            if practice_type in ROLEPLAY_TYPES and commitment.remaining_roleplay > 0:
-                commitment.remaining_roleplay -= 1
-            elif practice_type in WRITTEN_TYPES and commitment.remaining_written > 0:
-                commitment.remaining_written -= 1
-            elif practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
-                commitment.remaining_exam -= 1
-            db.session.add(commitment)
-
-        # If ICPrep type, also increment annual ICPrep tracker
-        if practice_type in ICPREP_TYPES:
-            ensure_commitments(member)  # guarantees tracker exists
-            tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
-            if tracker:
-                if practice_type == 'ICPrep Roleplay':
-                    tracker.icprep_rp_completed += 1
-                elif practice_type == 'ICPrep Exam':
-                    tracker.icprep_exam_completed += 1
-                db.session.add(tracker)
-
-        # Create log record
-        log = PracticeLog(
-            officer_id=current_user.id,
-            member_id=member.id,
-            commitment_id=commitment.id if commitment else None,
-            practice_type=practice_type,
-            conference=conference,
-            session_date=session_date,
-            score=score,
-            officer_notes=officer_notes or None,
-            feedback=feedback or None,
-        )
-        db.session.add(log)
-
-        # Mark the linked practice session as logged if submitted from calendar
-        session_id = request.form.get('practice_session_id')
-        if session_id:
-            ps = db.session.get(PracticeSession, int(session_id))
-            if ps and ps.officer_id == current_user.id:
-                ps.log_submitted = True
-                db.session.add(ps)
-
-        db.session.commit()
-
-        # Send email notification
-        type_label = practice_type
-        score_line = f"Score: {score}" if score is not None else "Score: N/A"
-        email_body = f"""
-<h3>Practice Log Submitted</h3>
-<p><strong>Officer:</strong> {current_user.username}</p>
-<p><strong>Member:</strong> {member.username}</p>
-<p><strong>Type:</strong> {type_label}</p>
-<p><strong>Conference:</strong> {conference}</p>
-<p><strong>Date:</strong> {session_date.strftime('%Y-%m-%d')}</p>
-<p><strong>{score_line}</strong></p>
-<p><strong>Officer Notes:</strong> {officer_notes or '—'}</p>
-<p><strong>Feedback:</strong> {feedback or '—'}</p>
-"""
-        send_email(PRACTICE_LOG_EMAIL, f"[DECA] Practice Log: {member.username} – {type_label} ({conference})", email_body)
-
-        flash(f'Practice log submitted for {member.username}.', 'success')
-        return redirect(url_for('practice_sessions'))
-
-    # GET: show the form
-    prefill_member = request.args.get('member', '')
-    prefill_type = request.args.get('type', '')
-    prefill_conf = request.args.get('conf', get_active_conference())
-    prefill_session_id = request.args.get('session_id', '')
-    return render_template('practice_log_form.html',
-        pod_member_users=pod_member_users,
-        activity_types=ACTIVITY_TYPES,
-        conference_order=CONFERENCE_ORDER,
-        prefill_member=prefill_member,
-        prefill_type=prefill_type,
-        prefill_conf=prefill_conf,
-        prefill_session_id=prefill_session_id,
-    )
-
-
-@app.route('/mark_complete', methods=['POST'])
-@login_required
-def mark_complete():
-    """Compatibility action for the Reports page's open member selector."""
-    if not is_officer_view():
-        flash('Only officers can mark commitments complete.', 'danger')
-        return redirect(url_for('dashboard'))
-
-    member_id = request.form.get('member_id', '').strip()
-    practice_type = request.form.get('practice_type', '').strip()
-    conference = request.form.get('conference', get_active_conference()).strip()
-
-    member = db.session.get(User, int(member_id)) if member_id.isdigit() else None
-    if not member or member.role != 'member':
-        flash('Member not found.', 'danger')
-        return redirect(url_for('reports', tab='commitment'))
-    if practice_type not in set(ACTIVITY_TYPES):
-        flash('Invalid practice type.', 'danger')
-        return redirect(url_for('reports', tab='commitment'))
-    if conference not in CONFERENCE_ORDER:
-        flash('Invalid conference.', 'danger')
-        return redirect(url_for('reports', tab='commitment'))
-
-    ensure_commitments(member)
-    commitment = Commitment.query.filter_by(
-        member_name=member.username,
-        event=conference,
-    ).first()
+        member_name=member.username, event=conference).first()
     if commitment:
         if practice_type in ROLEPLAY_TYPES and commitment.remaining_roleplay > 0:
             commitment.remaining_roleplay -= 1
@@ -3860,57 +3079,150 @@ def mark_complete():
             commitment.remaining_written -= 1
         elif practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
             commitment.remaining_exam -= 1
+        db.session.add(commitment)
 
+    # If ICPrep type, increment annual tracker
     if practice_type in ICPREP_TYPES:
+        ensure_commitments(member)
         tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
         if tracker:
             if practice_type == 'ICPrep Roleplay':
                 tracker.icprep_rp_completed += 1
             elif practice_type == 'ICPrep Exam':
                 tracker.icprep_exam_completed += 1
+            db.session.add(tracker)
 
-    db.session.add(PracticeLog(
+    # Create a minimal log record for audit trail
+    log = PracticeLog(
+        practice_session_id=ps.id,
         officer_id=current_user.id,
         member_id=member.id,
         commitment_id=commitment.id if commitment else None,
         practice_type=practice_type,
         conference=conference,
-        session_date=datetime.now(LOCAL_TZ).date(),
-    ))
+        session_date=ps.session_date,
+    )
+    db.session.add(log)
 
-    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    ps.log_submitted = True
+    db.session.add(ps)
+
+    # Notifications
+    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    create_notification(member.id,
+        f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
+    mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
+    if mentor_pod and mentor_pod.mentor_id != current_user.id:
+        create_notification(mentor_pod.mentor_id,
+            f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+
     db.session.commit()
 
-    email_body = (
-        f'<p><strong>{practice_type}</strong> marked complete for '
-        f'<strong>{conference}</strong> on {timestamp}.</p>'
-        f'<p>Member: {member.username}</p>'
-        f'<p>Logged by: {current_user.username}</p>'
-    )
-    send_email(
-        PRACTICE_LOG_EMAIL,
-        f'[DECA] Commitment logged: {member.username} – '
-        f'{practice_type} ({conference})',
-        email_body,
-    )
+    # Emails
+    email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
+                  f'<strong>{conference}</strong> on {timestamp}.</p>'
+                  f'<p>Logged by: {current_user.username}</p>')
+    if current_user.email:
+        send_email(current_user.email,
+            f'[DECA] Commitment logged: {member.username} – {practice_type} ({conference})',
+            email_body)
     if member.email:
-        send_email(
-            member.email,
-            f'[DECA] Your {practice_type} for {conference} was completed',
-            email_body,
-        )
+        send_email(member.email,
+            f'[DECA] Your {practice_type} for {conference} has been marked complete',
+            email_body)
 
-    flash(
-        f'Marked {practice_type} complete for {member.username} ({conference}).',
-        'success',
+    flash(f'Marked {practice_type} complete for {member.username} ({conference}).', 'success')
+    return redirect(request.referrer or url_for('practice_sessions'))
+
+
+@app.route('/mark_complete', methods=['POST'])
+@login_required
+def mark_complete():
+    """Officer marks a commitment complete for any member (open accessibility)."""
+    if current_user.role != 'officer':
+        flash('Only officers can mark commitments complete.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    member_id = request.form.get('member_id', '').strip()
+    practice_type = request.form.get('practice_type', '').strip()
+    conference = request.form.get('conference', get_active_conference())
+
+    member = db.session.get(User, int(member_id)) if member_id.isdigit() else None
+    if not member or member.role != 'member':
+        flash('Member not found.', 'danger')
+        return redirect(url_for('reports', tab='commitment'))
+
+    commitment = Commitment.query.filter_by(
+        member_name=member.username, event=conference).first()
+    if commitment:
+        if practice_type in ROLEPLAY_TYPES and commitment.remaining_roleplay > 0:
+            commitment.remaining_roleplay -= 1
+        elif practice_type in WRITTEN_TYPES and commitment.remaining_written > 0:
+            commitment.remaining_written -= 1
+        elif practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
+            commitment.remaining_exam -= 1
+        db.session.add(commitment)
+
+    if practice_type in ICPREP_TYPES:
+        ensure_commitments(member)
+        tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
+        if tracker:
+            if practice_type == 'ICPrep Roleplay':
+                tracker.icprep_rp_completed += 1
+            elif practice_type == 'ICPrep Exam':
+                tracker.icprep_exam_completed += 1
+            db.session.add(tracker)
+
+    log = PracticeLog(
+        officer_id=current_user.id,
+        member_id=member.id,
+        commitment_id=commitment.id if commitment else None,
+        practice_type=practice_type,
+        conference=conference,
+        session_date=datetime.utcnow().date(),
     )
+    db.session.add(log)
+
+    # Notifications
+    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    create_notification(member.id,
+        f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
+    mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
+    if mentor_pod and mentor_pod.mentor_id != current_user.id:
+        create_notification(mentor_pod.mentor_id,
+            f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+
+    db.session.commit()
+
+    # Emails
+    email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
+                  f'<strong>{conference}</strong> on {timestamp}.</p>'
+                  f'<p>Logged by: {current_user.username}</p>')
+    if current_user.email:
+        send_email(current_user.email,
+            f'[DECA] Commitment logged: {member.username} – {practice_type} ({conference})',
+            email_body)
+    if member.email:
+        send_email(member.email,
+            f'[DECA] Your {practice_type} for {conference} has been marked complete',
+            email_body)
+
+    flash(f'Marked {practice_type} complete for {member.username} ({conference}).', 'success')
     return redirect(url_for('reports', tab='commitment'))
+
+
+@app.route('/notifications/mark_read', methods=['POST'])
+@login_required
+def mark_notifications_read():
+    Notification.query.filter_by(user_id=current_user.id, read=False).update({'read': True})
+    db.session.commit()
+    return ('', 204)
 
 
 @app.route('/reports')
 @login_required
 def reports():
-    if not is_officer_view():
+    if current_user.role != 'officer':
         flash('Only officers can view reports.', 'danger')
         return redirect(url_for('dashboard'))
     active_tab = request.args.get('tab', 'commitment')
@@ -3969,6 +3281,9 @@ def reports():
             'risk_reasons': stats['risk_reasons'],
         })
 
+    # All members for the open-access mark complete subtab
+    all_members = User.query.filter_by(role='member').order_by(User.username).all()
+
     return render_template('reports.html',
         active_tab=active_tab,
         commitment_data=commitment_data,
@@ -3976,87 +3291,141 @@ def reports():
         active_conf=active_conf,
         calendar_groups=calendar_groups,
         ah_ws_data=ah_ws_data,
-        all_members=User.query.filter_by(role='member').order_by(User.username).all(),
+        all_members=all_members,
         activity_types=ACTIVITY_TYPES,
     )
 
 
 # ── ICPrep Webhook ───────────────────────────────────────────────────────────
 
-@app.route('/webhook/icprep', methods=['POST'])
-def icprep_webhook():
-    """Placeholder webhook endpoint for ICPrep completions.
-    Expected payload (TBD with ICPrep):
-      { "member_username": "...", "activity_type": "ICPrep Roleplay"|"ICPrep Exam",
-        "conference": "VCMC"|"SVCDC"|"SCDC", "score": 0.0, "secret": "..." }
-    """
-    import json as _json
-    ICPREP_WEBHOOK_SECRET = os.getenv('ICPREP_WEBHOOK_SECRET', 'changeme')
-    raw = request.get_data(as_text=True)
-    log = ICPrepWebhookLog(payload=raw)
+# Signing secret provided by ICPrep
+ICPREP_SIGNING_SECRET = '65ea1df4c1d98aea348f4890c612042584dbe40a544904ddfc147719e1fa9cea'
 
+
+def _verify_icprep_signature(raw_body: bytes, sig_header: str) -> bool:
+    """Verify X-ICprep-Signature: t=<timestamp>,v1=<hex>"""
+    import hmac, hashlib
+    try:
+        parts = dict(p.split('=', 1) for p in sig_header.split(','))
+        t = parts.get('t', '')
+        v1 = parts.get('v1', '')
+        signed_payload = f'{t}.'.encode() + raw_body
+        expected = hmac.new(
+            ICPREP_SIGNING_SECRET.encode(),
+            signed_payload,
+            hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected, v1)
+    except Exception:
+        return False
+
+
+@app.route('/api/icprep-webhook', methods=['POST'])
+def api_icprep_webhook():
+    """Real ICPrep webhook endpoint with HMAC-SHA256 signature verification."""
+    raw_body = request.get_data()
+
+    # 1. Verify signature
+    sig_header = request.headers.get('X-ICprep-Signature', '')
+    if not sig_header or not _verify_icprep_signature(raw_body, sig_header):
+        return {'error': 'Unauthorized'}, 401
+
+    delivery_id = request.headers.get('X-ICprep-Delivery-Id', '')
+    event_type  = request.headers.get('X-ICprep-Event', '')
+
+    # 2. Deduplicate by delivery_id
+    if delivery_id and ICPrepEvent.query.filter_by(delivery_id=delivery_id).first():
+        return {'ok': True, 'duplicate': True}, 200
+
+    # 3. Parse payload (all fields nullable)
     try:
         data = request.get_json(force=True) or {}
-        # Verify shared secret
-        if data.get('secret') != ICPREP_WEBHOOK_SECRET:
-            log.error = 'Invalid secret'
-            db.session.add(log)
-            db.session.commit()
-            return {'error': 'Unauthorized'}, 401
+    except Exception:
+        data = {}
 
-        member_username = data.get('member_username', '').strip()
-        activity_type = data.get('activity_type', '')
-        conference = data.get('conference', '')
+    student_email     = (data.get('student_email') or '').strip().lower() or None
+    student_full_name = data.get('student_full_name') or None
+    event_field       = data.get('event') or None
+    event_code        = data.get('event_code') or None
+    event_name        = data.get('event_name') or None
+    score             = data.get('score')
+    max_score         = data.get('max_score')
+    date_field        = data.get('date') or None
 
-        member = User.query.filter_by(username=member_username, role='member').first()
-        if not member:
-            log.error = f'Member not found: {member_username}'
-            db.session.add(log)
-            db.session.commit()
-            return {'error': 'Member not found'}, 404
+    score     = float(score)     if score     is not None else None
+    max_score = float(max_score) if max_score is not None else None
 
-        log.member_id = member.id
-        log.activity_type = activity_type
+    # 4. Match to a User by email
+    member = None
+    if student_email:
+        member = User.query.filter(
+            db.func.lower(User.email) == student_email,
+            User.role == 'member'
+        ).first()
 
-        if activity_type not in ICPREP_TYPES:
-            log.error = f'Unknown activity_type: {activity_type}'
-            db.session.add(log)
-            db.session.commit()
-            return {'error': 'Unknown activity_type'}, 400
+    evt = ICPrepEvent(
+        delivery_id=delivery_id or f'no-id-{datetime.utcnow().timestamp()}',
+        event_type=event_type or None,
+        student_full_name=student_full_name,
+        student_email=student_email,
+        event=event_field,
+        event_code=event_code,
+        event_name=event_name,
+        score=score,
+        max_score=max_score,
+        date=date_field,
+        raw_payload=raw_body.decode('utf-8', errors='replace'),
+        member_id=member.id if member else None,
+        matched=bool(member),
+    )
+    db.session.add(evt)
 
-        # Decrement conference commitment
+    # 5. Update ICPrep tracker if matched and event is exam or roleplay
+    if member:
         ensure_commitments(member)
-        commitment = Commitment.query.filter_by(
-            member_name=member.username, event=conference).first()
-        if commitment:
-            if activity_type == 'ICPrep Roleplay' and commitment.remaining_roleplay > 0:
-                commitment.remaining_roleplay -= 1
-            elif activity_type == 'ICPrep Exam' and commitment.remaining_exam > 0:
-                commitment.remaining_exam -= 1
-            db.session.add(commitment)
+        practice_type = None
+        if event_type in ('exam', 'exam_corrections'):
+            practice_type = 'ICPrep Exam'
+        elif event_type == 'commitment':
+            practice_type = 'ICPrep Roleplay'
 
-        # Increment annual ICPrep tracker
-        tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
-        if tracker:
-            if activity_type == 'ICPrep Roleplay':
-                tracker.icprep_rp_completed += 1
-            elif activity_type == 'ICPrep Exam':
-                tracker.icprep_exam_completed += 1
-            db.session.add(tracker)
+        if practice_type:
+            active_conf = get_active_conference()
+            commitment = Commitment.query.filter_by(
+                member_name=member.username, event=active_conf).first()
+            if commitment:
+                if practice_type == 'ICPrep Roleplay' and commitment.remaining_roleplay > 0:
+                    commitment.remaining_roleplay -= 1
+                elif practice_type == 'ICPrep Exam' and commitment.remaining_exam > 0:
+                    commitment.remaining_exam -= 1
+                db.session.add(commitment)
 
-        log.processed = True
-        db.session.add(log)
+            tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
+            if tracker:
+                if practice_type == 'ICPrep Roleplay':
+                    tracker.icprep_rp_completed += 1
+                elif practice_type == 'ICPrep Exam':
+                    tracker.icprep_exam_completed += 1
+                db.session.add(tracker)
+
+        create_notification(member.id,
+            f'ICPrep recorded: {event_name or event_type or "activity"}'
+            + (f' — score {score}/{max_score}' if score is not None else ''))
+
+    try:
         db.session.commit()
-        return {'status': 'ok', 'member': member_username, 'type': activity_type}, 200
-
     except Exception as e:
-        log.error = str(e)
-        db.session.add(log)
-        try:
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-        return {'error': 'Internal error'}, 500
+        db.session.rollback()
+        return {'error': 'DB error', 'detail': str(e)}, 500
+
+    return {'ok': True}, 200
+
+
+# Keep old route as alias so existing integrations don't break
+@app.route('/webhook/icprep', methods=['POST'])
+def icprep_webhook():
+    return api_icprep_webhook()
+
 
 
 # ── Exam Upload routes ────────────────────────────────────────────────────────
@@ -4078,9 +3447,6 @@ def get_cloudinary():
 @login_required
 def exam_uploads():
     """Member: upload paper exam. Officer: view and review pod uploads."""
-    if is_admin_view():
-        flash('Switch to Officer View to access exam uploads.', 'info')
-        return redirect(url_for('dashboard'))
     if current_user.role == 'member':
         if request.method == 'POST':
             file = request.files.get('exam_file')
@@ -4166,7 +3532,7 @@ def exam_uploads():
 @login_required
 def review_exam_upload(upload_id):
     """Officer marks an exam upload as reviewed and optionally credits it."""
-    if not is_officer_view():
+    if current_user.role != 'officer':
         flash('Only officers can review exam uploads.', 'danger')
         return redirect(url_for('exam_uploads'))
     upload = ExamUpload.query.get_or_404(upload_id)
@@ -4194,103 +3560,6 @@ def review_exam_upload(upload_id):
     return redirect(url_for('exam_uploads'))
 
 
-
-
-@app.route('/at-risk-report')
-@login_required
-def at_risk_report():
-    if not is_admin_view():
-        flash('Only admins can view the Overall Risk Report.', 'danger')
-        return redirect(url_for('dashboard'))
-    # The dashboard's existing At-Risk Report link now exports a spreadsheet.
-    # Add ?view=1 only when the legacy on-screen HTML report is needed.
-    if request.args.get('view') != '1':
-        return redirect(url_for('export_at_risk_report'))
-    members = _members_visible_to_current_user()
-    event_items, event_deadlines = get_written_checklist_catalog()
-    today = datetime.now(LOCAL_TZ).date()
-    all_rows = build_mentee_risk_report(
-        members, event_items, event_deadlines, today=today
-    )
-    report_rows = [
-        row for row in all_rows
-        if row['status'] in {'at_risk', 'needs_attention'}
-    ]
-    report_rows.sort(key=lambda row: (
-        0 if row['status'] == 'at_risk' else 1,
-        row['mentor_name'].lower(),
-        row['member'].username.lower(),
-    ))
-    summary = {
-        'total_members': len(all_rows),
-        'at_risk_count': sum(row['status'] == 'at_risk' for row in all_rows),
-        'needs_attention_count': sum(row['status'] == 'needs_attention' for row in all_rows),
-        'on_track_count': sum(row['status'] == 'on_track' for row in all_rows),
-        'non_compete_count': sum(row['status'] == 'non_compete' for row in all_rows),
-        'actionable_count': len(report_rows),
-    }
-    return render_template(
-        'at_risk_report.html', rows=report_rows, summary=summary, report_date=today
-    )
-
-
-@app.route('/at-risk-report/export')
-@login_required
-def export_at_risk_report():
-    """Export the admin at-risk report as a Google Sheets-compatible CSV."""
-    if not is_admin_view():
-        flash('Only admins can export the Overall Risk Report.', 'danger')
-        return redirect(url_for('dashboard'))
-
-    event_items, event_deadlines = get_written_checklist_catalog()
-    today = datetime.now(LOCAL_TZ).date()
-    rows = build_mentee_risk_report(
-        _members_visible_to_current_user(), event_items, event_deadlines, today=today
-    )
-    rows = [
-        row for row in rows
-        if row['status'] in {'at_risk', 'needs_attention'}
-    ]
-    rows.sort(key=lambda row: (
-        0 if row['status'] == 'at_risk' else 1,
-        row['mentor_name'].lower(),
-        row['member'].username.lower(),
-    ))
-
-    output = io.StringIO(newline='')
-    writer = csv.writer(output)
-    writer.writerow([
-        'Member', 'Officer', 'Event', 'Experience', 'Status',
-        'AH Attendance', 'WS Attendance', 'VCMC Grade', 'SVCDC Grade',
-        'SCDC Grade', 'At-Risk Reasons', 'Needs-Attention Reasons',
-    ])
-    for row in rows:
-        writer.writerow([
-            row['member'].username,
-            row['mentor_name'],
-            row['event'],
-            'Novice' if row['level'] == 'N' else 'Experienced',
-            row['status_label'],
-            f"{row['attendance']['ah_rate']}%",
-            f"{row['attendance']['ws_rate']}%",
-            row['grades'].get('VCMC') or '',
-            row['grades'].get('SVCDC') or '',
-            row['grades'].get('SCDC') or '',
-            '; '.join(row['hard_risk_reasons']),
-            '; '.join(row['attention_reasons']),
-        ])
-
-    # The UTF-8 BOM keeps names clean when imported into Google Sheets.
-    csv_text = '\ufeff' + output.getvalue()
-    filename = f"deca-at-risk-report-{today.isoformat()}.csv"
-    return Response(
-        csv_text,
-        mimetype='text/csv; charset=utf-8',
-        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
-    )
-
-
-
 # ── Admin routes ─────────────────────────────────────────────────────────────
 
 def admin_required(f):
@@ -4298,140 +3567,11 @@ def admin_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_authenticated or not is_admin_view():
+        if not current_user.is_authenticated or not current_user.is_admin:
             flash('Admin access required.', 'danger')
             return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
     return decorated
-
-
-def _delete_user_account_and_dependencies(user):
-    """Delete one account after removing every database reference to it."""
-    user_id = user.id
-    username = (user.username or '').strip()
-
-    # Remove sessions owned by this user; preserve another officer's session by
-    # clearing only the deleted member's signup.
-    owned_session_ids = [
-        row[0]
-        for row in db.session.query(PracticeSession.id).filter_by(
-            officer_id=user_id
-        ).all()
-    ]
-    practice_log_filter = (
-        (PracticeLog.member_id == user_id)
-        | (PracticeLog.officer_id == user_id)
-    )
-    if owned_session_ids:
-        practice_log_filter = practice_log_filter | (
-            PracticeLog.practice_session_id.in_(owned_session_ids)
-        )
-    PracticeLog.query.filter(practice_log_filter).delete(
-        synchronize_session=False
-    )
-    if owned_session_ids:
-        PracticeSession.query.filter(
-            PracticeSession.id.in_(owned_session_ids)
-        ).delete(synchronize_session=False)
-    PracticeSession.query.filter_by(member_id=user_id).update(
-        {'member_id': None}, synchronize_session=False
-    )
-
-    # Remove uploads owned by this member and retain other uploads by clearing
-    # the deleted reviewer's optional reference.
-    ExamUpload.query.filter_by(member_id=user_id).delete(
-        synchronize_session=False
-    )
-    ExamUpload.query.filter_by(reviewer_id=user_id).update(
-        {'reviewer_id': None}, synchronize_session=False
-    )
-    ICPrepWebhookLog.query.filter_by(member_id=user_id).delete(
-        synchronize_session=False
-    )
-
-    # Delete hosted workshops and their dependent rows. If this user only
-    # created a workshop hosted by somebody else, retain it with no creator.
-    hosted_workshop_ids = [
-        row[0]
-        for row in db.session.query(Workshop.id).filter_by(
-            officer_id=user_id
-        ).all()
-    ]
-    attendance_submission_filter = AttendanceSubmission.officer_id == user_id
-    reminder_filter = ReminderLog.user_id == user_id
-    if hosted_workshop_ids:
-        attendance_submission_filter = attendance_submission_filter | (
-            AttendanceSubmission.workshop_id.in_(hosted_workshop_ids)
-        )
-        reminder_filter = reminder_filter | (
-            ReminderLog.workshop_id.in_(hosted_workshop_ids)
-        )
-    AttendanceSubmission.query.filter(attendance_submission_filter).delete(
-        synchronize_session=False
-    )
-    ReminderLog.query.filter(reminder_filter).delete(
-        synchronize_session=False
-    )
-    db.session.execute(
-        workshop_signups.delete().where(workshop_signups.c.user_id == user_id)
-    )
-    if hosted_workshop_ids:
-        db.session.execute(
-            workshop_signups.delete().where(
-                workshop_signups.c.workshop_id.in_(hosted_workshop_ids)
-            )
-        )
-        Workshop.query.filter(
-            Workshop.id.in_(hosted_workshop_ids)
-        ).delete(synchronize_session=False)
-    Workshop.query.filter_by(creator_id=user_id).update(
-        {'creator_id': None}, synchronize_session=False
-    )
-
-    # Delete member progress only after rows that can reference commitments.
-    AHAttendance.query.filter_by(user_id=user_id).delete(
-        synchronize_session=False
-    )
-    WSAttendance.query.filter_by(user_id=user_id).delete(
-        synchronize_session=False
-    )
-    ChecklistItem.query.filter_by(user_id=user_id).delete(
-        synchronize_session=False
-    )
-    AnnualICPrepTracker.query.filter_by(member_id=user_id).delete(
-        synchronize_session=False
-    )
-    Commitment.query.filter_by(user_id=user_id).delete(
-        synchronize_session=False
-    )
-    MentorPod.query.filter(
-        (MentorPod.member_id == user_id) | (MentorPod.mentor_id == user_id)
-    ).delete(synchronize_session=False)
-    GeneralAttendance.query.filter(
-        (GeneralAttendance.officer_id == user_id)
-        | (
-            db.func.lower(GeneralAttendance.member_name)
-            == username.lower()
-        )
-    ).delete(synchronize_session=False)
-
-    # Preserve target-side audit history, but actor rows cannot survive because
-    # actor_id is required. Pod edit logs require both user references.
-    MDPAuditLog.query.filter_by(target_user_id=user_id).update(
-        {'target_user_id': None}, synchronize_session=False
-    )
-    MDPAuditLog.query.filter_by(actor_id=user_id).delete(
-        synchronize_session=False
-    )
-    MentorPodEditLog.query.filter(
-        (MentorPodEditLog.member_id == user_id)
-        | (MentorPodEditLog.actor_id == user_id)
-    ).delete(synchronize_session=False)
-
-    db.session.delete(user)
-    # Surface any missed constraint for this specific account before continuing
-    # to the next test account; the surrounding transaction still stays atomic.
-    db.session.flush()
 
 
 @app.route('/admin')
@@ -4441,7 +3581,7 @@ def admin_panel():
     users = User.query.order_by(User.role, User.username).all()
     stats = {
         'total_users': User.query.count(),
-        'officers': User.query.filter_by(has_officer_access=True).count(),
+        'officers': User.query.filter_by(role='officer').count(),
         'members': User.query.filter_by(role='member').count(),
         'admins': User.query.filter_by(is_admin=True).count(),
         'pods': MentorPod.query.count(),
@@ -4462,14 +3602,18 @@ def admin_delete_user(user_id):
         flash('You cannot delete your own account.', 'danger')
         return redirect(url_for('admin_panel'))
     username = user.username
-    try:
-        _delete_user_account_and_dependencies(user)
-        db.session.commit()
-    except Exception as exc:
-        db.session.rollback()
-        print(f'[Admin Delete User] failed for {username}: {type(exc).__name__}: {exc}')
-        flash(f'Could not delete user "{username}". Check the Railway logs.', 'danger')
-        return redirect(url_for('admin_panel'))
+    AHAttendance.query.filter_by(user_id=user.id).delete()
+    WSAttendance.query.filter_by(user_id=user.id).delete()
+    MentorPod.query.filter(
+        (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
+    ).delete()
+    Commitment.query.filter_by(user_id=user.id).delete()
+    ReminderLog.query.filter_by(user_id=user.id).delete()
+    db.session.execute(
+        workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
+    )
+    db.session.delete(user)
+    db.session.commit()
     flash(f'User "{username}" deleted successfully.', 'success')
     return redirect(url_for('admin_panel'))
 
@@ -4478,27 +3622,27 @@ def admin_delete_user(user_id):
 @login_required
 @admin_required
 def admin_delete_test_users():
-    """Delete accounts that look like test accounts (Officer1, Presentation1, etc.)"""
-    test_prefixes = ['officer', 'member', 'test', 'presentation']
+    """Delete accounts that look like test accounts (Officer1, Member1, etc.)"""
+    test_prefixes = ['officer', 'member', 'test']
     deleted = []
-    try:
-        for user in User.query.all():
-            if user.id == current_user.id:
-                continue
-            lower = user.username.lower()
-            if any(
-                lower.startswith(prefix)
-                and lower[len(prefix):].isdigit()
-                for prefix in test_prefixes
-            ):
-                deleted.append(user.username)
-                _delete_user_account_and_dependencies(user)
-        db.session.commit()
-    except Exception as exc:
-        db.session.rollback()
-        print(f'[Delete Test Users] failed: {type(exc).__name__}: {exc}')
-        flash('Test accounts could not be deleted. Check the Railway logs.', 'danger')
-        return redirect(url_for('admin_panel'))
+    for user in User.query.all():
+        if user.id == current_user.id:
+            continue
+        lower = user.username.lower()
+        if any(lower.startswith(p) and lower[len(p):].isdigit() for p in test_prefixes):
+            AHAttendance.query.filter_by(user_id=user.id).delete()
+            WSAttendance.query.filter_by(user_id=user.id).delete()
+            MentorPod.query.filter(
+                (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
+            ).delete()
+            Commitment.query.filter_by(user_id=user.id).delete()
+            ReminderLog.query.filter_by(user_id=user.id).delete()
+            db.session.execute(
+                workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
+            )
+            deleted.append(user.username)
+            db.session.delete(user)
+    db.session.commit()
     if deleted:
         flash(f'Deleted {len(deleted)} test account(s): {", ".join(deleted)}', 'success')
     else:
@@ -4514,18 +3658,9 @@ def admin_toggle_admin(user_id):
     if user.id == current_user.id:
         flash('You cannot change your own admin status.', 'danger')
         return redirect(url_for('admin_panel'))
-    if user.is_admin:
-        user.is_admin = False
-        user.role = 'officer' if user.has_officer_access else 'member'
-        status = 'removed'
-    else:
-        # Preserve whether the account was an officer before the legacy role
-        # field is normalized to 'officer' for admin compatibility.
-        user.has_officer_access = user.role == 'officer'
-        user.is_admin = True
-        user.role = 'officer'
-        status = 'granted'
+    user.is_admin = not user.is_admin
     db.session.commit()
+    status = 'granted' if user.is_admin else 'removed'
     flash(f'Admin access {status} for "{user.username}".', 'success')
     return redirect(url_for('admin_panel'))
 
@@ -4535,15 +3670,10 @@ def admin_toggle_admin(user_id):
 @admin_required
 def admin_reset_password(user_id):
     user = User.query.get_or_404(user_id)
-    if not user.email:
-        flash(
-            f'No email is stored for "{user.username}". Add an email before sending a reset link.',
-            'warning',
-        )
-    elif send_password_reset_email(user):
-        flash(f'Password reset link sent to {user.email}.', 'success')
-    else:
-        flash('The reset email could not be sent. Check the server logs.', 'danger')
+    user.password = generate_password_hash('DECA2026!')
+    user.must_change_password = True
+    db.session.commit()
+    flash(f'Password reset to DECA2026! for "{user.username}".', 'success')
     return redirect(url_for('admin_panel'))
 
 
@@ -4561,10 +3691,7 @@ def make_first_admin():
         if not user or not check_password_hash(user.password, password):
             flash('Incorrect username or password.', 'danger')
             return render_template('make_first_admin.html')
-        user.has_officer_access = user.role == 'officer'
         user.is_admin = True
-        if user.role != 'officer':
-            user.role = 'officer'
         db.session.commit()
         flash(f'"{username}" is now an admin. Please log in and go to /admin.', 'success')
         return redirect(url_for('login'))
@@ -5497,4 +4624,3 @@ if not scheduler.running:
 
 if __name__ == '__main__':
     app.run(debug=True)
-
