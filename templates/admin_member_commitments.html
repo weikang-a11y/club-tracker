@@ -28,30 +28,6 @@
  {% endfor %}
 {% endwith %}
 
-{% if current_user.is_admin and mdp_upload_enabled and mdp_upload_form %}
-<div class="card border-warning shadow-sm mb-4">
-<div class="card-body">
-<div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-center">
-<div>
-<h5 class="mb-1"><i class="fas fa-file-import"></i> Temporary Commitment Import</h5>
-<div class="text-muted small">
-Upload the official MDP <code>.xlsx</code> workbook to replace RP/EX/WR progress.
-The temporary server copy is deleted immediately after processing.
-</div>
-</div>
-<form method="post" action="{{ url_for('admin_import_commitments') }}" enctype="multipart/form-data" class="d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
-{{ mdp_upload_form.hidden_tag() }}
-{{ mdp_upload_form.workbook(class="form-control", accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") }}
-{{ mdp_upload_form.submit(class="btn btn-warning text-nowrap") }}
-</form>
-</div>
-<div class="small text-danger mt-2">
-Only upload when the workbook is the source of truth; importing again overwrites current commitment counts.
-</div>
-</div>
-</div>
-{% endif %}
-
 
 {# ── Summary cards ─────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
@@ -97,33 +73,61 @@ Only upload when the workbook is the source of truth; importing again overwrites
 
 {# ── Filter Controls ─────────────────────────────────────────── #}
 <div class="mb-4">
-   <div class="row">
-       <div class="col-md-6">
-           <div class="mb-3 d-flex gap-2 flex-wrap align-items-end">
-               <div>
-                   <label for="filterTypeSelect" class="form-label small mb-1">Filter by:</label>
-                   <select id="filterTypeSelect" class="form-select w-auto" onchange="updateFilterOptions()">
-                       <option value="">All Members</option>
-                       <option value="status">Status</option>
-                       <option value="level">Experience Level</option>
-                       <option value="event">Event</option>
-                       <option value="mentor">Mentor</option>
-                   </select>
-               </div>
-              
-               <div id="filterValueContainer" style="display: none;">
-                   <label for="filterValueSelect" class="form-label small mb-1">Select:</label>
-                   <select id="filterValueSelect" class="form-select w-auto" onchange="applyFilters()">
-                       <option value="">All</option>
-                   </select>
-               </div>
-           </div>
-       </div>
-       <div class="col-md-6 text-end">
-           <button class="btn btn-sm btn-outline-secondary" onclick="resetFilters()">Clear Filters</button>
-       </div>
-   </div>
+    <div class="d-flex gap-2 flex-wrap align-items-end">
+        <div>
+            <label for="filterTypeSelect"
+                   class="form-label small mb-1">
+                Filter by:
+            </label>
+
+            <select id="filterTypeSelect"
+                    class="form-select w-auto"
+                    onchange="updateFilterOptions()">
+                <option value="">All Members</option>
+                <option value="member">Member</option>
+                <option value="status">Status</option>
+                <option value="level">Experience Level</option>
+                <option value="event">Event</option>
+                <option value="mentor">Mentor</option>
+                <option value="competing">Competing Status</option>
+            </select>
+        </div>
+
+        <div id="filterSearchContainer" style="display:none;">
+            <label for="filterSearchInput"
+                   class="form-label small mb-1">
+                Search:
+            </label>
+
+            <input type="search"
+                   id="filterSearchInput"
+                   class="form-control"
+                   placeholder="Type a name…"
+                   oninput="applyFilters()">
+        </div>
+
+        <div id="filterValueContainer" style="display:none;">
+            <label for="filterValueSelect"
+                   class="form-label small mb-1">
+                Select:
+            </label>
+
+            <select id="filterValueSelect"
+                    class="form-select w-auto"
+                    onchange="applyFilters()">
+                <option value="">All</option>
+            </select>
+        </div>
+
+        <button type="button"
+                class="btn btn-sm btn-outline-secondary"
+                onclick="resetFilters()">
+            Clear Filters
+        </button>
+    </div>
 </div>
+
+
 
 
 
@@ -158,7 +162,13 @@ Only upload when the workbook is the source of truth; importing again overwrites
 </thead>
 <tbody>
                    {% for row in rows %}
-<tr class="{{ 'table-secondary' if row.status == 'non_compete' else ('table-danger' if row.status == 'at_risk' else '') }}" data-status="{{ row.status }}" data-level="{{ row.level }}" data-event="{{ row.event or '' }}" data-mentor="{{ row.mentor_name }}">
+<tr class="{{ 'table-secondary' if row.status == 'non_compete' else ('table-danger' if row.status == 'at_risk' else '') }}"
+    data-member="{{ row.member.username }}"
+    data-status="{{ row.status }}"
+    data-level="{{ row.level }}"
+    data-event="{{ row.event or '' }}"
+    data-mentor="{{ row.mentor_name }}"
+    data-competing="{{ 'competing' if row.is_competing else 'non_compete' }}">
 <td class="fw-semibold">
 {{ row.member.username }}
 {% if row.status == 'non_compete' %}<span class="badge bg-secondary ms-1">Non-Compete</span>{% endif %}
@@ -213,106 +223,161 @@ Only upload when the workbook is the source of truth; importing again overwrites
 </div>
 </div>
 
-
 <script>
-// ── Cascading Filters ─────────────────────────────────────────
 function updateFilterOptions() {
-   const filterType = document.getElementById('filterTypeSelect').value;
-   const filterValueContainer = document.getElementById('filterValueContainer');
-   const filterValueSelect = document.getElementById('filterValueSelect');
-  
-   // Clear previous options
-   filterValueSelect.innerHTML = '<option value="">All</option>';
-  
-   if (!filterType) {
-       filterValueContainer.style.display = 'none';
-       applyFilters();
-       return;
-   }
-  
-   filterValueContainer.style.display = 'block';
-  
-   // Get unique values from the table for this filter type
-   const table = document.getElementById('memberCommitmentsTable');
-   const rows = Array.from(table.querySelectorAll('tbody tr:not(.detail-row)'));
-   const values = new Set();
-  
-   rows.forEach(row => {
-       let value = '';
-       if (filterType === 'status') {
-           value = row.dataset.status;
-       } else if (filterType === 'level') {
-           value = row.dataset.level;
-       } else if (filterType === 'event') {
-           value = row.dataset.event;
-       } else if (filterType === 'mentor') {
-           value = row.dataset.mentor;
-       }
-       if (value) values.add(value);
-   });
-  
-   // Populate dropdown with unique values
-   const valueMap = {
-       'status': { 'on_track': 'On Track', 'at_risk': 'At Risk', 'non_compete': 'Non-Compete' },
-       'level': { 'N': 'Novice', 'E': 'Experienced' },
-       'event': {},
-       'mentor': {}
-   };
-  
-   // Sort values alphabetically
-   const sortedValues = Array.from(values).sort();
-  
-   sortedValues.forEach(value => {
-       const label = valueMap[filterType][value] || value;
-       const option = document.createElement('option');
-       option.value = value;
-       option.textContent = label;
-       filterValueSelect.appendChild(option);
-   });
+    const filterType =
+        document.getElementById('filterTypeSelect').value;
+
+    const searchContainer =
+        document.getElementById('filterSearchContainer');
+
+    const searchInput =
+        document.getElementById('filterSearchInput');
+
+    const filterValueContainer =
+        document.getElementById('filterValueContainer');
+
+    const filterValueSelect =
+        document.getElementById('filterValueSelect');
+
+    searchInput.value = '';
+    filterValueSelect.innerHTML =
+        '<option value="">All</option>';
+
+    if (!filterType) {
+        searchContainer.style.display = 'none';
+        filterValueContainer.style.display = 'none';
+        applyFilters();
+        return;
+    }
+
+    // Member and Mentor use typed searches.
+    if (filterType === 'member' || filterType === 'mentor') {
+        searchContainer.style.display = 'block';
+        filterValueContainer.style.display = 'none';
+
+        searchInput.placeholder = filterType === 'member'
+            ? 'Search for a member…'
+            : 'Search for a mentor…';
+
+        searchInput.focus();
+        applyFilters();
+        return;
+    }
+
+    // Other filters use dropdown choices.
+    searchContainer.style.display = 'none';
+    filterValueContainer.style.display = 'block';
+
+    const values = new Set();
+
+    document.querySelectorAll(
+        '#memberCommitmentsTable tbody tr[data-member]'
+    ).forEach(row => {
+        const value = row.dataset[filterType] || '';
+
+        if (value) {
+            values.add(value);
+        }
+    });
+
+    const valueMap = {
+        status: {
+            on_track: 'On Track',
+            at_risk: 'At Risk',
+            non_compete: 'Non-Compete'
+        },
+        level: {
+            N: 'Novice',
+            E: 'Experienced'
+        },
+        competing: {
+            competing: 'Competing',
+            non_compete: 'Non-Compete'
+        },
+        event: {}
+    };
+
+    Array.from(values).sort().forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent =
+            valueMap[filterType]?.[value] || value;
+
+        filterValueSelect.appendChild(option);
+    });
+
+    applyFilters();
 }
 
 
 function applyFilters() {
-   const filterType = document.getElementById('filterTypeSelect').value;
-   const filterValue = document.getElementById('filterValueSelect').value;
-   const table = document.getElementById('memberCommitmentsTable');
-   const rows = Array.from(table.querySelectorAll('tbody tr'));
-  
-   rows.forEach(row => {
-       let show = true;
-      
-       if (filterType && filterValue) {
-           let rowValue = '';
-           if (filterType === 'status') {
-               rowValue = row.dataset.status;
-           } else if (filterType === 'level') {
-               rowValue = row.dataset.level;
-           } else if (filterType === 'event') {
-               rowValue = row.dataset.event;
-           } else if (filterType === 'mentor') {
-               rowValue = row.dataset.mentor;
-           }
-           show = rowValue === filterValue;
-       }
-      
-       row.style.display = show ? 'table-row' : 'none';
-   });
+    const filterType =
+        document.getElementById('filterTypeSelect').value;
+
+    const searchValue =
+        document.getElementById('filterSearchInput')
+        .value
+        .trim()
+        .toLowerCase();
+
+    const filterValue =
+        document.getElementById('filterValueSelect').value;
+
+    document.querySelectorAll(
+        '#memberCommitmentsTable tbody tr[data-member]'
+    ).forEach(row => {
+        const rowValue =
+            row.dataset[filterType] || '';
+
+        let show = true;
+
+        if (filterType === 'member' || filterType === 'mentor') {
+            show =
+                !searchValue ||
+                rowValue.toLowerCase().includes(searchValue);
+        } else if (filterType) {
+            show =
+                !filterValue ||
+                rowValue === filterValue;
+        }
+
+        row.style.display = show ? 'table-row' : 'none';
+    });
 }
 
 
 function resetFilters() {
-   document.getElementById('filterTypeSelect').value = '';
-   document.getElementById('filterValueSelect').value = '';
-   document.getElementById('filterValueContainer').style.display = 'none';
-  
-   // Show all rows
-   const table = document.getElementById('memberCommitmentsTable');
-   const rows = Array.from(table.querySelectorAll('tbody tr'));
-   rows.forEach(row => {
-       row.style.display = 'table-row';
-   });
+    document.getElementById(
+        'filterTypeSelect'
+    ).value = '';
+
+    document.getElementById(
+        'filterSearchInput'
+    ).value = '';
+
+    document.getElementById(
+        'filterValueSelect'
+    ).value = '';
+
+    document.getElementById(
+        'filterSearchContainer'
+    ).style.display = 'none';
+
+    document.getElementById(
+        'filterValueContainer'
+    ).style.display = 'none';
+
+    document.querySelectorAll(
+        '#memberCommitmentsTable tbody tr[data-member]'
+    ).forEach(row => {
+        row.style.display = 'table-row';
+    });
 }
 </script>
+
+
+
 {% endblock %}
 
 

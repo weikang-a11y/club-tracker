@@ -2,7 +2,7 @@
 {% block title %}Register{% endblock %}
 {% block content %}
 <h2 class="auth-title">Register</h2>
-<p class="auth-subtitle">Create your account and choose the correct role before continuing.</p>
+<p class="auth-subtitle">Create your DECA member account.</p>
 <form method="POST">
     {{ form.hidden_tag() }}
     <div class="mb-3">
@@ -17,12 +17,6 @@
                 <i class="bi bi-eye"></i>
             </button>
         </div>
-    </div>
-    <div class="mb-2">
-        {{ form.role.label(class="form-label") }}
-        {{ form.role(class="form-select form-select-lg") }}
-        <div class="form-text">Officer = manages commitments and attendance. Member = creates and joins workshops.</div>
-        {% for error in form.role.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
     </div>
     <div class="d-grid mt-4">
         {{ form.submit(class="btn btn-primary auth-btn") }}
