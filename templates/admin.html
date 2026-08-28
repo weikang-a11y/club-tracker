@@ -150,29 +150,10 @@
                         {% endif %}
                     </td>
                     <td>
-                        {% if user.role == 'member' %}
-                            <span class="badge {{ 'bg-success' if user.is_competing else 'bg-secondary' }}">
-                                {{ 'Competing' if user.is_competing else 'Non-Compete' }}
-                            </span>
-                        {% else %}
-                            <span class="text-muted">—</span>
-                        {% endif %}
-                    </td>
-                    <td>
                         <div class="d-flex gap-1 flex-wrap">
 
-                            {# Reset Password #}
                             {% if user.id != current_user.id %}
-                            <form method="POST" action="{{ url_for('admin_reset_password', user_id=user.id) }}"
-                                  class="js-confirm-form d-inline">
-                                <button type="button" class="btn btn-sm btn-outline-secondary js-open-confirm"
-                                        data-confirm-title="Send Password Reset"
-                                        data-confirm-message="Send a password-reset link to the email stored for {{ user.username }}?"
-                                        data-confirm-btn-text="Send Reset Link"
-                                        data-confirm-btn-class="btn-secondary">
-                                    Send Reset
-                                </button>
-                            </form>
+
 
                             {# Toggle Admin #}
                             <form method="POST" action="{{ url_for('admin_toggle_admin', user_id=user.id) }}"
@@ -185,14 +166,6 @@
                                     {{ 'Remove Admin' if user.is_admin else 'Make Admin' }}
                                 </button>
                             </form>
-
-                            {% if user.role == 'member' %}
-                            <form method="POST" action="{{ url_for('admin_toggle_competing', user_id=user.id) }}" class="d-inline">
-                                <button type="submit" class="btn btn-sm btn-outline-primary">
-                                    {{ 'Mark Non-Compete' if user.is_competing else 'Mark Competing' }}
-                                </button>
-                            </form>
-                            {% endif %}
 
                             {# Delete User #}
                             <form method="POST" action="{{ url_for('admin_delete_user', user_id=user.id) }}"

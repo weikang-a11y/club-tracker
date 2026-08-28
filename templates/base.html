@@ -374,6 +374,20 @@
                                 Commitment Reports
                             </a>
 
+                                <a
+                                    class="nav-link {% if request.endpoint == 'checklist_completion' %}active{% endif %}"
+                                    href="{{ url_for('checklist_completion') }}">
+                                    Written Progress
+                                </a>
+
+
+
+                                <a
+                                    class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}"
+                                    href="{{ url_for('reports', tab='calendar') }}"
+                                >
+                                    Calendar
+                                </a>
                             <a
                                 class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}"
                                 href="{{ url_for('reports', tab='calendar') }}"
