@@ -214,6 +214,7 @@ class User(UserMixin, db.Model):
     remind_minutes_before = db.Column(db.Integer, default=60)
     must_change_password = db.Column(db.Boolean, default=False)
     is_admin = db.Column(db.Boolean, default=False)
+    has_officer_access = db.Column(db.Boolean, default=False)
 
 class Commitment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -440,6 +441,40 @@ def inject_notification_defaults():
                 'active_view': None, 'can_switch_view': False}
     return {'notifications': [], 'unread_count': 0,
             'active_view': None, 'can_switch_view': False}
+
+
+# ── Stubs for features not yet implemented ────────────────────────────────────
+
+def is_admin_view():
+    """Stub: returns True if current user is admin."""
+    return current_user.is_authenticated and current_user.is_admin
+
+def is_officer_view():
+    """Stub: returns True if current user is officer."""
+    return current_user.is_authenticated and current_user.role == 'officer'
+
+def is_mdp_upload_enabled():
+    """Stub: MDP upload feature flag — disabled until implemented."""
+    return False
+
+
+class DataMigration(db.Model):
+    """Tracks one-time data migrations that have already run."""
+    __tablename__ = 'data_migration'
+    key = db.Column(db.String(100), primary_key=True)
+    applied_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ChecklistRequirement(db.Model):
+    """Written checklist requirement per member/event."""
+    __tablename__ = 'checklist_requirement'
+    id = db.Column(db.Integer, primary_key=True)
+    member_name = db.Column(db.String(200), nullable=False)
+    event = db.Column(db.String(50), nullable=False)
+    requirement = db.Column(db.String(200), nullable=True)
+    completed = db.Column(db.Boolean, default=False)
+    due_date = db.Column(db.Date, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 def _account_name_key(value):
@@ -1427,15 +1462,6 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                     checklist_items_by_key[item_key] = item
                 item.completed = completed
                 checklist_items_updated += 1
-def inject_notifications():
-    if current_user.is_authenticated:
-        unread = Notification.query.filter_by(
-            user_id=current_user.id, read=False).order_by(
-            Notification.created_at.desc()).limit(10).all()
-        return {'notifications': unread, 'unread_count': len(unread)}
-    return {'notifications': [], 'unread_count': 0}
-
-
 # ── Notification helper ──────────────────────────────────────────────────────
 
 def create_notification(user_id, message):
@@ -1938,6 +1964,13 @@ with app.app_context():
             if creator and creator not in ws.signups:
                 ws.signups.append(creator)
     try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    # Migrate: add has_officer_access column if missing
+    try:
+        db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS has_officer_access BOOLEAN DEFAULT FALSE'))
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -2694,7 +2727,7 @@ def change_password():
         db.session.commit()
         flash('Password updated successfully. Welcome!', 'success')
         return redirect(url_for('dashboard'))
-    return render_template('change_password.html', form=form)
+    return render_template('set_password.html', form=form)
 
 @app.route('/logout')
 @login_required
