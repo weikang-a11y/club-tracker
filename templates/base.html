@@ -388,12 +388,6 @@
                                 >
                                     Calendar
                                 </a>
-                            <a
-                                class="nav-link {% if request.endpoint == 'reports' and request.args.get('tab') == 'calendar' %}active{% endif %}"
-                                href="{{ url_for('reports', tab='calendar') }}"
-                            >
-                                Calendar
-                            </a>
 
                             <a
                                 class="nav-link {% if request.endpoint == 'exam_uploads' %}active{% endif %}"
