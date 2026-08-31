@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}ICPrep Events{% endblock %}
+{% block content %}
+
+<div class="card page-header-card mb-4">
+    <div class="card-body p-4 d-flex justify-content-between align-items-center">
+        <div>
+            <h2 class="mb-1">ICPrep Events</h2>
+            <p class="text-muted mb-0">All webhook events received from ICPrep, newest first.</p>
+        </div>
+        <span class="badge bg-primary-subtle text-primary rounded-pill px-3 fs-6">{{ events|length }} total</span>
+    </div>
+</div>
+
+{% if events %}
+<div class="card border-0 shadow-sm rounded-4">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Received</th>
+                        <th>Student</th>
+                        <th>Email</th>
+                        <th>Event</th>
+                        <th>Event Code</th>
+                        <th>Score</th>
+                        <th>Date</th>
+                        <th>Matched</th>
+                        <th>Delivery ID</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for e in events %}
+                    <tr>
+                        <td class="text-nowrap text-muted small">{{ e.received_at.strftime('%m/%d %H:%M') }}</td>
+                        <td class="fw-semibold">{{ e.student_full_name or '—' }}</td>
+                        <td class="text-muted small">{{ e.student_email or '—' }}</td>
+                        <td>
+                            <span class="badge
+                                {% if e.event_type and 'exam' in e.event_type %}bg-warning text-dark
+                                {% elif e.event_type and 'roleplay' in e.event_type %}bg-primary
+                                {% elif e.event_type and 'correction' in e.event_type %}bg-info text-dark
+                                {% else %}bg-secondary{% endif %}">
+                                {{ e.event or e.event_type or '—' }}
+                            </span>
+                        </td>
+                        <td class="text-muted small">{{ e.event_code or '—' }}</td>
+                        <td>
+                            {% if e.score is not none %}
+                                <strong>{{ e.score | int }}</strong>{% if e.max_score %}/{{ e.max_score | int }}{% endif %}
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="text-nowrap">{{ e.date or '—' }}</td>
+                        <td>
+                            {% if e.matched %}
+                                <span class="badge bg-success">✓ {{ e.member.username if e.member else 'matched' }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">Unmatched</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted small" style="font-size:0.7rem; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                            {{ e.delivery_id or '—' }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="card border-0 shadow-sm rounded-4">
+    <div class="card-body text-muted">No ICPrep events received yet.</div>
+</div>
+{% endif %}
+
+{% endblock %}
