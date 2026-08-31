@@ -2,9 +2,10 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
+from collections import defaultdict
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, DateField, SelectField, IntegerField, SubmitField
-from wtforms.validators import DataRequired, Length, NumberRange, ValidationError
+from wtforms.validators import DataRequired, Length, NumberRange, ValidationError, Email
 from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
@@ -215,6 +216,8 @@ class User(UserMixin, db.Model):
     must_change_password = db.Column(db.Boolean, default=False)
     is_admin = db.Column(db.Boolean, default=False)
     has_officer_access = db.Column(db.Boolean, default=False)
+    reset_token = db.Column(db.String(100), nullable=True)
+    reset_token_expiry = db.Column(db.DateTime, nullable=True)
 
 class Commitment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1858,6 +1861,11 @@ class ChangePasswordForm(FlaskForm):
         if field.data != self.new_password.data:
             raise ValidationError('Passwords do not match.')
 
+class ForgotPasswordForm(FlaskForm):
+    email = StringField('Email', [DataRequired(), Email()])
+    submit = SubmitField('Send Reset Link')
+
+
 class CommitmentForm(FlaskForm):
     member_name = StringField('Member Name', [DataRequired()])
     event = SelectField(
@@ -1974,6 +1982,17 @@ with app.app_context():
         db.session.commit()
     except Exception:
         db.session.rollback()
+
+    # Migrate: add reset_token columns if missing
+    for col_sql in [
+        'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS reset_token VARCHAR(100)',
+        'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS reset_token_expiry TIMESTAMP',
+    ]:
+        try:
+            db.session.execute(sql_text(col_sql))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
     # Migrate: ensure commitment rows exist for all members
     # (safe to run multiple times — ensure_commitments is idempotent)
@@ -2698,6 +2717,57 @@ def register():
         flash('Registration successful. Please sign in.', 'success')
         return redirect(url_for('login'))
     return render_template('register.html', form=form)
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    """Send a password reset link to the user's email."""
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    form = ForgotPasswordForm()
+    if form.validate_on_submit():
+        email = form.email.data.strip().lower()
+        user = User.query.filter(db.func.lower(User.email) == email).first()
+        if user:
+            import secrets as _secrets
+            token = _secrets.token_urlsafe(32)
+            # Store token in a simple way using the DB
+            user.reset_token = token
+            user.reset_token_expiry = datetime.utcnow() + timedelta(hours=1)
+            db.session.commit()
+            reset_url = url_for('reset_password', token=token, _external=True)
+            send_email(
+                user.email,
+                '[DECA Tracker] Password Reset',
+                f'<p>Click the link below to reset your password. It expires in 1 hour.</p>'
+                f'<p><a href="{reset_url}">{reset_url}</a></p>'
+                f'<p>If you did not request this, ignore this email.</p>'
+            )
+        # Always show success to avoid email enumeration
+        flash('If that email is registered, a reset link has been sent.', 'success')
+        return redirect(url_for('login'))
+    return render_template('forgot_password.html', form=form)
+
+
+@app.route('/reset-password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    """Handle password reset via token."""
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    user = User.query.filter_by(reset_token=token).first()
+    if not user or not user.reset_token_expiry or user.reset_token_expiry < datetime.utcnow():
+        flash('This reset link is invalid or has expired.', 'danger')
+        return redirect(url_for('forgot_password'))
+    form = ChangePasswordForm()
+    if form.validate_on_submit():
+        user.password = generate_password_hash(form.new_password.data)
+        user.reset_token = None
+        user.reset_token_expiry = None
+        user.must_change_password = False
+        db.session.commit()
+        flash('Password reset successfully. Please log in.', 'success')
+        return redirect(url_for('login'))
+    return render_template('set_password.html', form=form)
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -3425,7 +3495,9 @@ def api_icprep_webhook():
         elif event_type == 'commitment':
             practice_type = 'ICPrep Roleplay'
 
-        if practice_type:
+        # exam_corrections = corrections submitted for a completed exam.
+        # It does NOT count as a full commitment completion — only 'exam' does.
+        if practice_type and event_type != 'exam_corrections':
             active_conf = get_active_conference()
             commitment = Commitment.query.filter_by(
                 member_name=member.username, event=active_conf).first()
