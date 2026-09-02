@@ -97,6 +97,36 @@ CONFERENCE_DEADLINES = {
     "SCDC":  "2027-02-23",
 }
 
+EVENT_TABS = [
+    ('BOR', 'Business Operations Research'),
+    ('BMOR', 'Business Management & Operations Research'),
+    ('FOR', 'Financial Operations Research'),
+    ('HTOR', 'Hospitality & Tourism Operations Research'),
+    ('SEOR', 'Sports & Entertainment Operations Research'),
+    ('IMC', 'Integrated Marketing Campaign'),
+    ('IMCE', 'Integrated Marketing Campaign — Event'),
+    ('IMCP', 'Integrated Marketing Campaign — Product'),
+    ('IMCS', 'Integrated Marketing Campaign — Service'),
+    ('ENT', 'Entrepreneurship'),
+    ('EBG', 'Entrepreneurship — Business Growth'),
+    ('EFB', 'Entrepreneurship — Franchise Business'),
+    ('EIB', 'Entrepreneurship — International Business'),
+    ('EIP', 'Entrepreneurship — Independent Business'),
+    ('ESB', 'Entrepreneurship — Start-up Business'),
+    ('IBP', 'International Business Plan'),
+    ('PM', 'Project Management'),
+    ('PMBS', 'Project Management — Business Solutions'),
+    ('PMCD', 'Project Management — Community Development'),
+    ('PMCA', 'Project Management — Campaign'),
+    ('PMCG', 'Project Management — Consulting'),
+    ('PMFL', 'Project Management — Financial Literacy'),
+    ('PMSP', 'Project Management — Sports & Entertainment'),
+    ('PS', 'Professional Selling'),
+    ('FCE', 'Financial Consulting Event'),
+    ('HTPS', 'Hospitality & Tourism Professional Selling'),
+    ('PSE', 'Professional Selling — Event'),
+]
+
 # Email that receives practice log completion notifications
 PRACTICE_LOG_EMAIL = os.getenv("PRACTICE_LOG_EMAIL", "mentorship@vchsdeca.org")
 
@@ -231,6 +261,7 @@ class Commitment(db.Model):
     remaining_written = db.Column(db.Integer, default=0)
     remaining_exam = db.Column(db.Integer, default=0)
     deadline = db.Column(db.Date)
+    grade = db.Column(db.String(10), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     user = db.relationship('User', backref='added_commitments')
 
@@ -2048,6 +2079,13 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+            
+    # Migrate: add grade column to commitment
+    try:
+        db.session.execute(sql_text('ALTER TABLE commitment ADD COLUMN IF NOT EXISTS grade VARCHAR(10)'))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
     # Migrate: add reset_token columns if missing
     for col_sql in [
