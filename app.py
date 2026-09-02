@@ -216,6 +216,7 @@ class User(UserMixin, db.Model):
     must_change_password = db.Column(db.Boolean, default=False)
     is_admin = db.Column(db.Boolean, default=False)
     has_officer_access = db.Column(db.Boolean, default=False)
+    is_competing = db.Column(db.Boolean, default=True)
     reset_token = db.Column(db.String(100), nullable=True)
     reset_token_expiry = db.Column(db.DateTime, nullable=True)
 
@@ -1922,11 +1923,11 @@ class WorkshopForm(FlaskForm):
             raise ValidationError('Please select an officer.')
 
 class MentorPodForm(FlaskForm):
-    mentor_username = StringField('Mentor Username', [DataRequired()])
-    member_username = StringField('Member Username', [DataRequired()])
+    mentor_id = SelectField('Mentor', coerce=int)
+    member_id = SelectField('Member', coerce=int)
     pod_number = StringField('Pod Number', [DataRequired()])
     experience_level = SelectField('Level', choices=[('N', 'Novice'), ('E', 'Experienced')])
-    submit = SubmitField('Save')        
+    submit = SubmitField('Save')      
 
 # ── Schema migration ──────────────────────────────────────────────────────────
 
@@ -2025,6 +2026,13 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    # Migrate: add is_competing to user
+    try:
+        db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_competing BOOLEAN DEFAULT TRUE'))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
     # Migrate: add missing columns to checklist_item
     for col_sql in [
