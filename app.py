@@ -483,6 +483,7 @@ class ChecklistItem(db.Model):
     """Individual checklist item for written progress tracking."""
     __tablename__ = 'checklist_item'
     id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     member_name = db.Column(db.String(200), nullable=False)
     event = db.Column(db.String(50), nullable=False)
     item = db.Column(db.String(200), nullable=True)
@@ -2004,6 +2005,19 @@ with app.app_context():
         db.session.commit()
     except Exception:
         db.session.rollback()
+
+    # Migrate: add missing columns to mdp_audit_log
+    for col_sql in [
+        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS user_id INTEGER',
+        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS action VARCHAR(100)',
+        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS target VARCHAR(200)',
+        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS details TEXT',
+    ]:
+        try:
+            db.session.execute(sql_text(col_sql))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
     # Migrate: add reset_token columns if missing
     for col_sql in [
