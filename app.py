@@ -479,6 +479,28 @@ class ChecklistRequirement(db.Model):
     due_date = db.Column(db.Date, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class ChecklistItem(db.Model):
+    """Individual checklist item for written progress tracking."""
+    __tablename__ = 'checklist_item'
+    id = db.Column(db.Integer, primary_key=True)
+    member_name = db.Column(db.String(200), nullable=False)
+    event = db.Column(db.String(50), nullable=False)
+    item = db.Column(db.String(200), nullable=True)
+    completed = db.Column(db.Boolean, default=False)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class MDPAuditLog(db.Model):
+    """Audit log for MDP data changes."""
+    __tablename__ = 'mdp_audit_log'
+    id = db.Column(db.Integer, primary_key=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    action = db.Column(db.String(100), nullable=True)
+    target = db.Column(db.String(200), nullable=True)
+    details = db.Column(db.Text, nullable=True)
+    user = db.relationship('User', backref='audit_logs')
 
 def _account_name_key(value):
     """Match names case-, whitespace-, and punctuation-insensitively."""
