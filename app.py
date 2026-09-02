@@ -127,6 +127,12 @@ EVENT_TABS = [
     ('PSE', 'Professional Selling — Event'),
 ]
 
+CHECKLIST_ITEMS = {
+    'VCMC': ['Roleplay 1', 'Written 1', 'Exam 1', 'Exam 2'],
+    'SVCDC': ['Roleplay 1', 'Written 1', 'Exam 1', 'Exam 2'],
+    'SCDC': ['Roleplay 1', 'Roleplay 2', 'Written 1', 'Exam 1', 'Exam 2'],
+}
+
 # Email that receives practice log completion notifications
 PRACTICE_LOG_EMAIL = os.getenv("PRACTICE_LOG_EMAIL", "mentorship@vchsdeca.org")
 
@@ -344,6 +350,7 @@ class MentorPod(db.Model):
     member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     experience_level = db.Column(db.String(1))   # 'N' = Novice, 'E' = Experienced
     year_in_deca = db.Column(db.String(20))
+    event = db.Column(db.String(50), nullable=True)
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
 
@@ -2079,7 +2086,7 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
-            
+
     # Migrate: add grade column to commitment
     try:
         db.session.execute(sql_text('ALTER TABLE commitment ADD COLUMN IF NOT EXISTS grade VARCHAR(10)'))
@@ -2087,6 +2094,13 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
+    # Migrate: add event column to mentor_pod
+    try:
+        db.session.execute(sql_text('ALTER TABLE mentor_pod ADD COLUMN IF NOT EXISTS event VARCHAR(50)'))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        
     # Migrate: add reset_token columns if missing
     for col_sql in [
         'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS reset_token VARCHAR(100)',
