@@ -1921,6 +1921,13 @@ class WorkshopForm(FlaskForm):
         if not field.data:
             raise ValidationError('Please select an officer.')
 
+class MentorPodForm(FlaskForm):
+    mentor_username = StringField('Mentor Username', [DataRequired()])
+    member_username = StringField('Member Username', [DataRequired()])
+    pod_number = StringField('Pod Number', [DataRequired()])
+    experience_level = SelectField('Level', choices=[('N', 'Novice'), ('E', 'Experienced')])
+    submit = SubmitField('Save')        
+
 # ── Schema migration ──────────────────────────────────────────────────────────
 
 with app.app_context():
@@ -2033,7 +2040,7 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
-            
+
     # Migrate: add reset_token columns if missing
     for col_sql in [
         'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS reset_token VARCHAR(100)',
