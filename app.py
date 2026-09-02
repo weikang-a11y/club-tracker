@@ -2019,6 +2019,21 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
+    # Migrate: add missing columns to checklist_item
+    for col_sql in [
+        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS member_name VARCHAR(200)',
+        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS event VARCHAR(50)',
+        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS item VARCHAR(200)',
+        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS completed BOOLEAN DEFAULT FALSE',
+        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP',
+        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS created_at TIMESTAMP',
+    ]:
+        try:
+            db.session.execute(sql_text(col_sql))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            
     # Migrate: add reset_token columns if missing
     for col_sql in [
         'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS reset_token VARCHAR(100)',
