@@ -63,27 +63,17 @@ TIME_SLOTS = [
 ]
 ACTIVITY_TYPES = [
     'In-Person Roleplay',
-    'ICPrep Roleplay',
     'Written Presentation',
     'Paper Exam',
-    'ICPrep Exam',
 ]
 # Map practice types to commitment buckets
-ROLEPLAY_TYPES = {'In-Person Roleplay', 'ICPrep Roleplay'}
-EXAM_TYPES     = {'Paper Exam', 'ICPrep Exam'}
-ICPREP_TYPES   = {'ICPrep Roleplay', 'ICPrep Exam'}
+ROLEPLAY_TYPES = {'In-Person Roleplay'}
+EXAM_TYPES     = {'Paper Exam'}
 WRITTEN_TYPES  = {'Written Presentation'}
-
-# Annual ICPrep minimums per level
-ICPREP_TARGETS = {
-    'N': {'roleplay': 2, 'exam': 2},
-    'E': {'roleplay': 1, 'exam': 1},
-}
 
 # Per-conference requirements split by experience level (non-cumulative)
 # Novice:     VCMC(RP:2,W:1,E:2), SVCDC(RP:1,W:1,E:2), SCDC(RP:2,W:1,E:2)
 # Experienced:VCMC(RP:0,W:1,E:0), SVCDC(RP:2,W:1,E:2), SCDC(RP:1,W:1,E:1)
-# RP/Exam counts include both in-person and ICPrep (members choose which to use for ICPrep quota)
 EVENT_REQUIREMENTS = {
     "N": {  # Novice
         "VCMC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-11-15"},
@@ -379,16 +369,6 @@ class PracticeSession(db.Model):
     member = db.relationship('User', foreign_keys=[member_id], backref='signed_up_sessions')
 
 
-class AnnualICPrepTracker(db.Model):
-    """Tracks annual ICPrep completion totals per member (across all conferences)."""
-    __tablename__ = 'annual_icprep_tracker'
-    id = db.Column(db.Integer, primary_key=True)
-    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True)
-    icprep_rp_completed = db.Column(db.Integer, default=0, nullable=False)
-    icprep_exam_completed = db.Column(db.Integer, default=0, nullable=False)
-    member = db.relationship('User', backref=db.backref('icprep_tracker', uselist=False))
-
-
 class ExamUpload(db.Model):
     """Paper exam upload submitted by a member for officer review."""
     __tablename__ = 'exam_upload'
@@ -417,40 +397,6 @@ class Notification(db.Model):
     read = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref='notifications')
-
-
-class ICPrepWebhookLog(db.Model):
-    """Raw log of every inbound ICPrep webhook event (kept for backwards compat)."""
-    __tablename__ = 'icprep_webhook_log'
-    id = db.Column(db.Integer, primary_key=True)
-    received_at = db.Column(db.DateTime, default=datetime.utcnow)
-    payload = db.Column(db.Text)
-    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
-    activity_type = db.Column(db.String(30), nullable=True)
-    processed = db.Column(db.Boolean, default=False)
-    error = db.Column(db.Text, nullable=True)
-    member = db.relationship('User', foreign_keys=[member_id], backref='icprep_webhook_logs')
-
-
-class ICPrepEvent(db.Model):
-    """Structured record of each verified ICPrep webhook event."""
-    __tablename__ = 'icprep_event'
-    id = db.Column(db.Integer, primary_key=True)
-    delivery_id = db.Column(db.String(200), unique=True, nullable=False)  # dedup key
-    received_at = db.Column(db.DateTime, default=datetime.utcnow)
-    event_type = db.Column(db.String(100), nullable=True)   # X-ICprep-Event header
-    student_full_name = db.Column(db.String(200), nullable=True)
-    student_email = db.Column(db.String(200), nullable=True)
-    event = db.Column(db.String(100), nullable=True)         # payload "event" field
-    event_code = db.Column(db.String(100), nullable=True)
-    event_name = db.Column(db.String(200), nullable=True)
-    score = db.Column(db.Float, nullable=True)
-    max_score = db.Column(db.Float, nullable=True)
-    date = db.Column(db.String(50), nullable=True)
-    raw_payload = db.Column(db.Text, nullable=True)
-    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
-    matched = db.Column(db.Boolean, default=False)  # True if email matched a User
-    member = db.relationship('User', backref='icprep_events')
 
 
 class PracticeLog(db.Model):
@@ -609,12 +555,10 @@ def _delete_duplicate_member_account(member):
     Commitment.query.filter_by(user_id=member.id).delete()
     ReminderLog.query.filter_by(user_id=member.id).delete()
     ChecklistItem.query.filter_by(user_id=member.id).delete()
-    AnnualICPrepTracker.query.filter_by(member_id=member.id).delete()
     ExamUpload.query.filter_by(member_id=member.id).delete()
     ExamUpload.query.filter_by(reviewer_id=member.id).update(
         {'reviewer_id': None}, synchronize_session=False
     )
-    ICPrepWebhookLog.query.filter_by(member_id=member.id).delete()
     PracticeLog.query.filter(
         (PracticeLog.member_id == member.id) | (PracticeLog.officer_id == member.id)
     ).delete(synchronize_session=False)
@@ -909,10 +853,6 @@ def create_new_officer_demo_pods():
                     ).date(),
                     user_id=demo_member.id,
                 ))
-
-            db.session.add(AnnualICPrepTracker(
-                member_id=demo_member.id,
-            ))
 
             created_members.append(demo_member.username)
 
@@ -1851,7 +1791,7 @@ def get_active_conference():
 
 
 def ensure_commitments(member):
-    """Auto-create commitment rows and ICPrep tracker for all conferences if missing."""
+    """Auto-create commitment rows for all conferences if missing."""
     pod = MentorPod.query.filter_by(member_id=member.id).first()
     level = pod.experience_level if pod else 'N'
     reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
@@ -1872,34 +1812,11 @@ def ensure_commitments(member):
             )
             db.session.add(com)
             created = True
-    # Ensure annual ICPrep tracker exists
-    if not AnnualICPrepTracker.query.filter_by(member_id=member.id).first():
-        db.session.add(AnnualICPrepTracker(member_id=member.id))
-        created = True
     if created:
         try:
             db.session.commit()
         except Exception:
             db.session.rollback()
-
-
-def get_icprep_status(member):
-    """Return ICPrep completion counts and targets for a member."""
-    pod = MentorPod.query.filter_by(member_id=member.id).first()
-    level = pod.experience_level if pod else 'N'
-    targets = ICPREP_TARGETS.get(level, ICPREP_TARGETS['N'])
-    tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
-    rp_done = tracker.icprep_rp_completed if tracker else 0
-    ex_done = tracker.icprep_exam_completed if tracker else 0
-    return {
-        'rp_done': rp_done,
-        'rp_target': targets['roleplay'],
-        'rp_met': rp_done >= targets['roleplay'],
-        'exam_done': ex_done,
-        'exam_target': targets['exam'],
-        'exam_met': ex_done >= targets['exam'],
-        'all_met': rp_done >= targets['roleplay'] and ex_done >= targets['exam'],
-    }
 
 
 # ── Attendance helper ─────────────────────────────────────────────────────────
@@ -2232,6 +2149,21 @@ with app.app_context():
     _ensure_column('practice_session', 'log_submitted', 'BOOLEAN DEFAULT FALSE')
 
     # ── ORM-based backfills (all column migrations have run by now) ──
+
+    # Drop the retired ICPrep tables. The integration and its manual tracking
+    # were removed, so these tables and their data are no longer referenced.
+    for _retired_table in (
+        'icprep_event',
+        'icprep_webhook_log',
+        'annual_icprep_tracker',
+    ):
+        try:
+            if _retired_table in db.inspect(db.engine).get_table_names():
+                db.session.execute(sql_text(f'DROP TABLE IF EXISTS "{_retired_table}"'))
+                db.session.commit()
+                print(f'[Migration] dropped retired table {_retired_table}.')
+        except Exception:
+            db.session.rollback()
 
     # Backfill missing creator signups for existing workshops
     for ws in Workshop.query.all():
@@ -3254,15 +3186,10 @@ def member_commitments():
     active_conf = get_active_conference()
     all_commitments = Commitment.query.filter_by(member_name=current_user.username).all()
     all_commitments_map = {com.event: com for com in all_commitments}
-    icprep_status = get_icprep_status(current_user)
-    icprep_events = ICPrepEvent.query.filter_by(member_id=current_user.id).order_by(
-        ICPrepEvent.received_at.desc()).limit(50).all()
     return render_template('member_commitments.html',
         all_commitments_map=all_commitments_map,
         conference_order=CONFERENCE_ORDER,
         active_conf=active_conf,
-        icprep_status=icprep_status,
-        icprep_events=icprep_events,
     )
 
 
@@ -3331,7 +3258,6 @@ def practice_sessions():
             signed_up = PracticeSession.query.filter_by(
                 officer_id=pod.mentor_id, member_id=current_user.id).order_by(
                 PracticeSession.session_date).all()
-        icprep_status = get_icprep_status(current_user)
         return render_template('practice_sessions.html',
             open_sessions=open_sessions,
             signed_up=signed_up,
@@ -3339,7 +3265,6 @@ def practice_sessions():
             active_conf=active_conf,
             active_commitment=active_commitment,
             conference_order=CONFERENCE_ORDER,
-            icprep_status=icprep_status,
         )
 
 
@@ -3411,17 +3336,6 @@ def log_commitment(session_id):
             commitment.remaining_exam -= 1
         db.session.add(commitment)
 
-    # If ICPrep type, increment annual tracker
-    if practice_type in ICPREP_TYPES:
-        ensure_commitments(member)
-        tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
-        if tracker:
-            if practice_type == 'ICPrep Roleplay':
-                tracker.icprep_rp_completed += 1
-            elif practice_type == 'ICPrep Exam':
-                tracker.icprep_exam_completed += 1
-            db.session.add(tracker)
-
     # Create a minimal log record for audit trail
     log = PracticeLog(
         practice_session_id=ps.id,
@@ -3492,16 +3406,6 @@ def mark_complete():
         elif practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
             commitment.remaining_exam -= 1
         db.session.add(commitment)
-
-    if practice_type in ICPREP_TYPES:
-        ensure_commitments(member)
-        tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
-        if tracker:
-            if practice_type == 'ICPrep Roleplay':
-                tracker.icprep_rp_completed += 1
-            elif practice_type == 'ICPrep Exam':
-                tracker.icprep_exam_completed += 1
-            db.session.add(tracker)
 
     log = PracticeLog(
         officer_id=current_user.id,
@@ -3624,145 +3528,6 @@ def reports():
         all_members=all_members,
         activity_types=ACTIVITY_TYPES,
     )
-
-
-# ── ICPrep Webhook ───────────────────────────────────────────────────────────
-
-# Signing secret provided by ICPrep. Set ICPREP_WEBHOOK_SECRET in the
-# environment; the literal below is only a fallback so existing deployments
-# keep working, and should be rotated and removed from source.
-ICPREP_SIGNING_SECRET = os.getenv(
-    'ICPREP_WEBHOOK_SECRET',
-    '65ea1df4c1d98aea348f4890c612042584dbe40a544904ddfc147719e1fa9cea',
-)
-
-
-def _verify_icprep_signature(raw_body: bytes, sig_header: str) -> bool:
-    """Verify X-ICprep-Signature: t=<timestamp>,v1=<hex>"""
-    import hmac, hashlib
-    try:
-        parts = dict(p.split('=', 1) for p in sig_header.split(','))
-        t = parts.get('t', '')
-        v1 = parts.get('v1', '')
-        signed_payload = f'{t}.'.encode() + raw_body
-        expected = hmac.new(
-            ICPREP_SIGNING_SECRET.encode(),
-            signed_payload,
-            hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(expected, v1)
-    except Exception:
-        return False
-
-
-@app.route('/api/icprep-webhook', methods=['POST'])
-def api_icprep_webhook():
-    """Real ICPrep webhook endpoint with HMAC-SHA256 signature verification."""
-    raw_body = request.get_data()
-
-    # 1. Verify signature
-    sig_header = request.headers.get('X-ICprep-Signature', '')
-    if not sig_header or not _verify_icprep_signature(raw_body, sig_header):
-        return {'error': 'Unauthorized'}, 401
-
-    delivery_id = request.headers.get('X-ICprep-Delivery-Id', '')
-    event_type  = request.headers.get('X-ICprep-Event', '')
-
-    # 2. Deduplicate by delivery_id
-    if delivery_id and ICPrepEvent.query.filter_by(delivery_id=delivery_id).first():
-        return {'ok': True, 'duplicate': True}, 200
-
-    # 3. Parse payload (all fields nullable)
-    try:
-        data = request.get_json(force=True) or {}
-    except Exception:
-        data = {}
-
-    student_email     = (data.get('student_email') or '').strip().lower() or None
-    student_full_name = data.get('student_full_name') or None
-    event_field       = data.get('event') or None
-    event_code        = data.get('event_code') or None
-    event_name        = data.get('event_name') or None
-    score             = data.get('score')
-    max_score         = data.get('max_score')
-    date_field        = data.get('date') or None
-
-    score     = float(score)     if score     is not None else None
-    max_score = float(max_score) if max_score is not None else None
-
-    # 4. Match to a User by email
-    member = None
-    if student_email:
-        member = User.query.filter(
-            db.func.lower(User.email) == student_email,
-            User.role == 'member'
-        ).first()
-
-    evt = ICPrepEvent(
-        delivery_id=delivery_id or f'no-id-{datetime.utcnow().timestamp()}',
-        event_type=event_type or None,
-        student_full_name=student_full_name,
-        student_email=student_email,
-        event=event_field,
-        event_code=event_code,
-        event_name=event_name,
-        score=score,
-        max_score=max_score,
-        date=date_field,
-        raw_payload=raw_body.decode('utf-8', errors='replace'),
-        member_id=member.id if member else None,
-        matched=bool(member),
-    )
-    db.session.add(evt)
-
-    # 5. Update ICPrep tracker if matched and event is exam or roleplay
-    if member:
-        ensure_commitments(member)
-        practice_type = None
-        if event_type in ('exam', 'exam_corrections'):
-            practice_type = 'ICPrep Exam'
-        elif event_type == 'commitment':
-            practice_type = 'ICPrep Roleplay'
-
-        # exam_corrections = corrections submitted for a completed exam.
-        # It does NOT count as a full commitment completion — only 'exam' does.
-        if practice_type and event_type != 'exam_corrections':
-            active_conf = get_active_conference()
-            commitment = Commitment.query.filter_by(
-                member_name=member.username, event=active_conf).first()
-            if commitment:
-                if practice_type == 'ICPrep Roleplay' and commitment.remaining_roleplay > 0:
-                    commitment.remaining_roleplay -= 1
-                elif practice_type == 'ICPrep Exam' and commitment.remaining_exam > 0:
-                    commitment.remaining_exam -= 1
-                db.session.add(commitment)
-
-            tracker = AnnualICPrepTracker.query.filter_by(member_id=member.id).first()
-            if tracker:
-                if practice_type == 'ICPrep Roleplay':
-                    tracker.icprep_rp_completed += 1
-                elif practice_type == 'ICPrep Exam':
-                    tracker.icprep_exam_completed += 1
-                db.session.add(tracker)
-
-        create_notification(member.id,
-            f'ICPrep recorded: {event_name or event_type or "activity"}'
-            + (f' — score {score}/{max_score}' if score is not None else ''))
-
-    try:
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        return {'error': 'DB error', 'detail': str(e)}, 500
-
-    return {'ok': True}, 200
-
-
-# Keep old route as alias so existing integrations don't break
-@app.route('/webhook/icprep', methods=['POST'])
-def icprep_webhook():
-    return api_icprep_webhook()
-
 
 
 # ── Exam Upload routes ────────────────────────────────────────────────────────

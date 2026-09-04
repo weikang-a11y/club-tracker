@@ -18,12 +18,11 @@ looks right, then decide separately whether you want the demo pods.
 | Variable | Purpose |
 |---|---|
 | `SECRET_KEY` | Flask session signing. Was hardcoded in source. Set this. |
-| `ICPREP_WEBHOOK_SECRET` | ICPrep webhook signature. Was hardcoded. Rotate and set. |
 | `SKIP_DEMO_PODS` | `1` to suppress the 126 placeholder accounts. |
 | `MDP_UPLOAD_ENABLED` | `1` to enable the admin .xlsx workbook upload. Off by default. |
 
-Both secrets keep their previous literal as a fallback, so nothing breaks if
-you deploy before setting them — but they are public in git history.
+`SECRET_KEY` keeps its previous literal as a fallback, so nothing breaks if
+you deploy before setting it — but that value is public in git history.
 
 ## Fixes
 
@@ -98,3 +97,35 @@ out to keep this a clean bug-fix change.
 
 `.env` is excluded from this archive (it is gitignored and holds a live
 SendGrid key worth rotating).
+
+
+## ICPrep removed
+
+The ICPrep platform was dropped, so every trace of it was taken out.
+
+**Endpoints** — `/api/icprep-webhook` and its `/webhook/icprep` alias, the
+HMAC-SHA256 signature verification, and the hardcoded signing secret. Nothing
+listens on those paths any more; both now return 404.
+
+**Models and tables** — `ICPrepEvent`, `ICPrepWebhookLog` and
+`AnnualICPrepTracker` are gone from the code, and the migration block drops
+`icprep_event`, `icprep_webhook_log` and `annual_icprep_tracker` from the
+database on next boot. This is irreversible — take a backup first if you
+want the received event history.
+
+**Practice types** — "ICPrep Roleplay" and "ICPrep Exam" were removed from
+`ACTIVITY_TYPES`. Roleplays are now "In-Person Roleplay" only and exams
+"Paper Exam" only. Historical `practice_log` rows that recorded an ICPrep type
+keep their text; they simply no longer match a current activity type.
+
+**Requirement tracking** — the per-level annual ICPrep minimums
+(`ICPREP_TARGETS`), `get_icprep_status()`, and the tracker increments in
+`log_commitment` and `mark_complete` were removed. Per-conference roleplay,
+written and exam counts in `EVENT_REQUIREMENTS` are unaffected.
+
+**UI** — the "Annual ICPrep Requirement" and "ICPrep Activity" cards were
+removed from the member commitments page, `templates/icprep_events.html` was
+deleted, and the exam-uploads wording no longer mentions ICPrep.
+
+`ICPREP_WEBHOOK_SECRET` is no longer read. Delete it from your Railway
+variables, and rotate it with ICPrep if that secret was ever shared.

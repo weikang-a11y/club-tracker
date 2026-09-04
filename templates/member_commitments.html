@@ -9,52 +9,6 @@
     </div>
 </div>
 
-{# ── Annual ICPrep Requirement ──────────────────────────────────── #}
-{% if icprep_status %}
-<div class="card border-0 shadow-sm rounded-4 mb-4">
-    <div class="card-body p-4">
-        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
-            <h4 class="mb-0">Annual ICPrep Requirement</h4>
-            {% if icprep_status.all_met %}
-                <span class="badge bg-success rounded-pill px-3">✓ Complete</span>
-            {% else %}
-                <span class="badge bg-warning text-dark rounded-pill px-3">In Progress</span>
-            {% endif %}
-        </div>
-        <p class="text-muted small mb-3">
-            At least {{ icprep_status.rp_target }} roleplay(s) and {{ icprep_status.exam_target }} exam(s)
-            must be completed on ICPrep across all conferences.
-        </p>
-        <div class="row g-3">
-            <div class="col-md-6">
-                <div class="border rounded-4 p-3 text-center">
-                    <div class="text-muted small mb-1">ICPrep Roleplays</div>
-                    <div class="fs-3 fw-bold {{ 'text-success' if icprep_status.rp_met else 'text-primary' }}">
-                        {{ icprep_status.rp_done }}/{{ icprep_status.rp_target }}
-                    </div>
-                    <div class="progress mt-2" style="height:8px;">
-                        <div class="progress-bar {{ 'bg-success' if icprep_status.rp_met else 'bg-primary' }}"
-                             style="width:{{ [icprep_status.rp_done / icprep_status.rp_target * 100, 100]|min if icprep_status.rp_target > 0 else 100 }}%"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="border rounded-4 p-3 text-center">
-                    <div class="text-muted small mb-1">ICPrep Exams</div>
-                    <div class="fs-3 fw-bold {{ 'text-success' if icprep_status.exam_met else 'text-primary' }}">
-                        {{ icprep_status.exam_done }}/{{ icprep_status.exam_target }}
-                    </div>
-                    <div class="progress mt-2" style="height:8px;">
-                        <div class="progress-bar {{ 'bg-success' if icprep_status.exam_met else 'bg-primary' }}"
-                             style="width:{{ [icprep_status.exam_done / icprep_status.exam_target * 100, 100]|min if icprep_status.exam_target > 0 else 100 }}%"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
-
 {# ── Active conference commitment progress only ────────────────── #}
 {% set conf = active_conf %}
 {% set com = all_commitments_map.get(conf) %}
@@ -124,54 +78,5 @@
         {% endif %}
     </div>
 </div>
-
-{# ── ICPrep Activity from ICPrep platform ─────────────────────── #}
-{% if icprep_events %}
-<div class="card border-0 shadow-sm rounded-4 mb-4">
-    <div class="card-header bg-white p-4 border-bottom">
-        <h4 class="mb-0">ICPrep Activity</h4>
-        <p class="text-muted small mb-0">Events recorded automatically from the ICPrep platform.</p>
-    </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover table-sm mb-0">
-                <thead class="table-light">
-                    <tr>
-                        <th>Date</th>
-                        <th>Event Type</th>
-                        <th>Event Name</th>
-                        <th>Score</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for e in icprep_events %}
-                    <tr>
-                        <td class="text-nowrap text-muted small">
-                            {{ e.date or e.received_at.strftime('%Y-%m-%d') }}
-                        </td>
-                        <td>
-                            <span class="badge
-                                {% if e.event_type == 'exam' %}bg-warning text-dark
-                                {% elif e.event_type == 'exam_corrections' %}bg-info text-dark
-                                {% else %}bg-primary{% endif %}">
-                                {{ e.event_type or '—' }}
-                            </span>
-                        </td>
-                        <td>{{ e.event_name or e.event or '—' }}</td>
-                        <td>
-                            {% if e.score is not none %}
-                                {{ e.score | int }}{% if e.max_score %}/{{ e.max_score | int }}{% endif %}
-                            {% else %}
-                                —
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
-{% endif %}
 
 {% endblock %}
