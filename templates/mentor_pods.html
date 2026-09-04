@@ -350,16 +350,16 @@
                         <label>Event</label>
                         <select name="event"
                                 class="form-select form-select-sm">
-                            {% if pod.event and pod.event not in event_choices %}
+                            {% if pod.event and pod.event not in event_choices|map(attribute=0)|list %}
                             <option value="{{ pod.event }}" selected>
                                 {{ pod.event }}
                             </option>
                             {% endif %}
 
-                            {% for event_name in event_choices %}
-                            <option value="{{ event_name }}"
-                                    {% if event_name == pod.event %}selected{% endif %}>
-                                {{ event_name }}
+                            {% for event_code, event_label in event_choices %}
+                            <option value="{{ event_code }}"
+                                    {% if event_code == pod.event %}selected{% endif %}>
+                                {{ event_code }} — {{ event_label }}
                             </option>
                             {% endfor %}
                         </select>
@@ -448,9 +448,9 @@
                         <label>Event</label>
                         <select name="event"
                                 class="form-select form-select-sm">
-                            {% for event_name in event_choices %}
-                            <option value="{{ event_name }}">
-                                {{ event_name }}
+                            {% for event_code, event_label in event_choices %}
+                            <option value="{{ event_code }}">
+                                {{ event_code }} — {{ event_label }}
                             </option>
                             {% endfor %}
                         </select>

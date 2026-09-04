@@ -1,12 +1,12 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from collections import defaultdict
 from flask_wtf import FlaskForm
+from flask_wtf.file import FileField, FileRequired, FileAllowed
 from wtforms import StringField, PasswordField, DateField, SelectField, IntegerField, SubmitField
 from wtforms.validators import DataRequired, Length, NumberRange, ValidationError, Email
-from datetime import datetime, timedelta
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
 from sqlalchemy.pool import NullPool
@@ -19,11 +19,18 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
 import os
 import re
+import posixpath
+import tempfile
+import zipfile
+import xml.etree.ElementTree as ET
 
 load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'super-secret-key-change-me-98765'
+# Set SECRET_KEY in the environment (Railway variable). The fallback keeps
+# existing sessions valid on deployments where the variable is not set yet,
+# but it is public in source control and must not be relied on.
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret-key-change-me-98765')
 
 # Database config with Railway/Postgres support + local SQLite fallback
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -496,8 +503,12 @@ def is_officer_view():
     return current_user.is_authenticated and current_user.role == 'officer'
 
 def is_mdp_upload_enabled():
-    """Stub: MDP upload feature flag — disabled until implemented."""
-    return False
+    """Feature flag for the admin MDP workbook upload.
+
+    Off by default. Set MDP_UPLOAD_ENABLED=1 in the environment to turn it on
+    once the workbook import has been verified against a real .xlsx export.
+    """
+    return os.getenv('MDP_UPLOAD_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 class DataMigration(db.Model):
@@ -505,17 +516,22 @@ class DataMigration(db.Model):
     __tablename__ = 'data_migration'
     key = db.Column(db.String(100), primary_key=True)
     applied_at = db.Column(db.DateTime, default=datetime.utcnow)
+    details = db.Column(db.Text, nullable=True)
 
 
 class ChecklistRequirement(db.Model):
-    """Written checklist requirement per member/event."""
+    """Written checklist requirement per event.
+
+    ``deadline`` is stored as the raw text from the chapter deadline document
+    (for example "11/15"); ``_parse_written_deadline`` resolves it to a date.
+    """
     __tablename__ = 'checklist_requirement'
     id = db.Column(db.Integer, primary_key=True)
-    member_name = db.Column(db.String(200), nullable=False)
+    member_name = db.Column(db.String(200), nullable=True)
     event = db.Column(db.String(50), nullable=False)
-    requirement = db.Column(db.String(200), nullable=True)
+    item_name = db.Column(db.String(200), nullable=True)
+    deadline = db.Column(db.String(50), nullable=True)
     completed = db.Column(db.Boolean, default=False)
-    due_date = db.Column(db.Date, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class ChecklistItem(db.Model):
@@ -523,9 +539,9 @@ class ChecklistItem(db.Model):
     __tablename__ = 'checklist_item'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
-    member_name = db.Column(db.String(200), nullable=False)
+    member_name = db.Column(db.String(200), nullable=True)
     event = db.Column(db.String(50), nullable=False)
-    item = db.Column(db.String(200), nullable=True)
+    item_name = db.Column(db.String(200), nullable=True)
     completed = db.Column(db.Boolean, default=False)
     completed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -536,11 +552,26 @@ class MDPAuditLog(db.Model):
     __tablename__ = 'mdp_audit_log'
     id = db.Column(db.Integer, primary_key=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    target_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     action = db.Column(db.String(100), nullable=True)
-    target = db.Column(db.String(200), nullable=True)
+    category = db.Column(db.String(100), nullable=True)
     details = db.Column(db.Text, nullable=True)
-    user = db.relationship('User', backref='audit_logs')
+    actor = db.relationship('User', foreign_keys=[actor_id], backref='audit_logs')
+    target_user = db.relationship('User', foreign_keys=[target_user_id])
+
+
+class MentorPodEditLog(db.Model):
+    """Record of a single pod membership change."""
+    __tablename__ = 'mentor_pod_edit_log'
+    id = db.Column(db.Integer, primary_key=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    action = db.Column(db.String(100), nullable=True)
+    details = db.Column(db.Text, nullable=True)
+    actor = db.relationship('User', foreign_keys=[actor_id])
+    member = db.relationship('User', foreign_keys=[member_id])
 
 def _account_name_key(value):
     """Match names case-, whitespace-, and punctuation-insensitively."""
@@ -764,7 +795,16 @@ def sync_officer_access_flags():
 
 
 def create_new_officer_demo_pods():
-    """Ensure every newly added officer has six demo mentees."""
+    """Ensure every newly added officer has six demo mentees.
+
+    This seeds roughly 126 placeholder "test" member accounts. It never
+    completed before because recording the migration raised, so the work was
+    rolled back on every boot. Now that it runs, set SKIP_DEMO_PODS=1 in the
+    environment to keep placeholder accounts out of a live database.
+    """
+    if os.getenv('SKIP_DEMO_PODS', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+        print('[Demo Pods] skipped: SKIP_DEMO_PODS is set.')
+        return
     if db.session.get(DataMigration, NEW_OFFICER_DEMO_PODS_KEY):
         return
 
@@ -1102,6 +1142,16 @@ def _spreadsheet_checked(value):
         return float(value) == 1.0
     except (TypeError, ValueError):
         return _spreadsheet_key(value) in {'true', 'yes', 'y', 'checked', 'x'}
+
+
+# Manual spreadsheet-name -> username fixes, for the cases where a workbook
+# name cannot be matched automatically (nicknames, married names, typos).
+# Keys must be normalized with _spreadsheet_key(); values are candidate
+# usernames tried in order. Empty by default: the fallback matching below
+# (email, email local part, then name variants) handles the normal cases.
+SPREADSHEET_ACCOUNT_OVERRIDES = {
+    # '<normalized spreadsheet name>': ('first.last',),
+}
 
 
 def _spreadsheet_username_candidates(name):
@@ -1520,6 +1570,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                 if not item:
                     item = ChecklistItem(
                         user_id=member.id,
+                        member_name=member.username,
                         event=event,
                         item_name=item_name,
                     )
@@ -1898,16 +1949,23 @@ def get_attendance_stats(user):
 # ── Forms ─────────────────────────────────────────────────────────────────────
 
 class RegisterForm(FlaskForm):
+    """Retained so /register can still render a form if self-signup is ever
+    re-enabled. The role field was removed deliberately: it allowed a crafted
+    POST to create an officer account. Roles are set from the canonical roster
+    or by an existing admin, never by the person signing up."""
     username = StringField('Username', [DataRequired(), Length(min=3)])
     password = PasswordField('Password', [DataRequired(), Length(min=6)])
-    # Admin access is granted only by the canonical roster or an existing admin.
-    # Public registration must never allow a visitor to self-select admin.
-    role = SelectField('Role', choices=[('', 'Select your role'), ('officer', 'Officer'), ('member', 'Member')], default='')
     submit = SubmitField('Register')
 
-    def validate_role(self, field):
-        if not field.data:
-            raise ValidationError('Please select a role.')
+
+class MDPWorkbookUploadForm(FlaskForm):
+    """Admin upload of the official MDP tracking workbook."""
+    workbook = FileField('MDP workbook (.xlsx)', validators=[
+        FileRequired('Choose an .xlsx workbook to upload.'),
+        FileAllowed(['xlsx'], 'Only .xlsx workbooks are accepted.'),
+    ])
+    submit = SubmitField('Import workbook')
+
 
 class LoginForm(FlaskForm):
     username = StringField('Username', [DataRequired()])
@@ -1968,6 +2026,51 @@ class MentorPodForm(FlaskForm):
     submit = SubmitField('Save')      
 
 # ── Schema migration ──────────────────────────────────────────────────────────
+
+# "ALTER TABLE ... ADD COLUMN IF NOT EXISTS" is Postgres-only; on SQLite it
+# raises and the migration is silently skipped, which is why local databases
+# drifted out of sync with the models. These helpers inspect the schema first
+# so the same migration works on both engines, and are safe to re-run.
+
+def _existing_columns(table):
+    try:
+        return {col['name'] for col in db.inspect(db.engine).get_columns(table)}
+    except Exception:
+        return set()
+
+
+def _ensure_column(table, column, ddl_type):
+    """Add a column if the table exists and the column does not."""
+    try:
+        if table not in db.inspect(db.engine).get_table_names():
+            return
+    except Exception:
+        return
+    if column in _existing_columns(table):
+        return
+    try:
+        db.session.execute(
+            sql_text(f'ALTER TABLE "{table}" ADD COLUMN {column} {ddl_type}')
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+def _backfill_column(table, source, destination):
+    """Copy values from a superseded column into its replacement."""
+    columns = _existing_columns(table)
+    if source not in columns or destination not in columns:
+        return
+    try:
+        db.session.execute(sql_text(
+            f'UPDATE "{table}" SET {destination} = {source} '
+            f'WHERE {destination} IS NULL AND {source} IS NOT NULL'
+        ))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
 
 with app.app_context():
     db.create_all()
@@ -2034,6 +2137,102 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
+    # NOTE: every ORM query must come after the column migrations below.
+    # Querying User before the new columns exist raises OperationalError,
+    # which is what stopped older databases from upgrading.
+
+    # Migrate: add has_officer_access column if missing
+    _ensure_column('user', 'has_officer_access', 'BOOLEAN DEFAULT FALSE')
+
+    # Migrate: add missing columns to mdp_audit_log.
+    #
+    # The audit/checklist tables were created with placeholder column names
+    # that did not match the names the application code actually uses, so
+    # every write to them failed. The columns below are added with the names
+    # the code actually uses, and any values in the old columns are copied
+    # across.
+    for table, column, ddl_type in [
+        ('mdp_audit_log', 'user_id', 'INTEGER'),
+        ('mdp_audit_log', 'actor_id', 'INTEGER'),
+        ('mdp_audit_log', 'target_user_id', 'INTEGER'),
+        ('mdp_audit_log', 'action', 'VARCHAR(100)'),
+        ('mdp_audit_log', 'category', 'VARCHAR(100)'),
+        ('mdp_audit_log', 'target', 'VARCHAR(200)'),
+        ('mdp_audit_log', 'details', 'TEXT'),
+        ('mdp_audit_log', 'timestamp', 'TIMESTAMP'),
+    ]:
+        _ensure_column(table, column, ddl_type)
+    _backfill_column('mdp_audit_log', 'user_id', 'actor_id')
+
+    # Migrate: data_migration needs the details column its callers pass.
+    _ensure_column('data_migration', 'details', 'TEXT')
+
+    # Migrate: checklist_requirement was created with placeholder columns
+    # (requirement/due_date) and a NOT NULL member_name that the deadline
+    # catalog never populates. It is a derived table, rebuilt from constants
+    # on every boot by sync_written_deadline_catalog(), so recreating it is
+    # safe and avoids per-dialect constraint surgery.
+    try:
+        _inspector = db.inspect(db.engine)
+        if 'checklist_requirement' in _inspector.get_table_names():
+            _cols = {c['name']: c for c in _inspector.get_columns('checklist_requirement')}
+            if (
+                'item_name' not in _cols
+                or 'deadline' not in _cols
+                or not _cols.get('member_name', {}).get('nullable', True)
+            ):
+                ChecklistRequirement.__table__.drop(db.engine, checkfirst=True)
+                ChecklistRequirement.__table__.create(db.engine, checkfirst=True)
+                print('[Migration] rebuilt checklist_requirement with corrected columns.')
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Migration] checklist_requirement rebuild skipped: {exc}')
+
+    # Migrate: add is_competing to user
+    _ensure_column('user', 'is_competing', 'BOOLEAN DEFAULT TRUE')
+
+    # Migrate: checklist_item uses item_name, not item.
+    for column, ddl_type in [
+        ('user_id', 'INTEGER'),
+        ('member_name', 'VARCHAR(200)'),
+        ('event', 'VARCHAR(50)'),
+        ('item', 'VARCHAR(200)'),
+        ('item_name', 'VARCHAR(200)'),
+        ('completed', 'BOOLEAN DEFAULT FALSE'),
+        ('completed_at', 'TIMESTAMP'),
+        ('created_at', 'TIMESTAMP'),
+    ]:
+        _ensure_column('checklist_item', column, ddl_type)
+    _backfill_column('checklist_item', 'item', 'item_name')
+
+    # checklist_item rows are keyed on user_id; member_name is informational
+    # and was left NOT NULL by the original model. Postgres only — on SQLite
+    # the table is created fresh from the corrected model.
+    if db.engine.dialect.name != 'sqlite':
+        try:
+            db.session.execute(sql_text(
+                'ALTER TABLE checklist_item ALTER COLUMN member_name DROP NOT NULL'
+            ))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    # Migrate: add grade column to commitment
+    _ensure_column('commitment', 'grade', 'VARCHAR(10)')
+
+    # Migrate: add event column to mentor_pod
+    _ensure_column('mentor_pod', 'event', 'VARCHAR(50)')
+
+
+    # Migrate: add reset_token columns if missing
+    _ensure_column('user', 'reset_token', 'VARCHAR(100)')
+    _ensure_column('user', 'reset_token_expiry', 'TIMESTAMP')
+
+    # Migrate: add log_submitted column to practice_session if missing
+    _ensure_column('practice_session', 'log_submitted', 'BOOLEAN DEFAULT FALSE')
+
+    # ── ORM-based backfills (all column migrations have run by now) ──
+
     # Backfill missing creator signups for existing workshops
     for ws in Workshop.query.all():
         if ws.creator_id:
@@ -2045,92 +2244,10 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
-    # Migrate: add has_officer_access column if missing
-    try:
-        db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS has_officer_access BOOLEAN DEFAULT FALSE'))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-
-    # Migrate: add missing columns to mdp_audit_log
-    for col_sql in [
-        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS user_id INTEGER',
-        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS action VARCHAR(100)',
-        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS target VARCHAR(200)',
-        'ALTER TABLE mdp_audit_log ADD COLUMN IF NOT EXISTS details TEXT',
-    ]:
-        try:
-            db.session.execute(sql_text(col_sql))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
-    # Migrate: add is_competing to user
-    try:
-        db.session.execute(sql_text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_competing BOOLEAN DEFAULT TRUE'))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-
-    # Migrate: add missing columns to checklist_item
-    for col_sql in [
-        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS member_name VARCHAR(200)',
-        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS event VARCHAR(50)',
-        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS item VARCHAR(200)',
-        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS completed BOOLEAN DEFAULT FALSE',
-        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP',
-        'ALTER TABLE checklist_item ADD COLUMN IF NOT EXISTS created_at TIMESTAMP',
-    ]:
-        try:
-            db.session.execute(sql_text(col_sql))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
-    # Migrate: add grade column to commitment
-    try:
-        db.session.execute(sql_text('ALTER TABLE commitment ADD COLUMN IF NOT EXISTS grade VARCHAR(10)'))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-
-    # Migrate: add event column to mentor_pod
-    try:
-        db.session.execute(sql_text('ALTER TABLE mentor_pod ADD COLUMN IF NOT EXISTS event VARCHAR(50)'))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        
-    # Migrate: add reset_token columns if missing
-    for col_sql in [
-        'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS reset_token VARCHAR(100)',
-        'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS reset_token_expiry TIMESTAMP',
-    ]:
-        try:
-            db.session.execute(sql_text(col_sql))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
     # Migrate: ensure commitment rows exist for all members
     # (safe to run multiple times — ensure_commitments is idempotent)
     for member in User.query.filter_by(role='member').all():
         ensure_commitments(member)
-
-    # Migrate: add log_submitted column to practice_session if missing
-    ps_cols = [col[1] for col in db.session.execute(sql_text("PRAGMA table_info(practice_session)")).fetchall()] if db.engine.dialect.name == 'sqlite' else []
-    if db.engine.dialect.name == 'sqlite' and 'log_submitted' not in ps_cols:
-        try:
-            db.session.execute(sql_text('ALTER TABLE practice_session ADD COLUMN log_submitted BOOLEAN DEFAULT FALSE'))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-    elif db.engine.dialect.name != 'sqlite':
-        try:
-            db.session.execute(sql_text('ALTER TABLE practice_session ADD COLUMN IF NOT EXISTS log_submitted BOOLEAN DEFAULT FALSE'))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
 
     # One-time 2026-27 officer import. The operation is transactional and an
     # import problem is logged without preventing the web service from booting.
@@ -2810,31 +2927,20 @@ def dashboard():
         conference_order=CONFERENCE_ORDER,
     )
 
+# Public self-registration is closed. Every account is created either by the
+# canonical roster import or by an admin, so there is no path for a mentee to
+# create an officer or admin login. The route is kept (rather than deleted) so
+# that any bookmarked link lands somewhere sensible instead of a 404.
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
-    form = RegisterForm()
-    if form.validate_on_submit():
-        existing = User.query.filter_by(username=form.username.data.strip()).first()
-        if existing:
-            flash('This username is already in use. Please choose a different username.', 'warning')
-            return render_template('register.html', form=form)
-        hashed_pw = generate_password_hash(form.password.data)
-        user = User(
-            username=form.username.data.strip(),
-            password=hashed_pw,
-            role='member',
-            is_admin=False,
-            has_officer_access=False,
-            is_competing=True
-        )
-        user = User(username=form.username.data.strip(), password=hashed_pw, role=form.role.data)
-        db.session.add(user)
-        db.session.commit()
-        flash('Registration successful. Please sign in.', 'success')
-        return redirect(url_for('login'))
-    return render_template('register.html', form=form)
+    flash(
+        'Accounts are created by the Mentorship team. '
+        'If you need a login, contact an officer.',
+        'info',
+    )
+    return redirect(url_for('login'))
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
@@ -3522,8 +3628,13 @@ def reports():
 
 # ── ICPrep Webhook ───────────────────────────────────────────────────────────
 
-# Signing secret provided by ICPrep
-ICPREP_SIGNING_SECRET = '65ea1df4c1d98aea348f4890c612042584dbe40a544904ddfc147719e1fa9cea'
+# Signing secret provided by ICPrep. Set ICPREP_WEBHOOK_SECRET in the
+# environment; the literal below is only a fallback so existing deployments
+# keep working, and should be rotated and removed from source.
+ICPREP_SIGNING_SECRET = os.getenv(
+    'ICPREP_WEBHOOK_SECRET',
+    '65ea1df4c1d98aea348f4890c612042584dbe40a544904ddfc147719e1fa9cea',
+)
 
 
 def _verify_icprep_signature(raw_body: bytes, sig_header: str) -> bool:
@@ -4361,8 +4472,10 @@ def toggle_checklist_item():
     ).first()
 
     if item is None:
+        checklist_member = db.session.get(User, user_id)
         item = ChecklistItem(
             user_id=user_id,
+            member_name=checklist_member.username if checklist_member else None,
             event=storage_event,
             item_name=item_name,
             completed=(
