@@ -359,6 +359,13 @@
                                 Written Progress
                             </a>
 
+                            <a
+                                class="nav-link {% if request.endpoint == 'at_risk_report' %}active{% endif %}"
+                                href="{{ url_for('at_risk_report') }}"
+                            >
+                                Mentee Status
+                            </a>
+
                         {% elif current_user.role == 'officer' %}
                             <a
                                 class="nav-link {% if request.endpoint == 'practice_sessions' %}active{% endif %}"

@@ -305,13 +305,23 @@ class AttendanceSubmission(db.Model):
     submitted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 class ReminderLog(db.Model):
+    """One row per reminder email sent, so a reminder is never sent twice.
+
+    Reminders now cover practice sessions. workshop_id is retained and
+    nullable so existing rows survive; nothing writes it any more.
+    """
     id = db.Column(db.Integer, primary_key=True)
-    workshop_id = db.Column(db.Integer, db.ForeignKey('workshop.id'), nullable=False)
+    workshop_id = db.Column(db.Integer, db.ForeignKey('workshop.id'), nullable=True)
+    practice_session_id = db.Column(
+        db.Integer, db.ForeignKey('practice_session.id'), nullable=True
+    )
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        db.UniqueConstraint('workshop_id', 'user_id', name='unique_workshop_reminder'),
+        db.UniqueConstraint(
+            'practice_session_id', 'user_id', name='unique_practice_reminder'
+        ),
     )
 
 class AHAttendance(db.Model):
@@ -362,11 +372,15 @@ class PracticeSession(db.Model):
     practice_type = db.Column(db.String(30), nullable=False)
     conference = db.Column(db.String(10), nullable=False)
     member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    # When set, only this pod member may see and claim the slot. When NULL the
+    # slot is open to every member in the officer's pod.
+    reserved_for_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     log_submitted = db.Column(db.Boolean, default=False)  # True after officer logs completion
     officer = db.relationship('User', foreign_keys=[officer_id], backref='posted_sessions')
     member = db.relationship('User', foreign_keys=[member_id], backref='signed_up_sessions')
+    reserved_for = db.relationship('User', foreign_keys=[reserved_for_id])
 
 
 class ExamUpload(db.Model):
@@ -2093,9 +2107,10 @@ with app.app_context():
         _inspector = db.inspect(db.engine)
         if 'checklist_requirement' in _inspector.get_table_names():
             _cols = {c['name']: c for c in _inspector.get_columns('checklist_requirement')}
+            _expected = {'member_name', 'event', 'item_name', 'deadline',
+                         'completed', 'created_at'}
             if (
-                'item_name' not in _cols
-                or 'deadline' not in _cols
+                not _expected.issubset(_cols)
                 or not _cols.get('member_name', {}).get('nullable', True)
             ):
                 ChecklistRequirement.__table__.drop(db.engine, checkfirst=True)
@@ -2147,6 +2162,20 @@ with app.app_context():
 
     # Migrate: add log_submitted column to practice_session if missing
     _ensure_column('practice_session', 'log_submitted', 'BOOLEAN DEFAULT FALSE')
+
+    # Migrate: practice slots can be reserved for one pod member.
+    _ensure_column('practice_session', 'reserved_for_id', 'INTEGER')
+
+    # Migrate: reminders moved from workshops to practice sessions.
+    _ensure_column('reminder_log', 'practice_session_id', 'INTEGER')
+    if db.engine.dialect.name != 'sqlite':
+        try:
+            db.session.execute(sql_text(
+                'ALTER TABLE reminder_log ALTER COLUMN workshop_id DROP NOT NULL'
+            ))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
     # ── ORM-based backfills (all column migrations have run by now) ──
 
@@ -2312,49 +2341,61 @@ def send_email(to_email, subject, html_content):
         print("SEND_EMAIL error:", e)
         return False
 
-def send_email_reminder(user, workshop):
-    local_time_str = utc_to_local(workshop.time).strftime('%Y-%m-%d %I:%M %p')
-    return send_email(
-        user.email,
-        "Workshop Reminder",
-        f"Reminder: Your <b>{workshop.activity_type}</b> workshop is scheduled at {local_time_str}."
+def _practice_session_start(ps):
+    """Combine a session's date and 'HH:MM' time into an aware local datetime."""
+    try:
+        hour, minute = (int(part) for part in ps.session_time.split(':'))
+    except (AttributeError, ValueError):
+        return None
+    return datetime(
+        ps.session_date.year, ps.session_date.month, ps.session_date.day,
+        hour, minute, tzinfo=LOCAL_TZ,
     )
 
-def process_workshop_reminders():
-    with app.app_context():
-        now = datetime.now(timezone.utc)
-        soonest_cutoff = now + timedelta(days=1)
-        if not Workshop.query.filter(Workshop.time.between(now, soonest_cutoff)).first():
-            return
-        if not User.query.filter(User.notify_enabled == True).first():
-            return
-        active_users_exist = User.query.filter(
-            User.notify_enabled == True,
-            User.email.isnot(None),
-            User.email != ''
-        ).first()
-        if not active_users_exist:
-            return
-        reminder_window = now + timedelta(hours=24)
-        upcoming = Workshop.query.filter(
-            Workshop.time.between(now, reminder_window)
-        ).options(joinedload(Workshop.signups)).all()
-        for ws in upcoming:
-            for user in ws.signups:
-                if not user.notify_enabled or not user.email:
-                    continue
-                remind_at = utc_to_local(ws.time) - timedelta(minutes=user.remind_minutes_before)
-                already_sent = ReminderLog.query.filter_by(workshop_id=ws.id, user_id=user.id).first()
-                if remind_at <= now and not already_sent:
-                    db.session.add(ReminderLog(workshop_id=ws.id, user_id=user.id))
-                    db.session.commit()
-                    send_email_reminder(user, ws)
-        try:
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-            raise
 
+def send_practice_reminder(user, ps):
+    start = _practice_session_start(ps)
+    when = start.strftime('%Y-%m-%d %I:%M %p') if start else 'soon'
+    return send_email(
+        user.email,
+        'Practice Session Reminder',
+        f'Reminder: your <b>{ps.practice_type}</b> practice for '
+        f'<b>{ps.conference}</b> is scheduled at {when}.'
+    )
+
+
+def process_practice_session_reminders():
+    """Email members before a practice slot they have claimed."""
+    with app.app_context():
+        now = datetime.now(LOCAL_TZ)
+        window_end = (now + timedelta(days=1)).date()
+        upcoming = PracticeSession.query.filter(
+            PracticeSession.member_id.isnot(None),
+            PracticeSession.session_date >= now.date(),
+            PracticeSession.session_date <= window_end,
+        ).all()
+        for ps in upcoming:
+            member = ps.member
+            if not member or not member.notify_enabled or not member.email:
+                continue
+            start = _practice_session_start(ps)
+            if not start or start <= now:
+                continue
+            remind_at = start - timedelta(minutes=member.remind_minutes_before or 60)
+            if remind_at > now:
+                continue
+            already_sent = ReminderLog.query.filter_by(
+                practice_session_id=ps.id, user_id=member.id
+            ).first()
+            if already_sent:
+                continue
+            db.session.add(ReminderLog(practice_session_id=ps.id, user_id=member.id))
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                continue
+            send_practice_reminder(member, ps)
 
 
 def get_mentor_name(user):
@@ -2745,26 +2786,11 @@ def dashboard():
         # Fall back to commitment-based member names if no pod assignments
         if not pod_member_users:
             member_names = {c.member_name for c in commitments}
-            for ws in assigned_workshops:
-                for member in ws.signups:
-                    member_names.add(member.username)
             pod_member_users = [User.query.filter_by(username=n).first() for n in sorted(member_names)]
             pod_member_users = [u for u in pod_member_users if u]
 
-        # Workshop attendance (existing logic)
-        for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
-            actual_attended = db.session.query(workshop_signups).filter_by(user_id=member.id, attended=True).join(Workshop).filter(Workshop.officer_id == current_user.id).count()
-            ga = GeneralAttendance.query.filter_by(officer_id=current_user.id, member_name=member.username).first()
-            manual_count = ga.manual_count if ga else 0
-            total_attended = actual_attended + manual_count
-            workshop_attendance_data.append({
-                'member_name': member.username,
-                'total_attended': total_attended,
-                'manual_count': manual_count,
-                'actual_attended': actual_attended
-            })
-
-        # NEW: AH/WS attendance stats per pod member
+        # AH/WS attendance stats per pod member. These come from the monthly
+        # attendance workbook upload; officers cannot adjust them by hand.
         for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
             stats = get_attendance_stats(member)
             pod = MentorPod.query.filter_by(member_id=member.id).first()
@@ -2981,200 +3007,6 @@ def settings():
         return redirect(url_for('settings'))
     return render_template('settings.html')
 
-@app.route('/add_workshop', methods=['GET', 'POST'])
-@login_required
-def add_workshop():
-    if current_user.role != 'member':
-        flash('Only members can add workshops.', 'danger')
-        return redirect(url_for('dashboard'))
-    form = WorkshopForm()
-    officers = User.query.filter_by(role='officer').order_by(User.username).all()
-    form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
-    if form.validate_on_submit():
-        local_workshop_time = datetime.strptime(
-            f"{form.workshop_date.data} {form.slot.data}:00", "%Y-%m-%d %H:%M:%S"
-        )
-        workshop_time = local_to_utc(local_workshop_time)
-        error = validate_workshop_slot(workshop_time, form.officer_id.data)
-        if error:
-            flash(error, 'warning')
-            created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-            return render_template('add_workshop.html', form=form, created_workshops=created_workshops)
-        ws = Workshop(name=form.activity_type.data, time=workshop_time, officer_id=form.officer_id.data,
-                      activity_type=form.activity_type.data, creator_id=current_user.id)
-        db.session.add(ws)
-        db.session.flush()
-        if current_user not in ws.signups:
-            ws.signups.append(current_user)
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')
-            created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-            return render_template('add_workshop.html', form=form, created_workshops=created_workshops)
-        flash('Workshop added.', 'success')
-        return redirect(url_for('add_workshop'))
-    created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-    return render_template('add_workshop.html', form=form, created_workshops=created_workshops)
-
-@app.route('/edit_workshop/<int:workshop_id>', methods=['GET', 'POST'])
-@login_required
-def edit_workshop(workshop_id):
-    workshop = Workshop.query.get_or_404(workshop_id)
-    if current_user.role != 'member' or workshop.creator_id != current_user.id:
-        flash('You are not allowed to edit this workshop.', 'danger')
-        return redirect(url_for('add_workshop'))
-    original_date = workshop.time.date()
-    original_slot = workshop.time.strftime('%H:%M')
-    form = WorkshopForm()
-    officers = User.query.filter_by(role='officer').order_by(User.username).all()
-    form.officer_id.choices = [(0, 'Select an officer')] + [(o.id, o.username) for o in officers]
-    if request.method == 'GET':
-        form.workshop_date.data = original_date
-        form.slot.data = original_slot
-        form.activity_type.data = workshop.activity_type
-        form.officer_id.data = workshop.officer_id
-    if form.validate_on_submit():
-        local_workshop_time = datetime.strptime(
-            f"{form.workshop_date.data} {form.slot.data}:00", "%Y-%m-%d %H:%M:%S"
-        )
-        workshop_time = local_to_utc(local_workshop_time)
-        error = validate_workshop_slot(workshop_time, form.officer_id.data, exclude_workshop_id=workshop.id)
-        if error:
-            flash(error, 'warning')
-            created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-            form.workshop_date.data = original_date
-            form.slot.data = original_slot
-            form.officer_id.data = workshop.officer_id
-            form.activity_type.data = workshop.activity_type
-            return render_template('add_workshop.html', form=form, created_workshops=created_workshops, editing_workshop=workshop)
-        workshop.name = form.activity_type.data
-        workshop.time = workshop_time
-        workshop.officer_id = form.officer_id.data
-        workshop.activity_type = form.activity_type.data
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            flash('This officer already has a workshop booked for that date and time slot. Please choose a different time or officer.', 'warning')
-            created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-            form.workshop_date.data = original_date
-            form.slot.data = original_slot
-            form.officer_id.data = workshop.officer_id
-            form.activity_type.data = workshop.activity_type
-            return render_template('add_workshop.html', form=form, created_workshops=created_workshops, editing_workshop=workshop)
-        flash('Workshop updated.', 'success')
-        return redirect(url_for('add_workshop'))
-    created_workshops = Workshop.query.filter_by(creator_id=current_user.id).options(joinedload(Workshop.officer)).order_by(Workshop.time).all()
-    return render_template('add_workshop.html', form=form, created_workshops=created_workshops)
-
-@app.route('/delete_workshop/<int:workshop_id>', methods=['POST'])
-@login_required
-def delete_workshop(workshop_id):
-    workshop = Workshop.query.get_or_404(workshop_id)
-    if current_user.role != 'member' or workshop.creator_id != current_user.id:
-        flash('You are not allowed to delete this workshop.', 'danger')
-        return redirect(url_for('dashboard'))
-    db.session.delete(workshop)
-    db.session.commit()
-    flash('Workshop deleted.', 'success')
-    return redirect(url_for('add_workshop'))
-
-@app.route('/signup_workshop/<int:workshop_id>', methods=['POST'])
-@login_required
-def signup_workshop(workshop_id):
-    if current_user.role != 'member':
-        flash('Only members can sign up.', 'danger')
-        return redirect(url_for('dashboard'))
-    workshop = Workshop.query.get_or_404(workshop_id)
-    if current_user in workshop.signups:
-        flash('Already signed up.', 'info')
-        return redirect(url_for('dashboard'))
-    workshop.signups.append(current_user)
-    db.session.commit()
-    flash('Signed up.', 'success')
-    return redirect(url_for('dashboard'))
-
-@app.route('/cancel_signup/<int:workshop_id>', methods=['POST'])
-@login_required
-def cancel_signup(workshop_id):
-    if current_user.role != 'member':
-        flash('Only members can cancel sign-ups.', 'danger')
-        return redirect(url_for('dashboard'))
-    workshop = Workshop.query.get_or_404(workshop_id)
-    if current_user in workshop.signups:
-        workshop.signups.remove(current_user)
-        db.session.commit()
-        flash('Sign-up cancelled.', 'success')
-    else:
-        flash('Not signed up.', 'info')
-    return redirect(url_for('dashboard'))
-
-@app.route('/workshop/<int:workshop_id>/attendance', methods=['GET', 'POST'])
-@login_required
-def workshop_attendance(workshop_id):
-    if current_user.role != 'officer':
-        flash('Only officers can take attendance.', 'danger')
-        return redirect(url_for('dashboard'))
-    workshop = Workshop.query.options(joinedload(Workshop.officer)).get_or_404(workshop_id)
-    if workshop.officer_id != current_user.id:
-        flash('You are not the assigned officer for this workshop.', 'danger')
-        return redirect(url_for('dashboard'))
-    already_submitted = AttendanceSubmission.query.filter_by(workshop_id=workshop_id, officer_id=current_user.id).first() is not None
-    if request.method == 'POST':
-        if already_submitted:
-            flash('Attendance has already been submitted for this workshop.', 'warning')
-            return redirect(url_for('reports', tab='calendar'))
-        db.session.execute(workshop_signups.update().where(workshop_signups.c.workshop_id == workshop_id).values(attended=False))
-        for key in request.form:
-            if key.startswith('attended_user_') and request.form.get(key) == 'on':
-                user_id = int(key.split('_')[-1])
-                db.session.execute(workshop_signups.update().where(workshop_signups.c.workshop_id == workshop_id).where(workshop_signups.c.user_id == user_id).values(attended=True))
-                member = db.session.get(User, user_id)
-                if member:
-                    commitment = Commitment.query.filter_by(member_name=member.username, user_id=current_user.id).first()
-                    if commitment:
-                        if workshop.activity_type == 'Roleplay':
-                            commitment.remaining_roleplay = max(0, commitment.remaining_roleplay - 1)
-                        elif workshop.activity_type == 'Written Presentation':
-                            commitment.remaining_written = max(0, commitment.remaining_written - 1)
-                        elif workshop.activity_type == 'Exam':
-                            commitment.remaining_exam = max(0, commitment.remaining_exam - 1)
-                        db.session.add(commitment)
-        db.session.add(AttendanceSubmission(workshop_id=workshop_id, officer_id=current_user.id))
-        db.session.commit()
-        flash('Attendance updated successfully.', 'success')
-        return redirect(url_for('reports', tab='calendar'))
-    attendance_records = db.session.query(workshop_signups).filter_by(workshop_id=workshop_id).all()
-    members_with_attendance = []
-    for record in attendance_records:
-        user = db.session.get(User, record.user_id)
-        if user:
-            members_with_attendance.append({'user': user, 'attended': record.attended})
-    return render_template('attendance.html', workshop=workshop, members_with_attendance=members_with_attendance, already_submitted=already_submitted)
-
-@app.route('/increment_general_attendance', methods=['POST'])
-@login_required
-def increment_general_attendance():
-    if current_user.role != 'officer':
-        flash('Only officers can update attendance.', 'danger')
-        return redirect(url_for('dashboard'))
-    member_name_raw = request.form.get('member_name', '').strip()
-    if not member_name_raw:
-        flash('Member name is missing.', 'warning')
-        return redirect(url_for('dashboard'))
-    member_name = member_name_raw.lower()
-    ga = GeneralAttendance.query.filter(GeneralAttendance.officer_id == current_user.id, db.func.lower(GeneralAttendance.member_name) == member_name).first()
-    if not ga:
-        ga = GeneralAttendance(officer_id=current_user.id, member_name=member_name_raw, manual_count=0)
-        db.session.add(ga)
-        db.session.commit()
-    ga.manual_count += 1
-    db.session.commit()
-    flash('Attendance was added successfully.', 'success')
-    return redirect(request.referrer or url_for('dashboard'))
-
 # ── Member Commitments route ─────────────────────────────────────────────────
 
 @app.route('/my_commitments')
@@ -3204,12 +3036,26 @@ def practice_sessions():
         if request.method == 'POST':
             action = request.form.get('action')
             if action == 'create':
+                # A slot is either open to the whole pod (reserved_for_id
+                # NULL) or reserved for one member of the officer's pod.
+                reserved_for_id = request.form.get('reserved_for_id', type=int)
+                if reserved_for_id:
+                    in_pod = MentorPod.query.filter_by(
+                        mentor_id=current_user.id, member_id=reserved_for_id
+                    ).first()
+                    if not in_pod:
+                        flash('That member is not in your pod.', 'danger')
+                        return redirect(url_for('practice_sessions'))
+                else:
+                    reserved_for_id = None
+
                 ps = PracticeSession(
                     officer_id=current_user.id,
                     session_date=datetime.strptime(request.form['session_date'], '%Y-%m-%d').date(),
                     session_time=request.form['session_time'],
                     practice_type=request.form['practice_type'],
                     conference=request.form['conference'],
+                    reserved_for_id=reserved_for_id,
                     notes=request.form.get('notes', '').strip() or None,
                 )
                 db.session.add(ps)
@@ -3252,8 +3098,14 @@ def practice_sessions():
             member_name=current_user.username, event=active_conf).first()
         if pod:
             officer = db.session.get(User, pod.mentor_id)
-            open_sessions = PracticeSession.query.filter_by(
-                officer_id=pod.mentor_id, member_id=None).order_by(
+            open_sessions = PracticeSession.query.filter(
+                PracticeSession.officer_id == pod.mentor_id,
+                PracticeSession.member_id.is_(None),
+                db.or_(
+                    PracticeSession.reserved_for_id.is_(None),
+                    PracticeSession.reserved_for_id == current_user.id,
+                ),
+            ).order_by(
                 PracticeSession.session_date, PracticeSession.session_time).all()
             signed_up = PracticeSession.query.filter_by(
                 officer_id=pod.mentor_id, member_id=current_user.id).order_by(
@@ -3277,6 +3129,9 @@ def practice_session_signup(session_id):
     ps = PracticeSession.query.get_or_404(session_id)
     if ps.member_id is not None:
         flash('This slot is already taken.', 'warning')
+        return redirect(url_for('practice_sessions'))
+    if ps.reserved_for_id and ps.reserved_for_id != current_user.id:
+        flash('This slot is reserved for another member.', 'warning')
         return redirect(url_for('practice_sessions'))
     ps.member_id = current_user.id
     db.session.commit()
@@ -4499,6 +4354,63 @@ def admin_member_commitments():
     )
 
 
+@app.route('/at_risk_report')
+@login_required
+def at_risk_report():
+    """Mentee status report: Green on track, Yellow at risk, Red non-compete.
+
+    build_mentee_risk_report() distinguishes 'at_risk' (attendance below
+    threshold, or something already overdue) from 'needs_attention'
+    (incomplete but not yet late). Both mean the same thing to Mentorship —
+    this mentee may need moving to non-compete — so both show as Yellow, with
+    the underlying reasons still listed per row.
+    """
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can view this.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    today = datetime.now(LOCAL_TZ).date()
+    event_items, event_deadlines = get_written_checklist_catalog()
+
+    # Events such as BMOR and IMCE inherit their family's checklist.
+    for event_code, family in WRITTEN_EVENT_FAMILY.items():
+        if event_code not in event_items and family in event_items:
+            event_items[event_code] = list(event_items[family])
+            event_deadlines[event_code] = dict(event_deadlines.get(family, {}))
+
+    rows = build_mentee_risk_report(
+        _members_visible_to_current_user(),
+        event_items,
+        event_deadlines,
+        today=today,
+    )
+
+    status_filter = request.args.get('status', 'all').strip().lower()
+    if status_filter in {'at_risk', 'on_track', 'non_compete'}:
+        if status_filter == 'at_risk':
+            rows = [r for r in rows if r['status'] in {'at_risk', 'needs_attention'}]
+        else:
+            rows = [r for r in rows if r['status'] == status_filter]
+
+    yellow = sum(r['status'] in {'at_risk', 'needs_attention'} for r in rows)
+    summary = {
+        'total_members': len(rows),
+        'at_risk_count': sum(r['status'] == 'at_risk' for r in rows),
+        'needs_attention_count': sum(r['status'] == 'needs_attention' for r in rows),
+        'actionable_count': yellow,
+        'on_track_count': sum(r['status'] == 'on_track' for r in rows),
+        'non_compete_count': sum(r['status'] == 'non_compete' for r in rows),
+    }
+
+    return render_template(
+        'at_risk_report.html',
+        rows=rows,
+        summary=summary,
+        report_date=today,
+        status_filter=status_filter,
+    )
+
+
 @app.route('/checklist_completion')
 @login_required
 def checklist_completion():
@@ -4722,7 +4634,7 @@ def checklist_completion():
 scheduler = BackgroundScheduler()
 
 if not scheduler.running:
-    scheduler.add_job(process_workshop_reminders, 'interval', minutes=1)
+    scheduler.add_job(process_practice_session_reminders, 'interval', minutes=1)
     scheduler.start()
     print("REMINDER SCHEDULER STARTED")
 

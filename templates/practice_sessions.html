@@ -55,6 +55,18 @@
                     </div>
                     <input type="hidden" name="conference" value="{{ active_conf }}">
                     <div class="mb-3">
+                        <label class="form-label fw-semibold">Open to</label>
+                        <select name="reserved_for_id" class="form-select">
+                            <option value="">Everyone in my pod</option>
+                            {% for m in pod_member_users %}
+                            <option value="{{ m.id }}">Only {{ m.username }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">
+                            A reserved slot is visible only to that member.
+                        </div>
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label fw-semibold">Notes <span class="text-muted fw-normal">(optional)</span></label>
                         <input type="text" name="notes" class="form-control" placeholder="e.g. Zoom link or room number">
                     </div>
@@ -83,6 +95,7 @@
                                 <th>Time</th>
                                 <th>Type</th>
                                 <th>Conference</th>
+                                <th>Open To</th>
                                 <th>Signed Up</th>
                                 <th>Notes</th>
                                 <th></th>
@@ -105,6 +118,13 @@
                                     </span>
                                 </td>
                                 <td>{{ s.conference }}</td>
+                                <td>
+                                    {% if s.reserved_for %}
+                                    <span class="badge bg-info-subtle text-info-emphasis">{{ s.reserved_for.username }}</span>
+                                    {% else %}
+                                    <span class="text-muted small">Whole pod</span>
+                                    {% endif %}
+                                </td>
                                 <td>
                                     {% if s.member %}
                                         <span class="fw-semibold text-success">{{ s.member.username }}</span>

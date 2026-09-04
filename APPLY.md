@@ -1,76 +1,51 @@
-# ICPrep removal — how to apply
+# Update: yellow status, workshop cleanup, practice slot targeting
 
-These files replace their counterparts on `origin/main`. There is no `.git`
-folder in this archive, so nothing can rewind your repository.
-
-## 1. Make sure you are on the remote version
+No `.git` folder here. Copy these over the same paths, then delete two
+retired templates:
 
 ```powershell
-cd C:\Users\olivi\OneDrive\Documents\club-tracker
-git status          # must be clean
-git log --oneline -1    # must match origin/main
+del templates\add_workshop.html
+del templates\attendance.html
 ```
 
-If it isn't clean, run `git reset --hard origin/main` first.
+Verify with `git add -A` then `git diff --cached --stat`. Expect exactly six
+entries: app.py, templates/base.html, templates/dashboard.html,
+templates/practice_sessions.html modified; add_workshop.html and
+attendance.html deleted.
 
-## 2. Copy these files in
+## What changed
 
-Copy `app.py`, `MIGRATION_NOTES.md`, `.env.example`, and the two files in
-`templates\` over the same paths in your repo. Then delete the retired
-template:
+**Yellow at-risk status.** New `/at_risk_report` route renders the finished
+report template. `at_risk` (attendance below threshold or something overdue)
+and `needs_attention` (incomplete but not yet late) both display Yellow;
+per-row reasons stay separate. Green = on track, Red = non-compete. Filter
+via `?status=at_risk|on_track|non_compete`. "Mentee Status" added to the
+admin nav.
 
-```powershell
-del templates\icprep_events.html
-```
+**Workshops no longer decrement commitments.** Only practice sessions do.
+Removed `/add_workshop`, `/edit_workshop`, `/delete_workshop`,
+`/signup_workshop`, `/cancel_signup`, `/workshop/<id>/attendance` and
+`/increment_general_attendance`, plus `add_workshop.html` and
+`attendance.html`. Members cannot create or sign up for workshops.
 
-## 3. Verify before committing
+**Manual attendance removed.** The officer dashboard's "+1 Manual" table is
+gone. WS/AH attendance comes from the monthly workbook upload only.
 
-This is the important step. Git will tell you whether the base I worked from
-matched yours:
+**Reminders moved to practice sessions.** `process_workshop_reminders` is
+replaced by `process_practice_session_reminders`, which emails a member
+before a slot they have claimed, honouring their existing
+`remind_minutes_before` setting. `ReminderLog` gains `practice_session_id`;
+`workshop_id` becomes nullable so old rows survive.
 
-```powershell
-git add -A
-git diff --cached --stat
-```
+**Practice slot targeting.** `PracticeSession.reserved_for_id` is new. The
+post form has an "Open to" dropdown: "Everyone in my pod" or a single
+member. A reserved slot is visible only to that member, and signup is
+rejected if someone else tries. The officer's table gains an "Open To"
+column. Server-side check confirms the chosen member is actually in the
+officer's pod.
 
-You should see **exactly six entries**:
+## Note
 
-| File | Change |
-|---|---|
-| `app.py` | modified |
-| `.env.example` | modified |
-| `MIGRATION_NOTES.md` | modified |
-| `templates/member_commitments.html` | modified |
-| `templates/exam_uploads.html` | modified |
-| `templates/icprep_events.html` | deleted |
-
-If anything else appears, or if `app.py` shows far more changes than roughly
-250 deletions, **stop and run `git reset --hard origin/main`** — it means your
-`app.py` had edits mine did not, and I need your copy to redo this properly.
-
-To read the actual change before committing:
-
-```powershell
-git diff --cached app.py
-```
-
-## 4. Commit
-
-```powershell
-git commit -m "Remove ICPrep integration, tracking and webhook endpoints"
-git push
-```
-
-## 5. After deploying
-
-- **Back up the database first.** The migration drops `icprep_event`,
-  `icprep_webhook_log` and `annual_icprep_tracker` on next boot. That is
-  irreversible and takes the received event history with it.
-- Delete `ICPREP_WEBHOOK_SECRET` from your Railway variables; nothing reads it
-  now. Rotate it with ICPrep if it was ever shared with them.
-
-## Note on a file you deleted
-
-You removed `templates/my_commitments.html` on the remote. That is safe — the
-`/my_commitments` route renders `member_commitments.html`, not the file you
-deleted, so no route breaks.
+The `Workshop`, `GeneralAttendance` and `AttendanceSubmission` tables are
+left in place with their data; nothing writes to them now. Say the word if
+you want them dropped.
