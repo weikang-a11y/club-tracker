@@ -122,7 +122,7 @@
               data-grade-scdc="{{ row.grades.get('SCDC') if row.grades.get('SCDC') is not none else '' }}"
               data-ah-below="{{ 'true' if row.attendance.ah_total > 0 and row.attendance.ah_rate < 80 else 'false' }}"
               data-ws-below="{{ 'true' if row.attendance.ws_total > 0 and row.attendance.ws_rate < row.attendance.ws_threshold_pct else 'false' }}">
-            <td class="fw-semibold">{{ row.member.username }}</td>
+            <td class="fw-semibold"><a href="{{ url_for('mentee_detail', member_id=row.member.id) }}">{{ row.member.username }}</a></td>
             <td>{{ row.mentor_name }}</td>
             <td>
               <div>{{ row.event }}</div>

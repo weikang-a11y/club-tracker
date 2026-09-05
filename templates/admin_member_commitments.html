@@ -170,7 +170,7 @@
     data-mentor="{{ row.mentor_name }}"
     data-competing="{{ 'competing' if row.is_competing else 'non_compete' }}">
 <td class="fw-semibold">
-{{ row.member.username }}
+<a href="{{ url_for('mentee_detail', member_id=row.member.id) }}">{{ row.member.username }}</a>
 {% if row.status == 'non_compete' %}<span class="badge bg-secondary ms-1">Non-Compete</span>{% endif %}
 </td>
 <td>

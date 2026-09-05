@@ -9,6 +9,38 @@
     </div>
 </div>
 
+{# ── Written document link ──────────────────────────────────────── #}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+    <div class="card-body p-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+            <div>
+                <h4 class="mb-0">My Written Document</h4>
+                <p class="text-muted small mb-0">
+                    Paste the link to your written so your mentor can review it.
+                </p>
+            </div>
+            {% if current_user.written_url %}
+            <a class="btn btn-primary" href="{{ current_user.written_url }}"
+               target="_blank" rel="noopener">Open Document</a>
+            {% endif %}
+        </div>
+        <form method="POST" action="{{ url_for('set_my_written_link') }}"
+              class="row g-2 align-items-end">
+            <div class="col-md-9">
+                <input type="url" name="written_url" class="form-control"
+                       placeholder="https://docs.google.com/document/d/..."
+                       value="{{ current_user.written_url or '' }}">
+                <div class="form-text">
+                    Make sure sharing is set so your mentor can open it. Leave blank to remove.
+                </div>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-outline-primary w-100">Save Link</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 {# ── Active conference commitment progress only ────────────────── #}
 {% set conf = active_conf %}
 {% set com = all_commitments_map.get(conf) %}

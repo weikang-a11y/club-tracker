@@ -210,7 +210,13 @@ Only upload when the workbook is the source of truth; importing again overwrites
                         data-competing="{{ 'competing' if row.is_competing else 'non_compete' }}">
 
 
-                      <td class="fw-semibold">{{ row.member.username }}</td>
+                      <td class="fw-semibold">
+                        <a href="{{ url_for('mentee_detail', member_id=row.member.id) }}">{{ row.member.username }}</a>
+                        {% if row.member.written_url %}
+                        <a href="{{ row.member.written_url }}" target="_blank" rel="noopener"
+                           class="ms-1 text-decoration-none" title="Open written document">&#128196;</a>
+                        {% endif %}
+                      </td>
                       <td>
                         {% if row.status == 'non_compete' %}
                           <span class="badge bg-secondary">Non-Compete</span>

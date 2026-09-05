@@ -250,6 +250,9 @@ class User(UserMixin, db.Model):
     is_admin = db.Column(db.Boolean, default=False)
     has_officer_access = db.Column(db.Boolean, default=False)
     is_competing = db.Column(db.Boolean, default=True)
+    # Link to the mentee's written document (Google Doc, PDF, etc.). One per
+    # mentee, since the written checklist is keyed on their event.
+    written_url = db.Column(db.String(500), nullable=True)
     reset_token = db.Column(db.String(100), nullable=True)
     reset_token_expiry = db.Column(db.DateTime, nullable=True)
 
@@ -2162,6 +2165,9 @@ with app.app_context():
 
     # Migrate: add log_submitted column to practice_session if missing
     _ensure_column('practice_session', 'log_submitted', 'BOOLEAN DEFAULT FALSE')
+
+    # Migrate: link to each mentee's written document.
+    _ensure_column('user', 'written_url', 'VARCHAR(500)')
 
     # Migrate: practice slots can be reserved for one pod member.
     _ensure_column('practice_session', 'reserved_for_id', 'INTEGER')
@@ -4408,6 +4414,167 @@ def at_risk_report():
         summary=summary,
         report_date=today,
         status_filter=status_filter,
+    )
+
+
+def _clean_written_url(raw):
+    """Validate a pasted document link. Returns (url_or_None, error_or_None)."""
+    url = (raw or '').strip()
+    if not url:
+        return None, None
+    if not url.lower().startswith(('http://', 'https://')):
+        return None, 'The link must start with http:// or https://'
+    if len(url) > 500:
+        return None, 'That link is too long (500 characters maximum).'
+    return url, None
+
+
+@app.route('/my_written_link', methods=['POST'])
+@login_required
+def set_my_written_link():
+    """A mentee sets or clears the link to their own written document."""
+    url, error = _clean_written_url(request.form.get('written_url'))
+    if error:
+        flash(error, 'danger')
+    else:
+        current_user.written_url = url
+        db.session.commit()
+        flash('Written document link saved.' if url else 'Written document link removed.',
+              'success')
+    return redirect(url_for('member_commitments'))
+
+
+@app.route('/mentee/<int:member_id>/written_link', methods=['POST'])
+@login_required
+def set_mentee_written_link(member_id):
+    """An officer or admin sets the written link for a mentee they oversee."""
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can do this.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    member = User.query.get_or_404(member_id)
+    pod = MentorPod.query.filter_by(member_id=member.id).first()
+    if not is_admin_view() and (not pod or pod.mentor_id != current_user.id):
+        flash('You can only update members in your own pod.', 'danger')
+        return redirect(url_for('reports', tab='commitment'))
+
+    url, error = _clean_written_url(request.form.get('written_url'))
+    if error:
+        flash(error, 'danger')
+    else:
+        member.written_url = url
+        db.session.commit()
+        flash(f'Written link updated for {member.username}.' if url
+              else f'Written link removed for {member.username}.', 'success')
+    return redirect(url_for('mentee_detail', member_id=member.id))
+
+
+@app.route('/mentee/<int:member_id>')
+@login_required
+def mentee_detail(member_id):
+    """Full picture for a single mentee: attendance, commitments, written."""
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can view mentee details.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    member = User.query.get_or_404(member_id)
+    pod = MentorPod.query.options(joinedload(MentorPod.mentor)).filter_by(
+        member_id=member.id
+    ).first()
+
+    # Officers see only their own pod; admins see everyone.
+    if not is_admin_view() and (not pod or pod.mentor_id != current_user.id):
+        flash('You can only view members in your own pod.', 'danger')
+        return redirect(url_for('reports', tab='commitment'))
+
+    today = datetime.now(LOCAL_TZ).date()
+    commitments = Commitment.query.filter_by(user_id=member.id).all()
+    if not commitments:
+        commitments = Commitment.query.filter_by(member_name=member.username).all()
+    commitments_by_conf = {row.event: row for row in commitments}
+
+    conferences = []
+    for conference in CONFERENCE_ORDER:
+        commitment = commitments_by_conf.get(conference)
+        if not commitment:
+            conferences.append({'name': conference, 'commitment': None})
+            continue
+        conferences.append({
+            'name': conference,
+            'commitment': commitment,
+            'roleplay_done': commitment.required_roleplay - commitment.remaining_roleplay,
+            'written_done': commitment.required_written - commitment.remaining_written,
+            'exam_done': commitment.required_exam - commitment.remaining_exam,
+            'complete': (
+                commitment.remaining_roleplay
+                + commitment.remaining_written
+                + commitment.remaining_exam
+            ) == 0,
+            'overdue': bool(
+                commitment.deadline and commitment.deadline < today
+                and (
+                    commitment.remaining_roleplay
+                    + commitment.remaining_written
+                    + commitment.remaining_exam
+                ) > 0
+            ),
+        })
+
+    # Written checklist for the mentee's event, with per-item deadlines.
+    event = (pod.event or '').strip() if pod else ''
+    event_items, event_deadlines = get_written_checklist_catalog()
+    for event_code, family in WRITTEN_EVENT_FAMILY.items():
+        if event_code not in event_items and family in event_items:
+            event_items[event_code] = list(event_items[family])
+            event_deadlines[event_code] = dict(event_deadlines.get(family, {}))
+
+    item_names = event_items.get(event, [])
+    storage_event = f'{CURRENT_WRITTEN_STORAGE_PREFIX}{event}'
+    completed_by_item = {
+        item.item_name: bool(item.completed)
+        for item in ChecklistItem.query.filter_by(
+            user_id=member.id, event=storage_event
+        ).all()
+    }
+    written = _written_status(
+        item_names, completed_by_item, event_deadlines.get(event, {}), today=today
+    ) if item_names else None
+    written_items = [
+        {
+            'name': name,
+            'completed': completed_by_item.get(name, False),
+            'deadline_text': event_deadlines.get(event, {}).get(name),
+        }
+        for name in item_names
+    ]
+
+    practice_logs = PracticeLog.query.filter_by(member_id=member.id).order_by(
+        PracticeLog.submitted_at.desc()
+    ).limit(25).all()
+    upcoming_sessions = PracticeSession.query.filter(
+        PracticeSession.member_id == member.id,
+        PracticeSession.session_date >= today,
+    ).order_by(PracticeSession.session_date, PracticeSession.session_time).all()
+    exam_uploads = ExamUpload.query.filter_by(member_id=member.id).order_by(
+        ExamUpload.uploaded_at.desc()
+    ).all()
+
+    return render_template(
+        'mentee_detail.html',
+        member=member,
+        pod=pod,
+        level=pod.experience_level if pod else 'N',
+        event=event,
+        mentor_name=pod.mentor.username if pod and pod.mentor else 'Unassigned',
+        attendance=get_attendance_stats(member),
+        conferences=conferences,
+        written=written,
+        written_items=written_items,
+        storage_event=storage_event,
+        practice_logs=practice_logs,
+        upcoming_sessions=upcoming_sessions,
+        exam_uploads=exam_uploads,
+        report_date=today,
     )
 
 

@@ -116,7 +116,7 @@
                     {% set total_req = com.required_roleplay + com.required_written + com.required_exam %}
                     {% set pct = ((total_done / total_req) * 100) | round(0) | int if total_req > 0 else 100 %}
                     <tr class="{{ 'table-success' if pct == 100 else '' }}">
-                        <td class="fw-semibold">{{ row.member.username }}</td>
+                        <td class="fw-semibold"><a href="{{ url_for('mentee_detail', member_id=row.member.id) }}">{{ row.member.username }}</a></td>
                         <td>
                             <span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">
                                 {{ 'Novice' if row.level == 'N' else 'Exp' }}
@@ -149,7 +149,7 @@
                     </tr>
                     {% else %}
                     <tr>
-                        <td class="fw-semibold">{{ row.member.username }}</td>
+                        <td class="fw-semibold"><a href="{{ url_for('mentee_detail', member_id=row.member.id) }}">{{ row.member.username }}</a></td>
                         <td><span class="badge {{ 'bg-primary' if row.level == 'N' else 'bg-success' }}">{{ 'Novice' if row.level == 'N' else 'Exp' }}</span></td>
                         <td colspan="4" class="text-muted small">No commitment record yet</td>
                     </tr>
