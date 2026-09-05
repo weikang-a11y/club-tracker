@@ -1,82 +1,84 @@
-# Update: admin home = admin panel, nav cleanup, written links,
-# mentee detail page, yellow status, workshop cleanup, slot targeting
+# Performance update — no behaviour changes
 
-Supersedes any earlier package. No `.git` folder. Copy over the same paths,
-then delete two retired templates:
+Four files. `mentee_detail.html` is included because it never reached git
+(that was the TemplateNotFound on Railway); make sure `git add -A` picks it
+up, not `git add app.py`.
 
 ```powershell
-del templates\add_workshop.html
-del templates\attendance.html
+git add -A
+git status          # expect: app.py, Procfile, requirements.txt modified;
+                    # templates/mentee_detail.html new
+git commit -m "Performance: connection pooling, gunicorn workers, bulk-load risk report"
+git push
 ```
 
-Verify with `git add -A` then `git diff --cached --stat`. Expect twelve
-entries: app.py, nine templates modified or added, two deleted.
+## 1. Gunicorn concurrency (the big one)
 
-## Admin home screen (this round)
+`Procfile` was `web: gunicorn app:app` — a single sync worker, so one
+request was served at a time and everyone else queued. That is why the site
+felt fine alone and slow with several people on it. Now:
 
-The `/` dashboard route now redirects admins to `/admin`. Doing it at the
-route rather than the link means every existing `url_for('dashboard')` in
-the codebase — login, the settings guard, various flash redirects — lands
-admins on the admin panel. The member dashboard is unreachable for them,
-by URL or otherwise.
+```
+web: gunicorn app:app --workers 2 --threads 4 --timeout 60 --access-logfile -
+```
 
-No redirect loop: `is_admin_view()` and `admin_required` both test
-`current_user.is_admin`, so they can never disagree.
+Roughly 8 concurrent requests instead of 1. `--access-logfile -` sends
+request logs to Railway so slow pages are visible in future.
 
-Admin nav reads: MDP Changes, Mentor Pods, Member Commitments,
-Written Progress, Mentee Status. Officer and member navs unchanged.
+## 2. Database connection pooling
 
-## Member dashboard
+`poolclass: NullPool` meant a fresh TCP + TLS + auth handshake to Postgres
+on every single request. Replaced with a small pool:
 
-- "Workshop Attendance Summary" card removed. It counted retired workshop
-  sign-up tables and showed 0/0/0% beside the real AH/WS figures.
-- Panel relabelled from "<EVENT> Workshops" to "<EVENT> Practice Sessions";
-  now full width.
+```python
+{'pool_size': 5, 'max_overflow': 5, 'pool_recycle': 280, 'pool_pre_ping': True}
+```
 
-## Written document links
+`pool_pre_ping` detects connections the server has dropped, which is the
+problem NullPool was working around — so the original concern is still
+handled, without the per-request handshake. With 2 workers this is at most
+20 connections, well inside Postgres limits.
 
-`User.written_url`, one per mentee. Mentees set their own on My Commitments;
-mentors and admins set or correct it from the mentee detail page (own pod
-only for officers). "Open Written Document" button in the detail header, and
-a document icon beside the name on Written Progress. Must start with
-http:// or https://, 500 character cap; blank clears.
+## 3. at_risk_report N+1 query
 
-## Per-mentee detail page
+`build_mentee_risk_report` queried per member inside its loop: pod,
+AH records, WS records, pod again, commitments, checklist items, pod a third
+time. It now bulk-loads all of that keyed by member id before the loop.
 
-`/mentee/<id>`. Names clickable from Member Commitments, Written Progress,
-Mentee Status and both officer report tables. Shows
-mentor/level/event/competing badge, AH and WS rates, per-conference
-commitments with deadline, grade and status, the written checklist, upcoming
-practice sessions, recent completions, and exam uploads.
+**1,017 queries -> 5** for 127 members.
 
-## Yellow at-risk status
+The per-member logic below the loop is untouched. `get_attendance_stats` and
+`get_mentor_name` gained optional prefetch parameters that default to the
+original queries, so every other caller behaves exactly as before. A
+sentinel is used for `pod` so an explicit `pod=None` (member genuinely has
+no pod) is honoured rather than triggering a fallback query.
 
-`/at_risk_report`. `at_risk` and `needs_attention` both display Yellow with
-reasons per row; Green on track, Red non-compete. Filter with
-`?status=at_risk|on_track|non_compete`.
+## Verification
 
-## Workshop cleanup and reminders
+- Report output compared row by row before and after against a 127-member
+  fixture with varied attendance, grades, deadlines and checklist progress,
+  covering at_risk / needs_attention / non_compete: **0 differences** across
+  every field and nested dict.
+- `get_attendance_stats` and `get_mentor_name` produce identical results via
+  the default and prefetch paths across 40 members, including a member with
+  no pod.
+- All routes exercised as admin, officer and member: no 5xx.
 
-Only practice sessions decrement commitments. Removed the workshop booking,
-signup, attendance and manual-increment routes and their two templates.
-`process_practice_session_reminders` replaces the workshop reminder job.
-`ReminderLog` gains `practice_session_id`; `workshop_id` becomes nullable.
+## Note on the reminder job
 
-## Practice slot targeting
-
-`PracticeSession.reserved_for_id`. "Open to" dropdown: everyone in the pod,
-or one named member. Reserved slots visible only to that member.
+With 2 workers the scheduler runs in both. Duplicate emails are prevented by
+the unique constraint on `ReminderLog(practice_session_id, user_id)`: the
+second worker's insert fails, it rolls back and skips the send. Safe, just
+slightly redundant. Worth revisiting if you scale past 2 workers.
 
 ## Still open
 
 - `MDP_UPLOAD_ENABLED=1` for the monthly workbook upload; needs one
-  end-to-end test with a real workbook.
-- Phase 3 team features, pending your discussion.
-- `/settings` is member-only by an existing guard, so officers and admins
-  cannot set a notification email. Flag if that is not intended.
-- Audit items not yet actioned: practice-type badges compare against
-  'Roleplay' instead of 'In-Person Roleplay' (four places);
-  `/mentee-progress` redirect is redundant; orphan templates
-  `add_commitment.html` (broken url_for inside) and `register.html`;
-  unlinked `/admin/make_first_admin` bootstrap page; `/change-password` has
-  no link.
+  end-to-end test.
+- Phase 3 team features.
+- `/settings` is member-only, so officers and admins cannot set a
+  notification email.
+- Audit items: practice-type badges compare against 'Roleplay' instead of
+  'In-Person Roleplay'; redundant `/mentee-progress`; orphan templates
+  `add_commitment.html` and `register.html`; unlinked
+  `/admin/make_first_admin`; `/change-password` has no link.

@@ -9,7 +9,6 @@ from wtforms import StringField, PasswordField, DateField, SelectField, IntegerF
 from wtforms.validators import DataRequired, Length, NumberRange, ValidationError, Email
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text as sql_text
-from sqlalchemy.pool import NullPool
 from apscheduler.schedulers.background import BackgroundScheduler
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
@@ -41,7 +40,16 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
     print(f"[DB] Using external database: {DATABASE_URL[:60]}...")
     app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
+    # NullPool opened a fresh TCP + TLS + auth handshake to Postgres on every
+    # request. A small pool with pre-ping keeps connections warm while still
+    # detecting ones the server has dropped, which is what NullPool was
+    # working around. pool_recycle stays under typical idle timeouts.
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_size': 5,
+        'max_overflow': 5,
+        'pool_recycle': 280,
+        'pool_pre_ping': True,
+    }
 else:
     local_db = os.path.join(os.path.dirname(__file__), 'club.db')
     print('[DB] No DATABASE_URL found, using local SQLite database.')
@@ -1838,10 +1846,20 @@ def ensure_commitments(member):
 
 # ── Attendance helper ─────────────────────────────────────────────────────────
 
-def get_attendance_stats(user):
-    """Return AH rate, WS rate, and at-risk flag for a member."""
-    ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
-    ws_records = WSAttendance.query.filter_by(user_id=user.id).all()
+_UNSET = object()
+
+
+def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
+    """Return AH rate, WS rate, and at-risk flag for a member.
+
+    ah_records/ws_records/pod may be supplied by a caller that has already
+    loaded them in bulk. Left at their defaults the behaviour is identical
+    to querying per member.
+    """
+    if ah_records is None:
+        ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
+    if ws_records is None:
+        ws_records = WSAttendance.query.filter_by(user_id=user.id).all()
 
     total_ah = len(ah_records)
     total_ws = len(ws_records)
@@ -1853,7 +1871,8 @@ def get_attendance_stats(user):
     ws_rate = round((ws_sum / total_ws) * 100, 1) if total_ws > 0 else 0.0
 
     # Get experience level from pod
-    pod = MentorPod.query.filter_by(member_id=user.id).first()
+    if pod is _UNSET:
+        pod = MentorPod.query.filter_by(member_id=user.id).first()
     level = pod.experience_level if pod else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
@@ -2404,8 +2423,9 @@ def process_practice_session_reminders():
             send_practice_reminder(member, ps)
 
 
-def get_mentor_name(user):
-    pod = MentorPod.query.filter_by(member_id=user.id).first()
+def get_mentor_name(user, pod=_UNSET):
+    if pod is _UNSET:
+        pod = MentorPod.query.filter_by(member_id=user.id).first()
     return pod.mentor.username if pod and pod.mentor else 'Unassigned'
 
 
@@ -2662,13 +2682,58 @@ def _conference_summary_for_user(user, today=None, commitments=None):
 
 def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
     today = today or datetime.now(LOCAL_TZ).date()
+
+    # Bulk-load everything this report needs, keyed by member id, instead of
+    # querying per member. Same data, same per-member logic below — this only
+    # changes how many round trips it takes to fetch it.
+    member_ids = [m.id for m in members]
+    pods_by_member, ah_by_member, ws_by_member = {}, {}, {}
+    commitments_by_user, commitments_by_name = {}, {}
+    checklist_by_member = {}
+    if member_ids:
+        for pod_row in MentorPod.query.options(
+            joinedload(MentorPod.mentor)
+        ).filter(MentorPod.member_id.in_(member_ids)).all():
+            # .first() semantics: keep the earliest row per member.
+            pods_by_member.setdefault(pod_row.member_id, pod_row)
+        for record in AHAttendance.query.filter(
+            AHAttendance.user_id.in_(member_ids)
+        ).all():
+            ah_by_member.setdefault(record.user_id, []).append(record)
+        for record in WSAttendance.query.filter(
+            WSAttendance.user_id.in_(member_ids)
+        ).all():
+            ws_by_member.setdefault(record.user_id, []).append(record)
+        member_names = [m.username for m in members]
+        for row in Commitment.query.filter(
+            db.or_(
+                Commitment.user_id.in_(member_ids),
+                Commitment.member_name.in_(member_names),
+            )
+        ).all():
+            if row.user_id is not None:
+                commitments_by_user.setdefault(row.user_id, []).append(row)
+            if row.member_name:
+                commitments_by_name.setdefault(row.member_name, []).append(row)
+        for item in ChecklistItem.query.filter(
+            ChecklistItem.user_id.in_(member_ids)
+        ).all():
+            checklist_by_member.setdefault(
+                (item.user_id, item.event), []
+            ).append(item)
+
     rows = []
     for member in members:
         is_competing = member.is_competing is not False
-        pod = MentorPod.query.filter_by(member_id=member.id).first()
+        pod = pods_by_member.get(member.id)
         event = (pod.event or '').strip() if pod else ''
         level = pod.experience_level if pod else 'N'
-        attendance = get_attendance_stats(member)
+        attendance = get_attendance_stats(
+            member,
+            ah_records=ah_by_member.get(member.id, []),
+            ws_records=ws_by_member.get(member.id, []),
+            pod=pod,
+        )
         attendance_reasons = []
         if attendance['ah_total'] > 0 and attendance['ah_rate'] < AH_THRESHOLD * 100:
             attendance_reasons.append(
@@ -2678,11 +2743,19 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             attendance_reasons.append(
                 f"WS attendance {attendance['ws_rate']}% (requires {attendance['ws_threshold_pct']:.0f}%)"
             )
-        conference = _conference_summary_for_user(member, today=today)
+        # Mirrors the helper's own fallback: user_id first, then member_name.
+        member_commitments = (
+            commitments_by_user.get(member.id)
+            or commitments_by_name.get(member.username)
+            or []
+        )
+        conference = _conference_summary_for_user(
+            member, today=today, commitments=member_commitments
+        )
         item_names = event_items.get(event, [])
         completed = {
             item.item_name: bool(item.completed)
-            for item in ChecklistItem.query.filter_by(user_id=member.id, event=event).all()
+            for item in checklist_by_member.get((member.id, event), [])
         }
         written = _written_status(
             item_names,
@@ -2725,7 +2798,7 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
         event_label = event or 'Unassigned'
         rows.append({
             'member': member,
-            'mentor_name': get_mentor_name(member),
+            'mentor_name': get_mentor_name(member, pod=pod),
             'event': event_label,
             'event_keys': [event_label],
             'level': level,
