@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}{{ member.username }}{% endblock %}
+{% block content %}
+<style>
+  .stat-number { font-size: 1.7rem; font-weight: 700; line-height: 1; }
+  .detail-table { font-size: .9rem; }
+  .item-done { color: #198754; }
+  .item-late { color: #dc3545; }
+</style>
+
+<div class="card page-header-card mb-4">
+  <div class="card-body p-4 d-flex flex-wrap gap-3 justify-content-between align-items-center">
+    <div>
+      <h2 class="mb-1">{{ member.username }}</h2>
+      <p class="lead mb-0">
+        Mentor: {{ mentor_name }}
+        &middot; {{ 'Novice' if level == 'N' else 'Experienced' }}
+        &middot; Event: {{ event or 'Unassigned' }}
+      </p>
+      <div class="mt-2">
+        {% if member.is_competing is false %}
+        <span class="badge bg-danger">Non-Compete</span>
+        {% else %}
+        <span class="badge bg-success">Competing</span>
+        {% endif %}
+        <span class="badge bg-secondary-subtle text-secondary-emphasis">
+          {{ 'Novice' if level == 'N' else 'Experienced' }}
+        </span>
+      </div>
+    </div>
+    <div class="d-flex gap-2">
+      {% if member.written_url %}
+      <a class="btn btn-primary" href="{{ member.written_url }}" target="_blank" rel="noopener">
+        Open Written Document
+      </a>
+      {% endif %}
+      <a class="btn btn-outline-secondary" href="{{ url_for('checklist_completion', written_view='current') }}">
+        Written Progress
+      </a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('admin_member_commitments') }}">
+        Back to All Mentees
+      </a>
+    </div>
+  </div>
+</div>
+
+{# ── Attendance ─────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">All-Hands Attendance</div>
+      <div class="stat-number">{{ attendance.ah_rate }}%</div>
+      <div class="text-muted small">{{ attendance.ah_sum }} of {{ attendance.ah_total }}</div>
+    </div></div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">Workshop Attendance</div>
+      <div class="stat-number">{{ attendance.ws_rate }}%</div>
+      <div class="text-muted small">{{ attendance.ws_sum }} of {{ attendance.ws_total }}</div>
+    </div></div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">Written Status</div>
+      <div class="stat-number">
+        {% if written %}{{ written.status_label }}{% else %}&mdash;{% endif %}
+      </div>
+      <div class="text-muted small">
+        {% if written %}{{ written.missing_items | length }} item(s) outstanding{% else %}No checklist for this event{% endif %}
+      </div>
+    </div></div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card border-0 shadow-sm h-100"><div class="card-body">
+      <div class="text-muted small">Upcoming Practices</div>
+      <div class="stat-number">{{ upcoming_sessions | length }}</div>
+      <div class="text-muted small">scheduled</div>
+    </div></div>
+  </div>
+</div>
+
+{% if attendance.risk_reasons %}
+<div class="alert alert-warning">
+  <strong>Attendance concerns:</strong>
+  <ul class="mb-0">
+    {% for reason in attendance.risk_reasons %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{# ── Commitments by conference ──────────────────────────── #}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-header bg-white"><h5 class="mb-0 fw-bold">Commitments by Conference</h5></div>
+  <div class="table-responsive">
+    <table class="table table-striped mb-0 detail-table">
+      <thead class="table-light">
+        <tr>
+          <th>Conference</th><th>Roleplay</th><th>Written</th><th>Exam</th>
+          <th>Deadline</th><th>Grade</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in conferences %}
+        <tr {% if row.overdue %}class="table-danger"{% elif row.complete %}class="table-success"{% endif %}>
+          <td class="fw-semibold">{{ row.name }}</td>
+          {% if row.commitment %}
+          <td>{{ row.roleplay_done }}/{{ row.commitment.required_roleplay }}</td>
+          <td>{{ row.written_done }}/{{ row.commitment.required_written }}</td>
+          <td>{{ row.exam_done }}/{{ row.commitment.required_exam }}</td>
+          <td>{{ row.commitment.deadline.strftime('%b %d, %Y') if row.commitment.deadline else '—' }}</td>
+          <td>{{ row.commitment.grade or '—' }}</td>
+          <td>
+            {% if row.overdue %}<span class="badge bg-danger">Overdue</span>
+            {% elif row.complete %}<span class="badge bg-success">Complete</span>
+            {% else %}<span class="badge bg-warning text-dark">In Progress</span>{% endif %}
+          </td>
+          {% else %}
+          <td colspan="6" class="text-muted">No commitment record</td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Written checklist ──────────────────────────────────── #}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <h5 class="mb-0 fw-bold">Written Checklist{% if event %} &mdash; {{ event }}{% endif %}</h5>
+    <a class="btn btn-sm btn-outline-primary"
+       href="{{ url_for('checklist_completion', written_view='current') }}">
+      Open Written Progress
+    </a>
+  </div>
+  <div class="card-body border-bottom">
+    <form method="POST" action="{{ url_for('set_mentee_written_link', member_id=member.id) }}"
+          class="row g-2 align-items-end">
+      <div class="col-md-9">
+        <label class="form-label fw-semibold mb-1">Written document link</label>
+        <input type="url" name="written_url" class="form-control"
+               placeholder="https://docs.google.com/document/d/..."
+               value="{{ member.written_url or '' }}">
+        <div class="form-text">Leave blank to remove the link.</div>
+      </div>
+      <div class="col-md-3">
+        <button type="submit" class="btn btn-outline-primary w-100">Save Link</button>
+      </div>
+    </form>
+  </div>
+  {% if written_items %}
+  <div class="table-responsive">
+    <table class="table table-striped mb-0 detail-table">
+      <thead class="table-light">
+        <tr><th>Item</th><th>Deadline</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for item in written_items %}
+        <tr>
+          <td>{{ item.name }}</td>
+          <td>{{ item.deadline_text or '—' }}</td>
+          <td>
+            {% if item.completed %}
+            <span class="item-done fw-semibold">Complete</span>
+            {% else %}
+            <span class="text-muted">Outstanding</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-muted">
+    No written checklist is defined for this event.
+  </div>
+  {% endif %}
+</div>
+
+<div class="row g-3">
+  {# ── Upcoming practice sessions ───────────────────────── #}
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-white"><h5 class="mb-0 fw-bold">Upcoming Practice Sessions</h5></div>
+      {% if upcoming_sessions %}
+      <ul class="list-group list-group-flush">
+        {% for s in upcoming_sessions %}
+        <li class="list-group-item">
+          <div class="fw-semibold">{{ s.session_date.strftime('%b %d, %Y') }} at {{ s.session_time }}</div>
+          <div class="text-muted small">{{ s.practice_type }} &middot; {{ s.conference }}</div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="card-body text-muted">Nothing scheduled.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Completion history ───────────────────────────────── #}
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-white"><h5 class="mb-0 fw-bold">Recent Completions</h5></div>
+      {% if practice_logs %}
+      <ul class="list-group list-group-flush">
+        {% for log in practice_logs %}
+        <li class="list-group-item">
+          <div class="fw-semibold">{{ log.practice_type }} &middot; {{ log.conference }}</div>
+          <div class="text-muted small">
+            Logged by {{ log.officer.username if log.officer else 'unknown' }}
+            {% if log.submitted_at %}on {{ log.submitted_at.strftime('%b %d, %Y %I:%M %p') }} UTC{% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="card-body text-muted">No commitments logged yet.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Exam uploads ───────────────────────────────────────── #}
+{% if exam_uploads %}
+<div class="card border-0 shadow-sm mt-4">
+  <div class="card-header bg-white"><h5 class="mb-0 fw-bold">Exam Uploads</h5></div>
+  <div class="table-responsive">
+    <table class="table table-striped mb-0 detail-table">
+      <thead class="table-light">
+        <tr><th>Conference</th><th>Uploaded</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for upload in exam_uploads %}
+        <tr>
+          <td>{{ upload.conference }}</td>
+          <td>{{ upload.uploaded_at.strftime('%b %d, %Y') if upload.uploaded_at else '—' }}</td>
+          <td>
+            {% if upload.credited %}<span class="badge bg-success">Credited</span>
+            {% elif upload.reviewed %}<span class="badge bg-secondary">Reviewed</span>
+            {% else %}<span class="badge bg-warning text-dark">Pending</span>{% endif %}
+          </td>
+          <td><a href="{{ upload.cloudinary_url }}" target="_blank" rel="noopener">View</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
