@@ -307,22 +307,16 @@
                     </div>
 
                     <nav class="nav flex-column">
+                        {% if not current_user.is_admin %}
                         <a
                             class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}"
                             href="{{ url_for('dashboard') }}"
                         >
                             Dashboard
                         </a>
+                        {% endif %}
 
                         {% if current_user.is_admin %}
-                            <a
-                                class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}"
-                                href="{{ url_for('settings') }}"
-                            >
-                                Settings
-                            </a>
-
-                            <hr class="border-secondary my-2">
 
                             <a
                                 class="nav-link {% if request.endpoint == 'admin_panel' %}active{% endif %}"

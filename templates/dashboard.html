@@ -776,16 +776,16 @@ function resetAhWsFilters() {
 
 
 
-{# ── Workshops and Attendance summary ──────────────────────── #}
+{# ── Practice sessions ─────────────────────────────────────── #}
 <div class="row g-3">
-  <div class="col-xl-7">
+  <div class="col-12">
       <div class="card border-0 shadow-sm rounded-4">
           <div class="card-header bg-white border-bottom-0 p-4 d-flex justify-content-between align-items-center">
               <div>
                   <h4 class="mb-1">
-                      {% if progress_summary and progress_summary.event %}{{ progress_summary.event }} {% endif %}Workshops
+                      {% if progress_summary and progress_summary.event %}{{ progress_summary.event }} {% endif %}Practice Sessions
                   </h4>
-                  <p class="text-muted mb-0">These are your current workshop sign-ups.</p>
+                  <p class="text-muted mb-0">These are your current practice session sign-ups.</p>
               </div>
               <span class="badge rounded-pill text-primary bg-primary-subtle px-3 py-2">{{ workshops|length }} total</span>
           </div>
@@ -816,36 +816,6 @@ function resetAhWsFilters() {
 
 
 
-  <div class="col-xl-5">
-      <div class="card border-0 shadow-sm rounded-4">
-          <div class="card-header bg-white border-bottom-0 p-4">
-              <h4 class="mb-1">Workshop Attendance Summary</h4>
-              <p class="text-muted mb-0">Based on a fixed total of 18 workshops.</p>
-          </div>
-          <div class="card-body p-4 pt-2">
-              <div class="row g-3">
-                  <div class="col-4">
-                      <div class="border rounded-4 p-3 text-center">
-                          <div class="text-muted small">Signed Up</div>
-                          <div class="display-6 fw-semibold">{{ attendance_summary.signed if attendance_summary else 0 }}</div>
-                      </div>
-                  </div>
-                  <div class="col-4">
-                      <div class="border rounded-4 p-3 text-center">
-                          <div class="text-muted small">Attended</div>
-                          <div class="display-6 fw-semibold">{{ attendance_summary.attended if attendance_summary else 0 }}</div>
-                      </div>
-                  </div>
-                  <div class="col-4">
-                      <div class="border rounded-4 p-3 text-center">
-                          <div class="text-muted small">Rate</div>
-                          <div class="display-6 fw-semibold">{{ attendance_summary.rate if attendance_summary else 0 }}%</div>
-                      </div>
-                  </div>
-              </div>
-          </div>
-      </div>
-  </div>
 </div>
 
 

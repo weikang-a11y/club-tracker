@@ -2747,6 +2747,12 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
 @app.route('/')
 @login_required
 def dashboard():
+    # The admin panel is the admin's home screen. Redirecting here means every
+    # existing url_for('dashboard') in the codebase lands admins in the right
+    # place, and the member dashboard is unreachable for them.
+    if is_admin_view():
+        return redirect(url_for('admin_panel'))
+
     commitments = []
     progress_summary = None
     attendance_summary = None
