@@ -102,9 +102,34 @@
 {# ── User Table ─────────────────────────────────────────────── #}
 <div class="card border-0 shadow-sm rounded-4">
     <div class="card-header bg-white p-4 d-flex justify-content-between align-items-center">
-        <h5 class="mb-0 fw-bold">All Users ({{ users|length }})</h5>
-        <input type="text" id="userSearch" class="form-control form-control-sm w-auto"
-               placeholder="Search username..." onkeyup="filterUsers()" style="min-width:200px;">
+        <h5 class="mb-0 fw-bold">
+            All Users ({{ users|length }})
+            {% if pending_password_count %}
+            <span class="badge bg-warning text-dark ms-2">
+                {{ pending_password_count }} awaiting password setup
+            </span>
+            {% endif %}
+        </h5>
+        <div class="d-flex gap-2 align-items-center">
+            <label class="text-muted small mb-0">Filter by</label>
+            <select class="form-select form-select-sm w-auto"
+                    onchange="window.location.href=this.value">
+                <option value="{{ url_for('admin_panel') }}"
+                        {% if pw_filter == 'all' %}selected{% endif %}>
+                    All users
+                </option>
+                <option value="{{ url_for('admin_panel', pw='not_set') }}"
+                        {% if pw_filter == 'not_set' %}selected{% endif %}>
+                    Password not set yet
+                </option>
+                <option value="{{ url_for('admin_panel', pw='set') }}"
+                        {% if pw_filter == 'set' %}selected{% endif %}>
+                    Password already set
+                </option>
+            </select>
+            <input type="text" id="userSearch" class="form-control form-control-sm w-auto"
+                   placeholder="Search username..." onkeyup="filterUsers()" style="min-width:200px;">
+        </div>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">

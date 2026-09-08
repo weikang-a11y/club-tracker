@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -458,19 +458,49 @@ def inject_notification_defaults():
             user_id=current_user.id, read=False).order_by(
             Notification.created_at.desc()).limit(10).all()
         return {'notifications': unread, 'unread_count': len(unread),
-                'active_view': None, 'can_switch_view': False}
+                'active_view': active_view(),
+                'can_switch_view': can_switch_view()}
     return {'notifications': [], 'unread_count': 0,
             'active_view': None, 'can_switch_view': False}
 
 
-# ── Stubs for features not yet implemented ────────────────────────────────────
+# ── View mode ────────────────────────────────────────────────────────────────
+#
+# Users who are both admin and officer (analytics and mentorship team) can
+# switch between seeing everyone and seeing only their own pod. The choice
+# lives in the session, so it survives navigation but not logout.
+
+VIEW_MODE_KEY = 'view_mode'
+
+
+def can_switch_view():
+    """True for users holding both admin and officer roles."""
+    return (
+        current_user.is_authenticated
+        and current_user.is_admin
+        and current_user.role == 'officer'
+    )
+
+
+def active_view():
+    """'admin' or 'officer' — the view currently in effect."""
+    if not current_user.is_authenticated:
+        return None
+    if not current_user.is_admin:
+        return 'officer' if current_user.role == 'officer' else None
+    if can_switch_view() and session.get(VIEW_MODE_KEY) == 'officer':
+        return 'officer'
+    return 'admin'
+
 
 def is_admin_view():
-    """Stub: returns True if current user is admin."""
-    return current_user.is_authenticated and current_user.is_admin
+    """True if the user is an admin AND has not switched to officer view."""
+    return current_user.is_authenticated and current_user.is_admin and \
+        active_view() == 'admin'
+
 
 def is_officer_view():
-    """Stub: returns True if current user is officer."""
+    """True if the user is acting as an officer."""
     return current_user.is_authenticated and current_user.role == 'officer'
 
 def is_mdp_upload_enabled():
@@ -1813,6 +1843,48 @@ def get_active_conference():
         if today <= deadline:
             return conf
     return "SCDC"  # after all deadlines, default to last
+
+
+def _apply_completion(member, conference, practice_type):
+    """Credit one completed practice, rolling excess into later conferences.
+
+    If the named conference no longer needs this category, the credit moves
+    forward to the next conference in CONFERENCE_ORDER that still does.
+    Rollover never crosses categories: a roleplay only ever reduces a
+    roleplay requirement. Returns the Commitment actually credited, or the
+    named conference's row if nothing needed crediting.
+    """
+    if practice_type in ROLEPLAY_TYPES:
+        field = 'remaining_roleplay'
+    elif practice_type in WRITTEN_TYPES:
+        field = 'remaining_written'
+    elif practice_type in EXAM_TYPES:
+        field = 'remaining_exam'
+    else:
+        field = None
+
+    rows = {
+        row.event: row
+        for row in Commitment.query.filter_by(member_name=member.username).all()
+    }
+    named = rows.get(conference)
+    if field is None:
+        return named
+
+    # Start at the named conference, then look forward only.
+    try:
+        start = CONFERENCE_ORDER.index(conference)
+    except ValueError:
+        start = 0
+    for conf in CONFERENCE_ORDER[start:]:
+        row = rows.get(conf)
+        if row is not None and getattr(row, field) > 0:
+            setattr(row, field, getattr(row, field) - 1)
+            db.session.add(row)
+            return row
+
+    # Everything in this category is already satisfied; nothing to credit.
+    return named
 
 
 def ensure_commitments(member):
@@ -3264,17 +3336,8 @@ def log_commitment(session_id):
     conference = ps.conference
     practice_type = ps.practice_type
 
-    # Decrement conference commitment
-    commitment = Commitment.query.filter_by(
-        member_name=member.username, event=conference).first()
-    if commitment:
-        if practice_type in ROLEPLAY_TYPES and commitment.remaining_roleplay > 0:
-            commitment.remaining_roleplay -= 1
-        elif practice_type in WRITTEN_TYPES and commitment.remaining_written > 0:
-            commitment.remaining_written -= 1
-        elif practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
-            commitment.remaining_exam -= 1
-        db.session.add(commitment)
+    # Decrement conference commitment, rolling any excess forward
+    commitment = _apply_completion(member, conference, practice_type)
 
     # Create a minimal log record for audit trail
     log = PracticeLog(
@@ -3336,16 +3399,7 @@ def mark_complete():
         flash('Member not found.', 'danger')
         return redirect(url_for('reports', tab='commitment'))
 
-    commitment = Commitment.query.filter_by(
-        member_name=member.username, event=conference).first()
-    if commitment:
-        if practice_type in ROLEPLAY_TYPES and commitment.remaining_roleplay > 0:
-            commitment.remaining_roleplay -= 1
-        elif practice_type in WRITTEN_TYPES and commitment.remaining_written > 0:
-            commitment.remaining_written -= 1
-        elif practice_type in EXAM_TYPES and commitment.remaining_exam > 0:
-            commitment.remaining_exam -= 1
-        db.session.add(commitment)
+    commitment = _apply_completion(member, conference, practice_type)
 
     log = PracticeLog(
         officer_id=current_user.id,
@@ -3620,7 +3674,25 @@ def admin_required(f):
 @login_required
 @admin_required
 def admin_panel():
-    users = User.query.order_by(User.role, User.username).all()
+    # Password-status filter. Accounts that have not been set up yet sort to
+    # the top so admins can chase them; the rest follow.
+    pw_filter = request.args.get('pw', 'all').strip().lower()
+    query = User.query
+    if pw_filter == 'not_set':
+        query = query.filter(User.must_change_password.is_(True))
+    elif pw_filter == 'set':
+        query = query.filter(
+            db.or_(User.must_change_password.is_(False),
+                   User.must_change_password.is_(None))
+        )
+    users = sorted(
+        query.all(),
+        key=lambda u: (
+            not bool(u.must_change_password),   # not-yet-set first
+            u.role or '',
+            u.username.lower(),
+        ),
+    )
     stats = {
         'total_users': User.query.count(),
         'officers': User.query.filter_by(role='officer').count(),
@@ -3632,7 +3704,12 @@ def admin_panel():
         'workshops': Workshop.query.count(),
         'commitments': Commitment.query.count(),
     }
-    return render_template('admin.html', users=users, stats=stats)
+    pending_password_count = User.query.filter(
+        User.must_change_password.is_(True)).count()
+    return render_template(
+        'admin.html', users=users, stats=stats,
+        pw_filter=pw_filter, pending_password_count=pending_password_count,
+    )
 
 
 @app.route('/admin/delete_user/<int:user_id>', methods=['POST'])
@@ -4546,6 +4623,24 @@ def set_mentee_written_link(member_id):
         flash(f'Written link updated for {member.username}.' if url
               else f'Written link removed for {member.username}.', 'success')
     return redirect(url_for('mentee_detail', member_id=member.id))
+
+
+@app.route('/switch_view/<mode>', methods=['POST'])
+@login_required
+def switch_view(mode):
+    """Toggle between admin (everyone) and officer (own pod) view."""
+    if not can_switch_view():
+        flash('You do not have both admin and officer access.', 'danger')
+        return redirect(url_for('dashboard'))
+    if mode not in {'admin', 'officer'}:
+        flash('Unknown view.', 'danger')
+        return redirect(url_for('dashboard'))
+    session[VIEW_MODE_KEY] = mode
+    flash(
+        'Now viewing all mentees.' if mode == 'admin'
+        else 'Now viewing your pod only.', 'success'
+    )
+    return redirect(url_for('dashboard'))
 
 
 @app.route('/mentee/<int:member_id>')

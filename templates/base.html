@@ -306,6 +306,24 @@
                         {{ current_user.username }}
                     </div>
 
+                    {% if can_switch_view %}
+                    <div class="px-2 pb-3">
+                        <div class="text-muted small mb-1">Viewing as</div>
+                        <div class="btn-group btn-group-sm w-100" role="group">
+                            <form method="POST" action="{{ url_for('switch_view', mode='admin') }}" class="w-50">
+                                <button type="submit" class="btn w-100 {% if active_view == 'admin' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+                                    Admin
+                                </button>
+                            </form>
+                            <form method="POST" action="{{ url_for('switch_view', mode='officer') }}" class="w-50">
+                                <button type="submit" class="btn w-100 {% if active_view == 'officer' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+                                    My Pod
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    {% endif %}
+
                     <nav class="nav flex-column">
                         {% if not current_user.is_admin %}
                         <a
