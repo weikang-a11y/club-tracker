@@ -293,7 +293,7 @@
                     </div>
 
                     <div class="role-chip">
-                        {% if current_user.is_admin %}
+                        {% if active_view == 'admin' %}
                             Admin
                         {% elif current_user.role == 'officer' %}
                             Officer
@@ -325,7 +325,7 @@
                     {% endif %}
 
                     <nav class="nav flex-column">
-                        {% if not current_user.is_admin %}
+                        {% if active_view != 'admin' %}
                         <a
                             class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}"
                             href="{{ url_for('dashboard') }}"
@@ -334,7 +334,7 @@
                         </a>
                         {% endif %}
 
-                        {% if current_user.is_admin %}
+                        {% if active_view == 'admin' %}
 
                             <a
                                 class="nav-link {% if request.endpoint == 'admin_panel' %}active{% endif %}"

@@ -2046,9 +2046,19 @@ class WorkshopForm(FlaskForm):
 class MentorPodForm(FlaskForm):
     mentor_id = SelectField('Mentor', coerce=int)
     member_id = SelectField('Member', coerce=int)
-    pod_number = StringField('Pod Number', [DataRequired()])
+    # IntegerField: MentorPod.pod_number is an integer column, and Postgres
+    # rejects a string here even though SQLite accepts it.
+    pod_number = IntegerField('Pod Number', [DataRequired(), NumberRange(min=1)])
     experience_level = SelectField('Level', choices=[('N', 'Novice'), ('E', 'Experienced')])
-    submit = SubmitField('Save')      
+    # These two were read by the create route but never declared on the form,
+    # so submitting it raised AttributeError.
+    event = SelectField('Event', choices=[], validate_choice=False)
+    is_competing = SelectField(
+        'Competing status',
+        choices=[('yes', 'Competing'), ('no', 'Non-Compete')],
+        default='yes',
+    )
+    submit = SubmitField('Save')
 
 # ── Schema migration ──────────────────────────────────────────────────────────
 
@@ -3663,7 +3673,10 @@ def admin_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_authenticated or not current_user.is_admin:
+        # is_admin_view() rather than the raw flag, so a user who has switched
+        # to officer view is treated as an officer everywhere, not just in the
+        # data they can see.
+        if not is_admin_view():
             flash('Admin access required.', 'danger')
             return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
@@ -3865,6 +3878,10 @@ def mentor_pods():
         .all()
     ]
 
+    form.event.choices = [('', 'No event')] + [
+        (code, f'{code} — {label}') for code, label in EVENT_TABS
+    ]
+
     # Keep the existing add-assignment backend available,
     # even though the Add Mentor Pod form is hidden from the page.
     if form.validate_on_submit():
@@ -3884,7 +3901,7 @@ def mentor_pods():
             member_id=form.member_id.data,
             mentor_id=form.mentor_id.data,
             experience_level=form.experience_level.data,
-            event=form.event.data.strip(),
+            event=(form.event.data or '').strip(),
             year_in_deca='',
         )
         db.session.add(pod)

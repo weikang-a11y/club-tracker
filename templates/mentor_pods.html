@@ -209,6 +209,15 @@
                     {{ mentor.username if mentor else 'Unassigned' }}
                 </div>
                 <small>{{ members|length }} mentee(s)</small>
+                {% if mentor and members %}
+                <form method="POST" class="js-confirm-form mt-2"
+                      action="{{ url_for('delete_pod_group', mentor_id=mentor.id, pod_number=members[0].pod_number) }}"
+                      onsubmit="return confirm('Delete Pod {{ members[0].pod_number }} and unassign all {{ members|length }} mentee(s)?');">
+                    <button type="submit" class="btn btn-sm btn-outline-light w-100">
+                        Delete Pod
+                    </button>
+                </form>
+                {% endif %}
             </div>
 
             <div>
@@ -298,6 +307,46 @@
         </p>
     </div>
 
+    <section class="card border-0 shadow-sm rounded-4 mb-4">
+        <div class="card-body p-4">
+            <h5 class="fw-bold mb-1">Add Mentor Pod</h5>
+            <p class="text-muted small mb-3">
+                Assign a mentee to a mentor and pod number. A mentee can only
+                belong to one pod.
+            </p>
+            <form method="POST" action="{{ url_for('mentor_pods') }}" class="row g-2">
+                {{ form.hidden_tag() }}
+                <div class="col-md-3">
+                    <label class="form-label small fw-semibold">Mentee</label>
+                    {{ form.member_id(class="form-select form-select-sm") }}
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-semibold">Mentor</label>
+                    {{ form.mentor_id(class="form-select form-select-sm") }}
+                </div>
+                <div class="col-md-1">
+                    <label class="form-label small fw-semibold">Pod #</label>
+                    {{ form.pod_number(class="form-control form-control-sm") }}
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small fw-semibold">Experience</label>
+                    {{ form.experience_level(class="form-select form-select-sm") }}
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small fw-semibold">Event</label>
+                    {{ form.event(class="form-select form-select-sm") }}
+                </div>
+                <div class="col-md-1 d-flex align-items-end">
+                    <button type="submit" class="btn btn-success btn-sm w-100">Add</button>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small fw-semibold">Competing status</label>
+                    {{ form.is_competing(class="form-select form-select-sm") }}
+                </div>
+            </form>
+        </div>
+    </section>
+
     <div class="edit-mentee-grid">
         {% for pod in pods %}
         <article class="edit-mentee-card js-pod-filter-card"
@@ -384,6 +433,15 @@
                 <button type="submit"
                         class="btn btn-primary btn-sm w-100 mt-1">
                     Save Changes
+                </button>
+            </form>
+
+            <form method="POST"
+                  action="{{ url_for('delete_pod', pod_id=pod.id) }}"
+                  onsubmit="return confirm('Remove {{ pod.member.username }} from Pod {{ pod.pod_number }}? Their commitments are kept.');">
+                <button type="submit"
+                        class="btn btn-outline-danger btn-sm w-100 mt-2">
+                    Remove from Pod
                 </button>
             </form>
         </article>
