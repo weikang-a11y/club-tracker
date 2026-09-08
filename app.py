@@ -474,11 +474,15 @@ VIEW_MODE_KEY = 'view_mode'
 
 
 def can_switch_view():
-    """True for users holding both admin and officer roles."""
+    """True only for accounts holding both admin and officer access.
+
+    Advisors are imported with access "Admin" alone, which leaves
+    has_officer_access False — they are admin-only and get no toggle.
+    """
     return (
         current_user.is_authenticated
         and current_user.is_admin
-        and current_user.role == 'officer'
+        and bool(current_user.has_officer_access)
     )
 
 
@@ -2449,15 +2453,40 @@ def send_email(to_email, subject, html_content):
         return False
 
 def _practice_session_start(ps):
-    """Combine a session's date and 'HH:MM' time into an aware local datetime."""
-    try:
-        hour, minute = (int(part) for part in ps.session_time.split(':'))
-    except (AttributeError, ValueError):
+    """Combine a session's date and its typed time into a local datetime.
+
+    Officers type the slot freely, so this reads the start of whatever they
+    entered: "4:20-5:00", "16:20", "4:20 pm - 5:00 pm" all resolve to the
+    same instant. Returns None if no time can be read, in which case the
+    reminder is skipped rather than raising.
+    """
+    raw = (ps.session_time or '').strip().lower()
+    if not raw:
         return None
-    return datetime(
-        ps.session_date.year, ps.session_date.month, ps.session_date.day,
-        hour, minute, tzinfo=LOCAL_TZ,
-    )
+    # Take only the start of a range.
+    start_text = re.split(r'[-\u2013\u2014]', raw)[0].strip()
+    match = re.match(r'(\d{1,2})\s*[:.]?\s*(\d{2})?\s*(am|pm)?', start_text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = match.group(3)
+    if meridiem == 'pm' and hour < 12:
+        hour += 12
+    elif meridiem == 'am' and hour == 12:
+        hour = 0
+    elif meridiem is None and hour < 8:
+        # Practices run in the afternoon; a bare "4:20" means 4:20 pm.
+        hour += 12
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    try:
+        return datetime(
+            ps.session_date.year, ps.session_date.month, ps.session_date.day,
+            hour, minute, tzinfo=LOCAL_TZ,
+        )
+    except ValueError:
+        return None
 
 
 def send_practice_reminder(user, ps):
@@ -3349,6 +3378,19 @@ def log_commitment(session_id):
     # Decrement conference commitment, rolling any excess forward
     commitment = _apply_completion(member, conference, practice_type)
 
+    # Visible in the admin MDP audit log, whether or not the mentee is in this
+    # officer's own pod. credited_to names the conference the credit landed on,
+    # which can differ from the one requested when excess rolls forward.
+    credited_to = commitment.event if commitment else conference
+    log_mdp_action(
+        current_user.id, 'commitment_complete', 'commitment',
+        target_user_id=member.id,
+        details=(
+            f'{practice_type} for {conference} logged from practice session'
+            + (f' (credited to {credited_to})' if credited_to != conference else '')
+        ),
+    )
+
     # Create a minimal log record for audit trail
     log = PracticeLog(
         practice_session_id=ps.id,
@@ -3410,6 +3452,20 @@ def mark_complete():
         return redirect(url_for('reports', tab='commitment'))
 
     commitment = _apply_completion(member, conference, practice_type)
+
+    credited_to = commitment.event if commitment else conference
+    in_own_pod = MentorPod.query.filter_by(
+        mentor_id=current_user.id, member_id=member.id
+    ).first() is not None
+    log_mdp_action(
+        current_user.id, 'commitment_complete', 'commitment',
+        target_user_id=member.id,
+        details=(
+            f'{practice_type} for {conference} marked complete'
+            + ('' if in_own_pod else ' (outside own pod)')
+            + (f' (credited to {credited_to})' if credited_to != conference else '')
+        ),
+    )
 
     log = PracticeLog(
         officer_id=current_user.id,
