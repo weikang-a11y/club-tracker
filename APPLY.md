@@ -1,82 +1,73 @@
-# Combined: AH requirement 100% + practice slot presets
+# Fix: session_time column too small (500 on creating a practice session)
 
-This replaces BOTH earlier packages (club-tracker-ah100 and
-club-tracker-slots). Use this one only — it contains everything from both.
-
-Four files.
+Replaces every earlier package. Five files.
 
 ```powershell
 git add -A
-git status    # expect exactly four modified:
+git status    # expect five modified:
               #   app.py
               #   templates/dashboard.html
               #   templates/at_risk_report.html
               #   templates/practice_sessions.html
-git commit -m "AH requirement to 100%, restore standard practice slots with custom entry"
+              #   templates/settings.html
+git commit -m "Widen session_time column for typed slots; cap phone length"
 git push
 ```
 
-## 1. AH attendance requirement: 80% -> 100%
+## The bug
 
-`AH_THRESHOLD` is now `1.00`. It feeds `get_attendance_stats()`, the
-dashboard attendance panel and the at-risk report.
+`PracticeSession.session_time` was `db.String(5)` — sized when the field was
+a dropdown storing values like `"15:00"`. When the input became free text I
+widened the form to 40 characters but never widened the column, so
+`"3:00-3:20"` (9 chars) overflowed:
 
-The percentage was also hardcoded in five template places, which is why
-`dashboard.html` and `at_risk_report.html` are in this package — without
-them the UI would still say 80% while the logic enforced 100%:
+```
+DataError: value too long for type character varying(5)
+```
 
-- `at_risk_report.html` filter label "AH Below 80%"
-- `dashboard.html` status legend
-- `dashboard.html` threshold summary line
-- `dashboard.html` member attendance card "Required: 80%"
-- `dashboard.html` member attendance summary "Required: 80%"
+This did not show up locally because SQLite ignores VARCHAR limits entirely.
+Postgres enforces them. My local testing could not have caught it.
 
-WS thresholds unchanged: 75% Novice, 25% Experienced.
+## The fix
 
-| AH record | Rate | Flagged |
-|---|---|---|
-| 10/10 | 100% | no |
-| 9/10 | 90% | yes |
-| 8/10 | 80% | yes (previously passed) |
+- Column is now `db.String(40)`.
+- A startup migration widens the existing Postgres column:
+  `ALTER TABLE practice_session ALTER COLUMN session_time TYPE VARCHAR(40)`.
+  It checks the current length first and only runs when needed, logs
+  `[Migration] widened practice_session.session_time to VARCHAR(40).`, and
+  prints the reason on failure rather than failing silently. SQLite needs
+  nothing.
+- The route truncates the posted value to 40 characters, so no form input
+  can overflow the column regardless of what is sent.
 
-## 2. Practice slots: presets plus custom entry
+## Same bug found elsewhere
 
-The three standard slots are visible quick-pick buttons above the time box:
-**3:00-3:20**, **3:20-3:40**, **3:40-4:00**. Clicking one fills the field;
-officers can still type anything.
+I checked every string column narrower than 32 characters against the
+longest value that can actually reach it:
 
-Buttons rather than a datalist, so both options are visible at once — a
-datalist only appears after clicking into the field.
+| Column | Limit | Longest real value | |
+|---|---|---|---|
+| practice_session.practice_type | 30 | 20 (`Written Presentation`) | OK |
+| practice_session.conference | 10 | 5 (`SVCDC`) | OK |
+| commitment.event | 20 | 5 | OK |
+| mentor_pod.event | 50 | 4 | OK |
+| **user.phone** | **20** | **free text, no limit** | **would 500** |
 
-New constant `PRACTICE_SLOT_PRESETS` drives them. `TIME_SLOTS` is untouched,
-since it still backs the legacy `slot` field and the `time_map` lookup.
-
-Start times parsed for reminders:
-
-| Slot | Start |
-|---|---|
-| 3:00-3:20 | 15:00 |
-| 3:20-3:40 | 15:20 |
-| 3:40-4:00 | 15:40 |
-| 4:20-5:00 | 16:20 |
-| 5:00-5:30 pm | 17:00 |
+`user.phone` is typed by the member and the settings form had no
+`maxlength`. Fixed the same way: `maxlength="20"` on the field and a
+server-side truncation to 20.
 
 ## Verification
 
-- `AH_THRESHOLD` is 1.0; no "80%" text remains anywhere in app.py or the
-  templates.
-- Member dashboard shows 100%; at-risk report filter reads "AH Below 100%".
-- Preset buttons render for officers, custom input present, both preset and
-  typed slots save and render back exactly as entered.
-- All routes as admin, officer and member: no 5xx. Reminder job runs clean.
+- All three preset slots plus a custom slot save and parse correctly
+  (15:00 / 15:20 / 15:40 / 16:20).
+- A 100-character time posts without error and stores 40 characters.
+- No practice_session row can exceed 40 characters.
+- A 60-character phone stores 20 characters.
+- All routes as admin, officer and member: no 5xx. Reminder job clean.
 
-## Heads-up on the AH change
+## Also included, from the previous package
 
-At 100%, one missed All-Hands flags a mentee, and under the combined Yellow
-rule that puts them in the at-risk bucket. Expect the Mentee Status report
-to grow noticeably on first run after deploy. Worth warning the Mentorship
-team so the jump is not mistaken for a fault.
-
-An excused absence recorded as a 1 in the workbook still counts as attended,
-so the officer absence-review step matters more at this threshold than it
-did at 80%.
+AH attendance requirement raised to 100% (`AH_THRESHOLD = 1.00`) with the
+five hardcoded "80%" strings updated in `dashboard.html` and
+`at_risk_report.html`. WS thresholds unchanged.

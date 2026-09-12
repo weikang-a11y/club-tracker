@@ -384,7 +384,7 @@ class PracticeSession(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     officer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     session_date = db.Column(db.Date, nullable=False)
-    session_time = db.Column(db.String(5), nullable=False)
+    session_time = db.Column(db.String(40), nullable=False)
     practice_type = db.Column(db.String(30), nullable=False)
     conference = db.Column(db.String(10), nullable=False)
     member_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
@@ -2279,6 +2279,26 @@ with app.app_context():
     # Migrate: link to each mentee's written document.
     _ensure_column('user', 'written_url', 'VARCHAR(500)')
 
+    # Migrate: session_time was VARCHAR(5) for fixed dropdown values and must
+    # hold typed slots like "3:00-3:20". Postgres enforces the length; SQLite
+    # does not, so it needs no change.
+    if db.engine.dialect.name != 'sqlite':
+        try:
+            _cols = {c['name']: c for c in
+                     db.inspect(db.engine).get_columns('practice_session')}
+            _len = getattr(_cols.get('session_time', {}).get('type', None),
+                           'length', None)
+            if _len is not None and _len < 40:
+                db.session.execute(sql_text(
+                    'ALTER TABLE practice_session '
+                    'ALTER COLUMN session_time TYPE VARCHAR(40)'
+                ))
+                db.session.commit()
+                print('[Migration] widened practice_session.session_time to VARCHAR(40).')
+        except Exception as exc:
+            db.session.rollback()
+            print(f'[Migration] session_time widen failed: {exc}')
+
     # Migrate: practice slots can be reserved for one pod member.
     _ensure_column('practice_session', 'reserved_for_id', 'INTEGER')
 
@@ -3196,7 +3216,8 @@ def settings():
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
         current_user.email = request.form.get('email', '').strip() or None
-        current_user.phone = request.form.get('phone', '').strip() or None
+        # phone is VARCHAR(20); Postgres rejects anything longer.
+        current_user.phone = request.form.get('phone', '').strip()[:20] or None
         current_user.notify_enabled = bool(request.form.get('notify_enabled'))
         remind_val = request.form.get('remind_minutes_before', '60').strip()
         try:
@@ -3253,7 +3274,7 @@ def practice_sessions():
                 ps = PracticeSession(
                     officer_id=current_user.id,
                     session_date=datetime.strptime(request.form['session_date'], '%Y-%m-%d').date(),
-                    session_time=request.form['session_time'],
+                    session_time=request.form['session_time'].strip()[:40],
                     practice_type=request.form['practice_type'],
                     conference=request.form['conference'],
                     reserved_for_id=reserved_for_id,
