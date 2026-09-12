@@ -1,84 +1,82 @@
-# Update: toggle labels and scope, typed time slots, commitment audit logging
+# Combined: AH requirement 100% + practice slot presets
 
-Three files.
+This replaces BOTH earlier packages (club-tracker-ah100 and
+club-tracker-slots). Use this one only — it contains everything from both.
+
+Four files.
 
 ```powershell
 git add -A
-git status    # expect exactly: app.py, templates/base.html,
-              # templates/practice_sessions.html modified
-git commit -m "Toggle scope and labels, typed practice time slots, commitment audit logging"
+git status    # expect exactly four modified:
+              #   app.py
+              #   templates/dashboard.html
+              #   templates/at_risk_report.html
+              #   templates/practice_sessions.html
+git commit -m "AH requirement to 100%, restore standard practice slots with custom entry"
 git push
 ```
 
-## 1. Toggle: labels and who gets it
+## 1. AH attendance requirement: 80% -> 100%
 
-Buttons now read **Admin** and **Officer**.
+`AH_THRESHOLD` is now `1.00`. It feeds `get_attendance_stats()`, the
+dashboard attendance panel and the at-risk report.
 
-`can_switch_view()` previously tested `role == 'officer'`, which every roster
-account has — including advisors. It now tests `has_officer_access`, which
-the roster import sets from the access string: advisors are imported as
-"Admin" alone, so the flag is False and they get no toggle. Accounts listed
-as "Officer, Admin" or "Admin, Officer" keep it.
+The percentage was also hardcoded in five template places, which is why
+`dashboard.html` and `at_risk_report.html` are in this package — without
+them the UI would still say 80% while the logic enforced 100%:
 
-The `/switch_view` route enforces the same rule, so an admin-only account
-cannot switch by posting to it directly.
+- `at_risk_report.html` filter label "AH Below 80%"
+- `dashboard.html` status legend
+- `dashboard.html` threshold summary line
+- `dashboard.html` member attendance card "Required: 80%"
+- `dashboard.html` member attendance summary "Required: 80%"
 
-## 2. Practice slots are typed, not chosen
+WS thresholds unchanged: 75% Novice, 25% Experienced.
 
-The Time Slot dropdown is now a text input accepting anything, e.g.
-`4:20-5:00`. The old fixed slots remain as datalist suggestions, so typing
-still offers them.
+| AH record | Rate | Flagged |
+|---|---|---|
+| 10/10 | 100% | no |
+| 9/10 | 90% | yes |
+| 8/10 | 80% | yes (previously passed) |
 
-`_practice_session_start()` reads the start of whatever was typed so
-reminders keep working. It handles ranges with hyphen or en dash, 12- and
-24-hour times, and am/pm, and returns None on unparseable input so the
-reminder is skipped rather than raising. A bare hour below 8 is treated as
-afternoon, since practices run after school — `4:20` means 16:20.
+## 2. Practice slots: presets plus custom entry
 
-Parsed results:
+The three standard slots are visible quick-pick buttons above the time box:
+**3:00-3:20**, **3:20-3:40**, **3:40-4:00**. Clicking one fills the field;
+officers can still type anything.
 
-| Typed | Start |
+Buttons rather than a datalist, so both options are visible at once — a
+datalist only appears after clicking into the field.
+
+New constant `PRACTICE_SLOT_PRESETS` drives them. `TIME_SLOTS` is untouched,
+since it still backs the legacy `slot` field and the `time_map` lookup.
+
+Start times parsed for reminders:
+
+| Slot | Start |
 |---|---|
-| `4:20-5:00` | 16:20 |
-| `4:20 pm - 5:00 pm` | 16:20 |
-| `16:20` | 16:20 |
-| `3:00` | 15:00 |
-| `9:00 am` | 09:00 |
-| `12:30 pm` | 12:30 |
-| `garbage`, `25:00`, empty | no reminder |
-
-The typed text is stored and displayed exactly as entered.
-
-## 3. Commitment updates in the MDP audit log
-
-Both completion paths now call `log_mdp_action` with action
-`commitment_complete`: logging a practice session, and marking a commitment
-complete manually. Each row records the acting officer, the mentee, the
-practice type and conference.
-
-Two extra details in the entry:
-- `(outside own pod)` when the officer is not that mentee's mentor.
-- `(credited to X)` when rollover moved the credit to a later conference.
-
-These appear in the admin MDP audit log page alongside the pod changes.
+| 3:00-3:20 | 15:00 |
+| 3:20-3:40 | 15:20 |
+| 3:40-4:00 | 15:40 |
+| 4:20-5:00 | 16:20 |
+| 5:00-5:30 pm | 17:00 |
 
 ## Verification
 
-- Toggle: shown for admin+officer with labels Admin / Officer; hidden for an
-  admin-only advisor, and `/switch_view` refuses them.
-- Typed slot `4:20-5:00` saves, renders back exactly, and parses to 16:20.
-- Audit log: in-pod update recorded plainly; out-of-pod update recorded with
-  the `(outside own pod)` marker; both visible on `/admin/logs`.
-- All routes as admin, advisor, officer, member and admin-in-officer-view:
-  no 5xx. `/admin` still 302s in officer view. Reminder job runs clean.
+- `AH_THRESHOLD` is 1.0; no "80%" text remains anywhere in app.py or the
+  templates.
+- Member dashboard shows 100%; at-risk report filter reads "AH Below 100%".
+- Preset buttons render for officers, custom input present, both preset and
+  typed slots save and render back exactly as entered.
+- All routes as admin, officer and member: no 5xx. Reminder job runs clean.
 
-## Still open
+## Heads-up on the AH change
 
-- `MDP_UPLOAD_ENABLED=1` for the monthly workbook upload.
-- Phase 3 team features.
-- `/settings` is member-only, so officers and admins cannot set a
-  notification email.
-- Audit items: practice-type badges compare against 'Roleplay' instead of
-  'In-Person Roleplay'; redundant `/mentee-progress`; orphan templates
-  `add_commitment.html` and `register.html`; unlinked
-  `/admin/make_first_admin`; `/change-password` has no link.
+At 100%, one missed All-Hands flags a mentee, and under the combined Yellow
+rule that puts them in the at-risk bucket. Expect the Mentee Status report
+to grow noticeably on first run after deploy. Worth warning the Mentorship
+team so the jump is not mistaken for a fault.
+
+An excused absence recorded as a 1 in the workbook still counts as attended,
+so the officer absence-review step matters more at this threshold than it
+did at 80%.

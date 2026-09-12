@@ -37,15 +37,20 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Time Slot</label>
-                        <input type="text" name="session_time" class="form-control"
-                               placeholder="e.g. 4:20-5:00" maxlength="40" required
-                               list="commonTimeSlots">
-                        <datalist id="commonTimeSlots">
-                            {% for value, label in time_slots %}
-                            <option value="{{ label }}"></option>
+                        <div class="d-flex flex-wrap gap-1 mb-2">
+                            {% for preset in slot_presets %}
+                            <button type="button"
+                                    class="btn btn-outline-secondary btn-sm js-slot-preset"
+                                    data-slot="{{ preset }}">{{ preset }}</button>
                             {% endfor %}
-                        </datalist>
-                        <div class="form-text">Type any slot. Reminders use the start time.</div>
+                        </div>
+                        <input type="text" name="session_time" id="sessionTimeInput"
+                               class="form-control"
+                               placeholder="e.g. 4:20-5:00" maxlength="40" required>
+                        <div class="form-text">
+                            Pick a standard slot above, or type any time.
+                            Reminders use the start time.
+                        </div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Practice Type</label>
@@ -278,4 +283,16 @@
 </div>
 
 {% endif %}
+<script>
+document.querySelectorAll(".js-slot-preset").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+        var input = document.getElementById("sessionTimeInput");
+        if (!input) { return; }
+        input.value = btn.dataset.slot;
+        document.querySelectorAll(".js-slot-preset").forEach(function (b) {
+            b.classList.toggle("active", b === btn);
+        });
+    });
+});
+</script>
 {% endblock %}

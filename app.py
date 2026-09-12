@@ -69,6 +69,11 @@ TIME_SLOTS = [
     ("15:20", "3:20 - 3:40 pm"),
     ("15:40", "3:40 - 4:00 pm"),
 ]
+# Quick-pick slots offered beside the free-text box on the practice session
+# form. TIME_SLOTS is left alone: it still backs the legacy `slot` field and
+# the time_map display lookup.
+PRACTICE_SLOT_PRESETS = ['3:00-3:20', '3:20-3:40', '3:40-4:00']
+
 ACTIVITY_TYPES = [
     'In-Person Roleplay',
     'Written Presentation',
@@ -142,7 +147,7 @@ CHECKLIST_ITEMS = {
 PRACTICE_LOG_EMAIL = os.getenv("PRACTICE_LOG_EMAIL", "mentorship@vchsdeca.org")
 
 # Attendance thresholds by experience level
-AH_THRESHOLD = 0.80   # 80% for all members
+AH_THRESHOLD = 1.00   # 100% — every All-Hands meeting is required
 WS_THRESHOLD = {
     'N': 0.75,  # Novice: 75% workshop attendance
     'E': 0.25,  # Experienced: 25% workshop attendance
@@ -3281,6 +3286,7 @@ def practice_sessions():
             conference_order=CONFERENCE_ORDER,
             activity_types=ACTIVITY_TYPES,
             time_slots=TIME_SLOTS,
+            slot_presets=PRACTICE_SLOT_PRESETS,
             active_conf=get_active_conference(),
         )
     else:
