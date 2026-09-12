@@ -2961,7 +2961,24 @@ def dashboard():
     # place, and the member dashboard is unreachable for them.
     if is_admin_view():
         return redirect(url_for('admin_panel'))
+    return _dashboard_page()
 
+
+@app.route('/overall_member_commitments')
+@login_required
+def overall_member_commitments():
+    """The dashboard view, scoped to every member rather than a single pod.
+
+    Guarded inline rather than with @admin_required, which is defined further
+    down the module and is not yet bound at this point.
+    """
+    if not is_admin_view():
+        flash('Admin access required.', 'danger')
+        return redirect(url_for('dashboard'))
+    return _dashboard_page()
+
+
+def _dashboard_page():
     commitments = []
     progress_summary = None
     attendance_summary = None
@@ -3000,9 +3017,13 @@ def dashboard():
         attendance_locked_ids = {row.workshop_id for row in AttendanceSubmission.query.filter_by(officer_id=current_user.id).all()}
 
         # Build member list from pod assignments
-        pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
-        pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
-        pod_member_users = [u for u in pod_member_users if u]
+        if is_admin_view():
+            # Overall Member Commitments covers every member, not one pod.
+            pod_member_users = _members_visible_to_current_user()
+        else:
+            pod_members = MentorPod.query.filter_by(mentor_id=current_user.id).all()
+            pod_member_users = [db.session.get(User, pm.member_id) for pm in pod_members]
+            pod_member_users = [u for u in pod_member_users if u]
 
         # Fall back to commitment-based member names if no pod assignments
         if not pod_member_users:

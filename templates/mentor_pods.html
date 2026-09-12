@@ -140,7 +140,7 @@
             </select>
         </div>
 
-        <div id="podFilterSearchContainer" style="display:none;">
+        <div id="podFilterSearchContainer">
             <label for="podFilterSearch"
                    class="form-label small fw-semibold mb-1">
                 Search
@@ -149,7 +149,7 @@
             <input type="search"
                    id="podFilterSearch"
                    class="form-control"
-                   placeholder="Type a name…"
+                   placeholder="Search mentee or mentor…"
                    oninput="applyPodFilters()">
         </div>
 
@@ -611,11 +611,11 @@ function updatePodFilterControl() {
     const dropdown =
         document.getElementById('podFilterDropdown');
 
-    searchInput.value = '';
     dropdown.innerHTML = '<option value="">All</option>';
+    searchContainer.style.display = 'block';
 
     if (!filterType) {
-        searchContainer.style.display = 'none';
+        searchContainer.style.display = 'block';
         dropdownContainer.style.display = 'none';
         applyPodFilters();
         return;
@@ -691,6 +691,17 @@ function applyPodFilters() {
         '.js-pod-filter-card'
     ).forEach(card => {
         let show = true;
+
+        // Free-text search always applies, across mentee and mentor names,
+        // combined with whichever category filter is selected.
+        if (searchValue) {
+            const menteeName = (card.dataset.mentee || '').toLowerCase();
+            const mentorName = (card.dataset.mentor || '').toLowerCase();
+            if (!menteeName.includes(searchValue) &&
+                !mentorName.includes(searchValue)) {
+                show = false;
+            }
+        }
 
         if (filterType === 'mentee' || filterType === 'mentor') {
             const cardValue = (

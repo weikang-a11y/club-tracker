@@ -89,7 +89,14 @@
       </select>
     </div>
 
-    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetRiskFilters()">Clear</button>
+    <div>
+      <label for="riskSearchInput" class="form-label small mb-1">Search:</label>
+      <input type="text" id="riskSearchInput" class="form-control form-control-sm w-auto"
+             placeholder="Search mentee or mentor..." style="min-width:220px;"
+             onkeyup="applyRiskFilters()">
+    </div>
+
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetRiskFilters()">Clear</button>
   </div>
 </div>
 
@@ -285,10 +292,13 @@ function rowMatchesRiskFilter(row, filterType, filterValue) {
 function applyRiskFilters() {
   const filterType = document.getElementById('riskFilterTypeSelect').value;
   const filterValue = document.getElementById('riskFilterValueSelect').value;
+  const searchBox = document.getElementById('riskSearchInput');
+  const term = searchBox ? searchBox.value.trim().toLowerCase() : '';
   let visibleCount = 0;
 
   getRiskReportRows().forEach(row => {
-    const show = rowMatchesRiskFilter(row, filterType, filterValue);
+    const matchesSearch = !term || row.textContent.toLowerCase().includes(term);
+    const show = matchesSearch && rowMatchesRiskFilter(row, filterType, filterValue);
     row.style.display = show ? 'table-row' : 'none';
     if (show) visibleCount += 1;
   });
@@ -301,6 +311,8 @@ function applyRiskFilters() {
 }
 
 function resetRiskFilters() {
+  const searchReset = document.getElementById('riskSearchInput');
+  if (searchReset) { searchReset.value = ''; }
   document.getElementById('riskFilterTypeSelect').value = '';
   document.getElementById('riskFilterValueSelect').value = '';
   document.getElementById('riskFilterValueContainer').style.display = 'none';

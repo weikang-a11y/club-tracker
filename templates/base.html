@@ -105,6 +105,7 @@
             background: #f1f5f9;
         }
 
+
         .sidebar .role-chip {
             display: inline-block;
             margin-top: .75rem;
@@ -291,6 +292,36 @@
                     <div class="brand border-bottom pb-3 mb-3 text-uppercase">
                         DECA Tracker
                     </div>
+                    {# ── Notification bell ── #}
+                    <div class="dropdown mt-2 mb-2">
+                        <button class="notif-btn"
+                                id="notifDropdown"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                onclick="markNotifsRead()">
+                            <i class="bi bi-bell"></i>
+                            Notifications
+                            {% if unread_count > 0 %}
+                            <span class="badge bg-danger rounded-pill ms-auto" id="notif-badge">{{ unread_count }}</span>
+                            {% endif %}
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end shadow border-0 rounded-4 p-2"
+                            aria-labelledby="notifDropdown"
+                            style="min-width:300px; max-width:340px;">
+                            {% if notifications %}
+                                {% for n in notifications %}
+                                <li class="px-2 py-1">
+                                    <div class="small {{ 'fw-semibold' if not n.read else 'text-muted' }}">{{ n.message }}</div>
+                                    <div class="text-muted" style="font-size:0.7rem;">{{ n.created_at.strftime('%m/%d %H:%M') }}</div>
+                                </li>
+                                {% if not loop.last %}<li><hr class="dropdown-divider my-1"></li>{% endif %}
+                                {% endfor %}
+                            {% else %}
+                                <li class="px-2 py-2 text-muted small text-center">No notifications</li>
+                            {% endif %}
+                        </ul>
+                    </div>
+
 
                     <div class="role-chip">
                         {% if active_view == 'admin' %}
@@ -358,10 +389,17 @@
                             </a>
 
                             <a
+                                class="nav-link {% if request.endpoint == 'overall_member_commitments' %}active{% endif %}"
+                                href="{{ url_for('overall_member_commitments') }}"
+                            >
+                                Overall Member Commitments
+                            </a>
+
+                            <a
                                 class="nav-link {% if request.endpoint == 'admin_member_commitments' %}active{% endif %}"
                                 href="{{ url_for('admin_member_commitments') }}"
                             >
-                                Member Commitments
+                                Conference Commitments
                             </a>
 
                             <a
@@ -439,35 +477,6 @@
                         {% endif %}
                     </nav>
 
-                    {# ── Notification bell ── #}
-                    <div class="dropdown mt-2 mb-2">
-                        <button class="notif-btn"
-                                id="notifDropdown"
-                                data-bs-toggle="dropdown"
-                                aria-expanded="false"
-                                onclick="markNotifsRead()">
-                            <i class="bi bi-bell"></i>
-                            Notifications
-                            {% if unread_count > 0 %}
-                            <span class="badge bg-danger rounded-pill ms-auto" id="notif-badge">{{ unread_count }}</span>
-                            {% endif %}
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-end shadow border-0 rounded-4 p-2"
-                            aria-labelledby="notifDropdown"
-                            style="min-width:300px; max-width:340px;">
-                            {% if notifications %}
-                                {% for n in notifications %}
-                                <li class="px-2 py-1">
-                                    <div class="small {{ 'fw-semibold' if not n.read else 'text-muted' }}">{{ n.message }}</div>
-                                    <div class="text-muted" style="font-size:0.7rem;">{{ n.created_at.strftime('%m/%d %H:%M') }}</div>
-                                </li>
-                                {% if not loop.last %}<li><hr class="dropdown-divider my-1"></li>{% endif %}
-                                {% endfor %}
-                            {% else %}
-                                <li class="px-2 py-2 text-muted small text-center">No notifications</li>
-                            {% endif %}
-                        </ul>
-                    </div>
 
                     <a
                         class="nav-link logout-link"

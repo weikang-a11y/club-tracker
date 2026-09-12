@@ -1,73 +1,66 @@
-# Fix: session_time column too small (500 on creating a practice session)
+# Update: bell at top of nav, always-visible pod search
+# (plus the session_time fix and AH 100% from the last package)
 
-Replaces every earlier package. Five files.
+Supersedes every earlier package. Seven files.
 
 ```powershell
 git add -A
-git status    # expect five modified:
-              #   app.py
-              #   templates/dashboard.html
-              #   templates/at_risk_report.html
-              #   templates/practice_sessions.html
-              #   templates/settings.html
-git commit -m "Widen session_time column for typed slots; cap phone length"
+git status    # expect: app.py, templates/base.html, templates/mentor_pods.html,
+              # templates/dashboard.html, templates/at_risk_report.html,
+              # templates/practice_sessions.html, templates/settings.html
+git commit -m "Bell at top of nav, always-visible pod search, session_time fix, AH 100%"
 git push
 ```
 
-## The bug
+## 1. Notification bell
 
-`PracticeSession.session_time` was `db.String(5)` — sized when the field was
-a dropdown storing values like `"15:00"`. When the input became free text I
-widened the form to 40 characters but never widened the column, so
-`"3:00-3:20"` (9 chars) overflowed:
+Now sits directly under the DECA Tracker heading, above the role chip and
+all nav links, for every account. Verified above the nav for admin, officer
+and member.
 
-```
-DataError: value too long for type character varying(5)
-```
+## 2. Search on admin pages
 
-This did not show up locally because SQLite ignores VARCHAR limits entirely.
-Postgres enforces them. My local testing could not have caught it.
+Checked every admin page that has a filter. Four already had a search beside
+the filter and were left alone:
 
-## The fix
+| Page | Search |
+|---|---|
+| Admin panel | already present |
+| Member Commitments | already present |
+| Written Progress | already present |
+| Mentee Status | already present |
+| **Mentor Pods** | **was hidden** |
 
-- Column is now `db.String(40)`.
-- A startup migration widens the existing Postgres column:
-  `ALTER TABLE practice_session ALTER COLUMN session_time TYPE VARCHAR(40)`.
-  It checks the current length first and only runs when needed, logs
-  `[Migration] widened practice_session.session_time to VARCHAR(40).`, and
-  prints the reason on failure rather than failing silently. SQLite needs
-  nothing.
-- The route truncates the posted value to 40 characters, so no form input
-  can overflow the column regardless of what is sent.
+Mentor Pods was the odd one out: the search box existed but was
+`display:none` until you picked a filter type from the dropdown, which is
+why it was missing from your screenshot.
 
-## Same bug found elsewhere
+Changed so it is always visible next to "Filter by", keeps its text when you
+change filter type, and searches mentee *and* mentor names at once. It now
+applies on top of whatever category filter is selected rather than only
+working for the Mentee and Mentor filter types, so you can, for example,
+filter to Novice and then type a name within that.
 
-I checked every string column narrower than 32 characters against the
-longest value that can actually reach it:
+## 3. Carried over from the previous package
 
-| Column | Limit | Longest real value | |
-|---|---|---|---|
-| practice_session.practice_type | 30 | 20 (`Written Presentation`) | OK |
-| practice_session.conference | 10 | 5 (`SVCDC`) | OK |
-| commitment.event | 20 | 5 | OK |
-| mentor_pod.event | 50 | 4 | OK |
-| **user.phone** | **20** | **free text, no limit** | **would 500** |
+**session_time fix** — the column was `VARCHAR(5)` and typed slots like
+`3:00-3:20` overflowed on Postgres, causing a 500 when creating a practice
+session. Column widened to 40, startup migration widens the live column, and
+the route truncates defensively. `user.phone` had the same shape (VARCHAR(20),
+free text, no maxlength) and was capped the same way.
 
-`user.phone` is typed by the member and the settings form had no
-`maxlength`. Fixed the same way: `maxlength="20"` on the field and a
-server-side truncation to 20.
+**AH requirement 100%** — `AH_THRESHOLD = 1.00` with the five hardcoded
+"80%" strings updated in `dashboard.html` and `at_risk_report.html`.
 
 ## Verification
 
-- All three preset slots plus a custom slot save and parse correctly
-  (15:00 / 15:20 / 15:40 / 16:20).
-- A 100-character time posts without error and stores 40 characters.
-- No practice_session row can exceed 40 characters.
-- A 60-character phone stores 20 characters.
-- All routes as admin, officer and member: no 5xx. Reminder job clean.
+- Bell above the nav for all three roles.
+- Search present and visible on all five admin pages.
+- All routes as admin, officer and member: no 5xx.
 
-## Also included, from the previous package
+## Reminder
 
-AH attendance requirement raised to 100% (`AH_THRESHOLD = 1.00`) with the
-five hardcoded "80%" strings updated in `dashboard.html` and
-`at_risk_report.html`. WS thresholds unchanged.
+When this deploys, watch the logs for
+`[Migration] widened practice_session.session_time to VARCHAR(40).`
+If that line does not appear and practice session creation still 500s, tell
+me and I will check the migration guard.
