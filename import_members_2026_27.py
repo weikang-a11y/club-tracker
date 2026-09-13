@@ -163,44 +163,82 @@ def find_test_accounts():
     )
 
 
-def detach_user_references(user_ids):
-    """Null or remove anything pointing at these accounts so a delete works."""
-    MDPAuditLog.query.filter(MDPAuditLog.actor_id.in_(user_ids)).update(
-        {'actor_id': None}, synchronize_session=False)
-    MDPAuditLog.query.filter(MDPAuditLog.target_user_id.in_(user_ids)).update(
-        {'target_user_id': None}, synchronize_session=False)
-    PracticeLog.query.filter(PracticeLog.officer_id.in_(user_ids)).update(
-        {'officer_id': None}, synchronize_session=False)
-    # Same ordering rule: anything referencing a commitment goes before the
-    # commitments themselves.
-    doomed = [
-        row[0] for row in db.session.query(Commitment.id).filter(
-            Commitment.user_id.in_(user_ids)).all()
-    ]
+def _fk_columns_to(table_name):
+    """Every (table, column) in the schema with a foreign key to table_name.id.
+
+    Driven by SQLAlchemy metadata rather than a hand-written list, so a column
+    added later cannot be silently missed.
+    """
+    found = []
+    for table in db.metadata.sorted_tables:
+        for column in table.columns:
+            for fk in column.foreign_keys:
+                if fk.column.table.name == table_name:
+                    found.append((table, column))
+    return found
+
+
+# How each table that references user.id is treated when a user is removed.
+# Rows in DELETE_WITH_USER belong to that user. Rows in NULL_WITH_USER are
+# history worth keeping with the reference cleared. Anything not listed raises,
+# so a new table forces a deliberate decision instead of a production failure.
+DELETE_WITH_USER = {
+    'ah_attendance', 'ws_attendance', 'commitment', 'checklist_item',
+    'exam_upload', 'notification', 'practice_log', 'reminder_log',
+    'practice_session', 'mentor_pod', 'general_attendance',
+    'attendance_submission', 'workshop', 'workshop_signups',
+}
+NULL_WITH_USER = {'mdp_audit_log', 'mentor_pod_edit_log'}
+
+
+def detach_user_references(user_ids, member_names=()):
+    """Clear every reference to these users so they can be deleted.
+
+    Commitments are handled first because exam_upload and practice_log carry a
+    commitment_id foreign key as well as a user one.
+    """
+    if not user_ids:
+        return
+
+    commitment_filter = Commitment.user_id.in_(user_ids)
+    if member_names:
+        commitment_filter = db.or_(
+            commitment_filter, Commitment.member_name.in_(list(member_names))
+        )
+    doomed = [row[0] for row in db.session.query(Commitment.id)
+              .filter(commitment_filter).all()]
     if doomed:
-        for model in (ExamUpload, PracticeLog):
-            model.query.filter(model.commitment_id.in_(doomed)).delete(
-                synchronize_session=False)
+        for table, column in _fk_columns_to('commitment'):
+            db.session.execute(
+                table.delete().where(column.in_(doomed))
+                if table.name in DELETE_WITH_USER
+                else table.update().where(column.in_(doomed)).values(**{column.name: None})
+            )
+        db.session.flush()
+        db.session.execute(Commitment.__table__.delete().where(
+            Commitment.id.in_(doomed)))
         db.session.flush()
 
-    for model, column in [
-        (Notification, 'user_id'),
-        (ReminderLog, 'user_id'),
-        (AHAttendance, 'user_id'),
-        (WSAttendance, 'user_id'),
-        (ExamUpload, 'member_id'),
-        (PracticeLog, 'member_id'),
-        (Commitment, 'user_id'),
-        (ChecklistItem, 'user_id'),
-        (PracticeSession, 'member_id'),
-        (PracticeSession, 'reserved_for_id'),
-        (PracticeSession, 'officer_id'),
-        (MentorPod, 'member_id'),
-        (MentorPod, 'mentor_id'),
-    ]:
-        model.query.filter(
-            getattr(model, column).in_(user_ids)
-        ).delete(synchronize_session=False)
+    unknown = []
+    for table, column in _fk_columns_to('user'):
+        if table.name == 'user':
+            continue
+        if table.name in DELETE_WITH_USER:
+            db.session.execute(table.delete().where(column.in_(user_ids)))
+        elif table.name in NULL_WITH_USER:
+            db.session.execute(
+                table.update().where(column.in_(user_ids))
+                .values(**{column.name: None})
+            )
+        else:
+            unknown.append(f'{table.name}.{column.name}')
+    if unknown:
+        raise RuntimeError(
+            'Tables reference user.id but have no delete policy: '
+            + ', '.join(sorted(unknown))
+            + '. Add each to DELETE_WITH_USER or NULL_WITH_USER.'
+        )
+    db.session.flush()
 
 
 def purge_test_accounts():
@@ -210,9 +248,8 @@ def purge_test_accounts():
         return []
     ids = [u.id for u in accounts]
     names = [u.username for u in accounts]
-    detach_user_references(ids)
-    # Rows keyed only by name, from before user_id was populated, are missed
-    # by the id-based deletes above.
+    detach_user_references(ids, names)
+    # Rows keyed only by name, from before user_id was populated.
     Commitment.query.filter(Commitment.member_name.in_(names)).delete(
         synchronize_session=False)
     ChecklistItem.query.filter(ChecklistItem.member_name.in_(names)).delete(
@@ -289,60 +326,40 @@ def wipe_members():
     """Delete every member account and everything hanging off it."""
     members = User.query.filter_by(role='member').all()
     member_ids = [m.id for m in members]
+    member_names = [m.username for m in members]
     counts = {'members': len(member_ids)}
     if not member_ids:
         return counts
 
-    # Children first, then the pods, then the accounts themselves.
-    # exam_upload and practice_log carry a commitment_id foreign key, so every
-    # row pointing at a commitment that is about to go must be removed first —
-    # including rows whose own member_id belongs to someone who survives.
-    doomed_commitments = [
-        row[0] for row in db.session.query(Commitment.id).filter(
-            db.or_(
-                Commitment.user_id.in_(member_ids),
-                Commitment.member_name.in_([m.username for m in members]),
-            )
-        ).all()
-    ]
-    if doomed_commitments:
-        for model in (ExamUpload, PracticeLog):
-            model.query.filter(
-                model.commitment_id.in_(doomed_commitments)
-            ).delete(synchronize_session=False)
-        db.session.flush()
-
+    # Count before deleting, for the report.
     for label, model, columns in [
         ('ah_attendance', AHAttendance, ['user_id']),
         ('ws_attendance', WSAttendance, ['user_id']),
-        ('exam_uploads', ExamUpload, ['member_id']),
-        ('practice_logs', PracticeLog, ['member_id']),
         ('commitments', Commitment, ['user_id']),
         ('checklist_items', ChecklistItem, ['user_id']),
+        ('exam_uploads', ExamUpload, ['member_id']),
         ('notifications', Notification, ['user_id']),
+        ('practice_logs', PracticeLog, ['member_id']),
         ('reminder_logs', ReminderLog, ['user_id']),
-        ('practice_sessions', PracticeSession, ['member_id', 'reserved_for_id']),
+        ('practice_sessions', PracticeSession, ['member_id']),
         ('pods', MentorPod, ['member_id']),
     ]:
         total = 0
         for column in columns:
             total += model.query.filter(
-                getattr(model, column).in_(member_ids)
-            ).delete(synchronize_session=False)
+                getattr(model, column).in_(member_ids)).count()
         counts[label] = total
 
-    # Commitments keyed only by name, from before user_id was populated.
-    names = [m.username for m in members]
-    counts['commitments'] += Commitment.query.filter(
-        Commitment.member_name.in_(names)
-    ).delete(synchronize_session=False)
+    # One code path handles every foreign key, driven by schema metadata.
+    detach_user_references(member_ids, member_names)
 
-    # Any practice session left over from last year, whoever created it.
+    # Practice sessions from last year, whoever created them.
     counts['practice_sessions'] += PracticeSession.query.delete(
-        synchronize_session=False
-    )
+        synchronize_session=False)
 
     User.query.filter(User.id.in_(member_ids)).delete(synchronize_session=False)
+    db.session.flush()
+    db.session.expunge_all()
     return counts
 
 
@@ -466,10 +483,6 @@ def main():
             print(f'\n[Accounts] purged {len(purged)} test/demo account(s)')
 
         counts = wipe_members()
-        db.session.flush()
-        # Bulk deletes leave stale objects in the identity map; clearing it
-        # keeps the inserts below clean.
-        db.session.expunge_all()
         print('\nDeleted:')
         for key, value in counts.items():
             print(f'  {key:20s} {value}')
