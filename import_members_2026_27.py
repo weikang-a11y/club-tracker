@@ -171,15 +171,27 @@ def detach_user_references(user_ids):
         {'target_user_id': None}, synchronize_session=False)
     PracticeLog.query.filter(PracticeLog.officer_id.in_(user_ids)).update(
         {'officer_id': None}, synchronize_session=False)
+    # Same ordering rule: anything referencing a commitment goes before the
+    # commitments themselves.
+    doomed = [
+        row[0] for row in db.session.query(Commitment.id).filter(
+            Commitment.user_id.in_(user_ids)).all()
+    ]
+    if doomed:
+        for model in (ExamUpload, PracticeLog):
+            model.query.filter(model.commitment_id.in_(doomed)).delete(
+                synchronize_session=False)
+        db.session.flush()
+
     for model, column in [
         (Notification, 'user_id'),
         (ReminderLog, 'user_id'),
         (AHAttendance, 'user_id'),
         (WSAttendance, 'user_id'),
-        (Commitment, 'user_id'),
-        (ChecklistItem, 'user_id'),
         (ExamUpload, 'member_id'),
         (PracticeLog, 'member_id'),
+        (Commitment, 'user_id'),
+        (ChecklistItem, 'user_id'),
         (PracticeSession, 'member_id'),
         (PracticeSession, 'reserved_for_id'),
         (PracticeSession, 'officer_id'),
@@ -282,14 +294,32 @@ def wipe_members():
         return counts
 
     # Children first, then the pods, then the accounts themselves.
+    # exam_upload and practice_log carry a commitment_id foreign key, so every
+    # row pointing at a commitment that is about to go must be removed first —
+    # including rows whose own member_id belongs to someone who survives.
+    doomed_commitments = [
+        row[0] for row in db.session.query(Commitment.id).filter(
+            db.or_(
+                Commitment.user_id.in_(member_ids),
+                Commitment.member_name.in_([m.username for m in members]),
+            )
+        ).all()
+    ]
+    if doomed_commitments:
+        for model in (ExamUpload, PracticeLog):
+            model.query.filter(
+                model.commitment_id.in_(doomed_commitments)
+            ).delete(synchronize_session=False)
+        db.session.flush()
+
     for label, model, columns in [
         ('ah_attendance', AHAttendance, ['user_id']),
         ('ws_attendance', WSAttendance, ['user_id']),
+        ('exam_uploads', ExamUpload, ['member_id']),
+        ('practice_logs', PracticeLog, ['member_id']),
         ('commitments', Commitment, ['user_id']),
         ('checklist_items', ChecklistItem, ['user_id']),
-        ('exam_uploads', ExamUpload, ['member_id']),
         ('notifications', Notification, ['user_id']),
-        ('practice_logs', PracticeLog, ['member_id']),
         ('reminder_logs', ReminderLog, ['user_id']),
         ('practice_sessions', PracticeSession, ['member_id', 'reserved_for_id']),
         ('pods', MentorPod, ['member_id']),
