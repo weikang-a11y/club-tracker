@@ -59,6 +59,7 @@ from app import (
     _canonical_officer_username,
     EVENT_TABS,
 )
+from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash
 
 DEFAULT_PASSWORD = 'DECA2026!'
@@ -209,10 +210,26 @@ def tidy_stale_accounts():
     """Rename or remove leftover accounts before matching mentors."""
     notes = []
     for old_name, new_name in RENAME_ACCOUNTS.items():
-        source = User.query.filter_by(username=old_name).first()
+        source = next(
+            (u for u in User.query.all()
+             if (u.username or '').strip().lower() == old_name.lower()),
+            None,
+        )
         if not source:
             continue
-        target = User.query.filter_by(username=new_name).first()
+        # Case- and whitespace-insensitive, and excluding the source row
+        # itself. An exact filter_by missed a real row in production and the
+        # rename then hit the unique constraint mid-flush.
+        target = next(
+            (u for u in User.query.all()
+             if (u.username or '').strip().lower() == new_name.lower()
+             and u.id != source.id),
+            None,
+        )
+        notes.append(
+            f'rename check: {old_name} id={source.id}; '
+            f'{new_name} {"exists id=" + str(target.id) if target else "not found"}'
+        )
         if target:
             # Detach anything that points at the stale account, then remove it.
             MDPAuditLog.query.filter_by(actor_id=source.id).update(
@@ -230,7 +247,24 @@ def tidy_stale_accounts():
         else:
             source.username = new_name
             notes.append(f'renamed {old_name} -> {new_name}')
-    db.session.flush()
+        try:
+            db.session.flush()
+        except IntegrityError:
+            # Something else already holds the name. Fall back to removing the
+            # stale account rather than failing the whole import.
+            db.session.rollback()
+            stale = next(
+                (u for u in User.query.all()
+                 if (u.username or '').strip().lower() == old_name.lower()),
+                None,
+            )
+            if stale:
+                detach_user_references([stale.id])
+                db.session.flush()
+                User.query.filter(User.id == stale.id).delete(
+                    synchronize_session=False)
+                db.session.flush()
+                notes.append(f'rename collided; deleted {old_name} instead')
     return notes
 
 
@@ -299,19 +333,9 @@ def main():
                 print(f'  {problem}')
             print()
 
-        # Rename first, so mentor lookups and collision checks see the new
-        # usernames.
-        for old_name, new_name in RENAME_ACCOUNTS.items():
-            account = User.query.filter(
-                db.func.lower(User.username) == old_name
-            ).first()
-            if account and apply_changes:
-                account.username = new_name
-                db.session.flush()
-                print(f'[Rename] {old_name} -> {new_name}')
-            elif account:
-                print(f'[Rename] would rename {old_name} -> {new_name}')
-
+        # Renaming is handled by tidy_stale_accounts(), which checks whether
+        # the target name is already taken. An earlier unconditional rename
+        # here was the cause of the unique-constraint failure.
         if apply_changes:
             for note in tidy_stale_accounts():
                 print(f'[Accounts] {note}')
