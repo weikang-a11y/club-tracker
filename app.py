@@ -49,6 +49,13 @@ if DATABASE_URL:
         'max_overflow': 5,
         'pool_recycle': 280,
         'pool_pre_ping': True,
+        # Keep remote connections alive; Railway's proxy drops idle ones.
+        'connect_args': {
+            'keepalives': 1,
+            'keepalives_idle': 30,
+            'keepalives_interval': 10,
+            'keepalives_count': 5,
+        },
     }
 else:
     local_db = os.path.join(os.path.dirname(__file__), 'club.db')
@@ -2078,6 +2085,11 @@ class MentorPodForm(FlaskForm):
 # drifted out of sync with the models. These helpers inspect the schema first
 # so the same migration works on both engines, and are safe to re-run.
 
+SKIP_STARTUP_WORK = os.getenv(
+    'SKIP_STARTUP_BACKFILL', ''
+).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def _existing_columns(table):
     try:
         return {col['name'] for col in db.inspect(db.engine).get_columns(table)}
@@ -2316,6 +2328,11 @@ with app.app_context():
             db.session.rollback()
 
     # ── ORM-based backfills (all column migrations have run by now) ──
+    #
+    # Everything below queries or writes rows rather than schema. Maintenance
+    # scripts run from a laptop set SKIP_STARTUP_BACKFILL=1 so that importing
+    # app.py does not fire hundreds of round trips over a remote connection
+    # before the script has started.
 
     # Drop the retired ICPrep tables. The integration and its manual tracking
     # were removed, so these tables and their data are no longer referenced.
@@ -2333,7 +2350,7 @@ with app.app_context():
             db.session.rollback()
 
     # Backfill missing creator signups for existing workshops
-    for ws in Workshop.query.all():
+    for ws in ([] if SKIP_STARTUP_WORK else Workshop.query.all()):
         if ws.creator_id:
             creator = db.session.get(User, ws.creator_id)
             if creator and creator not in ws.signups:
@@ -2343,15 +2360,40 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
-    # Migrate: ensure commitment rows exist for all members
-    # (safe to run multiple times — ensure_commitments is idempotent)
-    for member in User.query.filter_by(role='member').all():
-        ensure_commitments(member)
+    # Migrate: ensure commitment rows exist for all members.
+    #
+    # This used to call ensure_commitments() for every member on every boot —
+    # several queries each, hundreds of round trips. Harmless on a local file,
+    # but over a remote Postgres connection it is slow enough that the server
+    # can drop the connection mid-loop. Only members with no commitment rows
+    # need the call, which is one query to find and normally zero to fix.
+    #
+    # Maintenance scripts set SKIP_STARTUP_BACKFILL=1 to skip it entirely,
+    # since importing app.py should not do heavy work before the script runs.
+    if not SKIP_STARTUP_WORK:
+        members_with_commitments = {
+            row[0] for row in db.session.query(Commitment.user_id)
+            .filter(Commitment.user_id.isnot(None)).distinct().all()
+        }
+        named_with_commitments = {
+            row[0] for row in db.session.query(Commitment.member_name)
+            .filter(Commitment.member_name.isnot(None)).distinct().all()
+        }
+        missing = [
+            member for member in User.query.filter_by(role='member').all()
+            if member.id not in members_with_commitments
+            and member.username not in named_with_commitments
+        ]
+        for member in missing:
+            ensure_commitments(member)
+        if missing:
+            print(f'[Commitments] seeded {len(missing)} member(s) missing commitment rows.')
 
     # One-time 2026-27 officer import. The operation is transactional and an
     # import problem is logged without preventing the web service from booting.
     try:
-        import_2026_27_officer_roster()
+        if not SKIP_STARTUP_WORK:
+            import_2026_27_officer_roster()
     except Exception as exc:
         db.session.rollback()
         print(f'[Officer Import] skipped: {exc}')
@@ -2359,13 +2401,15 @@ with app.app_context():
     # Apply targeted access changes to databases where the roster import has
     # already run. This does not change anyone's password.
     try:
-        reconcile_removed_admin_access()
+        if not SKIP_STARTUP_WORK:
+            reconcile_removed_admin_access()
     except Exception as exc:
         db.session.rollback()
         print(f'[Admin Access] reconciliation skipped: {exc}')
 
     try:
-        sync_officer_access_flags()
+        if not SKIP_STARTUP_WORK:
+            sync_officer_access_flags()
     except Exception as exc:
         db.session.rollback()
         print(f'[Officer Access] synchronization skipped: {exc}')
@@ -2380,8 +2424,12 @@ with app.app_context():
     # Import the exact workbook values after officer reconciliation so members
     # who are also officers (for example Anay Kalchuri) retain their tracking
     # rows. Each workbook byte-version is imported only once.
-    # Migrate: fix existing commitment rows whose required counts don't match current matrix
-    for member in User.query.filter_by(role='member').all():
+    # Migrate: fix existing commitment rows whose required counts don't match
+    # current matrix. This is ~3 queries per member on every boot, which is
+    # what dropped the connection when a maintenance script imported app.py
+    # over a remote database.
+    for member in ([] if SKIP_STARTUP_WORK
+                   else User.query.filter_by(role='member').all()):
         pod = MentorPod.query.filter_by(member_id=member.id).first()
         level = pod.experience_level if pod else 'N'
         reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
@@ -2410,14 +2458,16 @@ with app.app_context():
     # Give newly added 2026-27 officers demo mentees only when they do not
     # already have real mentor-pod assignments.
     try:
-        create_new_officer_demo_pods()
+        if not SKIP_STARTUP_WORK:
+            create_new_officer_demo_pods()
     except Exception as exc:
         db.session.rollback()
         print(f'[Demo Pods] skipped: {exc}')
 
 
     try:
-        sync_written_deadline_catalog()
+        if not SKIP_STARTUP_WORK:
+            sync_written_deadline_catalog()
     except Exception as exc:
         db.session.rollback()
         print(f'[Written Deadlines] synchronization skipped: {exc}')

@@ -30,8 +30,15 @@ starts empty and accumulates as meetings happen.
 """
 
 import csv
+import os
 import re
 import sys
+
+# Importing app.py runs its startup migrations. The per-member commitment
+# backfill is hundreds of round trips, which is slow and fragile over a
+# remote Postgres connection — skip it; this script seeds commitments itself.
+os.environ.setdefault('SKIP_STARTUP_BACKFILL', '1')
+os.environ.setdefault('SKIP_DEMO_PODS', '1')
 
 from app import (
     app,
