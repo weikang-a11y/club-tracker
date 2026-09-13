@@ -88,6 +88,11 @@ RENAME_ACCOUNTS = {
 # is converted in place rather than deleted, so audit-log references survive.
 DEMOTE_TO_MEMBER = {
     'isabella.yu',
+    # Neither is on the 2026-27 officer roster, and both appear in the mentee
+    # TSV — last year's officers who are mentees now. Converted in place so
+    # their user id and audit-log history survive.
+    'riday.appannagari',
+    'ruby.han',
 }
 
 # Seeded/demo accounts to purge regardless of role. Member-role ones are

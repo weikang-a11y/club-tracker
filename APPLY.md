@@ -1,83 +1,64 @@
-# Fix: duplicate rename block caused the unique-constraint failure
+# Fix: two more officer-to-mentee conversions
 
-## Your database was not changed
+## What the collision meant
 
-The failure happened during a flush before the member wipe. No commit ran,
-so the transaction rolled back. Nothing was deleted or created.
+`riday.appannagari` and `ruby.han` exist as officer accounts and also appear
+in the mentee TSV. Officers survive the member wipe, so creating them as
+mentees would have hit the unique constraint — the script stopped before
+touching anything, which is what it is meant to do.
 
-Two things did work on that run: the connection held (the startup guard is
-now in place) and it reached the import logic.
+Neither is on the 2026-27 officer roster. ("Han" in the roster is Hanna Li, a
+different person.) So both are last year's officers who are mentees now,
+the same situation as Isabella Yu.
 
-## The bug
+Both are now in `DEMOTE_TO_MEMBER`, so their accounts are converted in place:
+role set to member, admin and officer access cleared, password reset to
+`DECA2026!` with a forced change. Converting rather than deleting and
+recreating keeps their user id, so audit-log entries and any history that
+points at them stay intact.
 
-There were TWO rename blocks in the script. `tidy_stale_accounts()` checks
-whether the target username is already taken and deletes the stale account
-instead of renaming. But an older block left behind in `main()` ran first and
-renamed unconditionally:
+**If either is actually a current officer who should keep officer access,
+tell me instead of running this** — the fix would be to remove their row
+from the TSV rather than demote them.
 
-```python
-account.username = new_name      # no check that the name is free
-db.session.flush()               # -> UniqueViolation
-```
+## Verified on a copy of your database
 
-In production `elizabeth.huang` already exists, so the rename collided.
-That duplicate block is removed; renaming now happens only in
-`tidy_stale_accounts()`.
-
-The lookup is also case- and whitespace-insensitive now, excludes the source
-row itself, prints what it found, and falls back to deleting the stale
-account if a rename somehow still collides.
-
-## Verified both paths on a copy of your database
-
-Target already exists (matches production):
+Seeded to match production: isabella.yu, riday.appannagari, ruby.han and
+both huang accounts all present as officers.
 
 ```
-[Accounts] rename check: lizzie.huang id=29; elizabeth.huang exists id=169
+[Accounts] rename check: lizzie.huang id=29; elizabeth.huang exists id=171
 [Accounts] deleted lizzie.huang (elizabeth.huang already exists)
-Members now: 173 | Commitments: 519
+[Accounts] purged 126 test/demo account(s)
+Created/updated 173 member(s)
+
+isabella.yu        role=member admin=False officer_access=False pod=yes
+riday.appannagari  role=member admin=False officer_access=False pod=yes
+ruby.han           role=member admin=False officer_access=False pod=yes
+
+members 173 | pods 173 | commitments 519 | AH 0 | lizzie.huang gone
+admin 5xx = none
 ```
 
-Target does not exist:
-
-```
-[Accounts] rename check: lizzie.huang id=29; elizabeth.huang not found
-[Accounts] renamed lizzie.huang -> elizabeth.huang
-Members now: 173 | Commitments: 519
-```
-
-Both end with 173 members, 173 pods, 519 commitments, 0 attendance records,
-no test accounts, and no 5xx for admin or member.
+Dry run now reports no USERNAME COLLISIONS and no UNRESOLVED MENTORS.
 
 ## What to do
 
-1. Copy these files over the repo. Confirm app.py landed:
-
-   ```powershell
-   Select-String -Path app.py -Pattern "SKIP_STARTUP_WORK"
-   ```
-
-2. Commit and push.
-
-3. **Back up the Railway Postgres database.**
-
-4. Dry run:
+1. Copy these files over the repo, commit, push.
+2. **Back up the Railway Postgres database.**
+3. Dry run — confirm no collision or unresolved-mentor block appears:
 
    ```powershell
    python import_members_2026_27.py roster.tsv
    ```
 
-   Confirm `Database: POSTGRES (production)` and `173 member(s)`.
-
-5. Apply:
+4. Apply:
 
    ```powershell
    python import_members_2026_27.py roster.tsv --apply
    ```
 
-   Watch for the `[Accounts] rename check:` line — it will now say whether
-   elizabeth.huang was found, and act accordingly.
+5. Reload the site. Members appear immediately; no redeploy needed.
 
-   Expected tail: 173 members, 173 pods, 519 commitments, 0 AH records.
-
-6. Reload the site. No redeploy needed for the members to appear.
+If a new collision appears for someone else, send it over — it means another
+officer account overlaps the mentee roster, and the same one-line fix applies.
