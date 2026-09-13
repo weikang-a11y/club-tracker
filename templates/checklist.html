@@ -67,18 +67,6 @@ Only upload when the workbook is the source of truth; importing again overwrites
         </div>
       </div>
 
-      <div class="btn-group" role="group" aria-label="Written progress year">
-        <a href="{{ url_for('checklist_completion', written_view='legacy') }}"
-           class="btn {{ 'btn-primary' if written_view == 'legacy' else 'btn-outline-primary' }}">
-          2025–26 Spreadsheet
-        </a>
-
-        <a href="{{ url_for('checklist_completion', written_view='current') }}"
-           class="btn {{ 'btn-primary' if written_view == 'current' else 'btn-outline-primary' }}">
-          2026–27 New Deadlines
-        </a>
-      </div>
-    </div>
   </div>
 </div>
 

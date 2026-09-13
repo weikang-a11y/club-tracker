@@ -186,7 +186,7 @@ OFFICER_ROSTER_2026_27 = [
     ("Neela Koneru", "Officer"),
     ("Sophie Yu", "Officer"),
     ("Anay Kalchuri", "Officer"),
-    ("Lizzie Huang", "Officer"),
+    ("Elizabeth Huang", "Officer"),
     ("Ayden Wang", "Officer"),
     ("Sophie Ji", "Officer"),
     ("Sarah Xu", "Officer"),
@@ -194,7 +194,6 @@ OFFICER_ROSTER_2026_27 = [
     ("Purab Shah", "Officer"),
     ("Armaan Arya", "Officer"),
     ("Audrey Sansone", "Officer"),
-    ("Isabella Yu", "Officer"),
     ("Riya Khattri", "Officer"),
     ("Zubin Lakhia", "Officer"),
 ]
@@ -1957,8 +1956,11 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     level = pod.experience_level if pod else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
-    ah_ok = ah_rate >= (AH_THRESHOLD * 100)
-    ws_ok = ws_rate >= ws_threshold_pct
+    # A member with no records yet has not missed anything — at the start of
+    # the year every mentee sits at 0 of 0, and flagging them all would make
+    # the report meaningless. Only judge a category once it has data.
+    ah_ok = total_ah == 0 or ah_rate >= (AH_THRESHOLD * 100)
+    ws_ok = total_ws == 0 or ws_rate >= ws_threshold_pct
 
     at_risk = not ah_ok or not ws_ok
     risk_reasons = []
@@ -4430,7 +4432,7 @@ def admin_import_commitments():
     # Keep accidental uploads bounded without changing limits for other routes.
     if request.content_length and request.content_length > 25 * 1024 * 1024:
         flash('The workbook is too large. The maximum upload size is 25 MB.', 'danger')
-        return redirect(url_for('checklist_completion', written_view='legacy'))
+        return redirect(url_for('checklist_completion'))
 
 
     form = MDPWorkbookUploadForm()
@@ -4438,7 +4440,7 @@ def admin_import_commitments():
         for messages in form.errors.values():
             for message in messages:
                 flash(message, 'danger')
-        return redirect(url_for('checklist_completion', written_view='legacy'))
+        return redirect(url_for('checklist_completion'))
 
     temporary_path = None
     try:
@@ -4466,7 +4468,7 @@ def admin_import_commitments():
         db.session.rollback()
         print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
         flash('The import failed. Check the Railway deployment logs for details.', 'danger')
-        return redirect(url_for('checklist_completion', written_view='legacy'))
+        return redirect(url_for('checklist_completion'))
     finally:
         if temporary_path:
             try:
@@ -4490,7 +4492,7 @@ def admin_import_commitments():
             + ', '.join(stats['members_without_completion']),
             'warning',
         )
-    return redirect(url_for('checklist_completion', written_view='legacy'))
+    return redirect(url_for('checklist_completion'))
 
 
 @app.route('/member_commitments')
@@ -4880,13 +4882,9 @@ def checklist_completion():
         flash('Only officers/admins can view this.', 'danger')
         return redirect(url_for('dashboard'))
 
-    written_view = request.args.get(
-        'written_view',
-        'legacy',
-    ).strip().lower()
-
-    if written_view not in {'legacy', 'current'}:
-        written_view = 'legacy'
+    # The 2025-26 spreadsheet view has been retired. The parameter is still
+    # accepted so old links and bookmarks do not 404, but it is ignored.
+    written_view = 'current'
 
     members = _members_visible_to_current_user()
         # Demo users belong only to the 2026-27 view.
