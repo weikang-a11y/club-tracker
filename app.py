@@ -79,6 +79,9 @@ TIME_SLOTS = [
 # Quick-pick slots offered beside the free-text box on the practice session
 # form. TIME_SLOTS is left alone: it still backs the legacy `slot` field and
 # the time_map display lookup.
+# Password given to members created through the admin Add Member form.
+NEW_MEMBER_PASSWORD = 'DECA2026!'
+
 PRACTICE_SLOT_PRESETS = ['3:00-3:20', '3:20-3:40', '3:40-4:00']
 
 ACTIVITY_TYPES = [
@@ -3875,9 +3878,15 @@ def admin_panel():
     }
     pending_password_count = User.query.filter(
         User.must_change_password.is_(True)).count()
+    mentor_choices = [
+        (u.id, u.username) for u in User.query.filter(
+            User.has_officer_access.is_(True)
+        ).order_by(User.username).all()
+    ]
     return render_template(
         'admin.html', users=users, stats=stats,
         pw_filter=pw_filter, pending_password_count=pending_password_count,
+        mentor_choices=mentor_choices, event_choices=EVENT_TABS,
     )
 
 
@@ -4009,6 +4018,87 @@ def admin_toggle_competing(user_id):
     )
     db.session.commit()
     flash(f'"{user.username}" marked as ' + ('competing.' if user.is_competing else 'non-competing.'), 'success')
+    return redirect(url_for('admin_panel'))
+
+
+@app.route('/admin/add_member', methods=['POST'])
+@login_required
+@admin_required
+def admin_add_member():
+    """Create one mentee and place them in a pod.
+
+    The roster import handles the start of year; this covers people who join
+    afterwards, without re-importing and wiping everyone's attendance.
+    """
+    email = (request.form.get('email') or '').strip()
+    username = (request.form.get('username') or '').strip().lower()
+    if not username and email:
+        username = email.split('@')[0].lower()
+    if not username:
+        flash('A username or email is required.', 'danger')
+        return redirect(url_for('admin_panel'))
+
+    if User.query.filter(db.func.lower(User.username) == username).first():
+        flash(f'An account named "{username}" already exists.', 'danger')
+        return redirect(url_for('admin_panel'))
+
+    mentor_id = request.form.get('mentor_id', type=int)
+    mentor = db.session.get(User, mentor_id) if mentor_id else None
+    if mentor_id and not mentor:
+        flash('That mentor was not found.', 'danger')
+        return redirect(url_for('admin_panel'))
+
+    event = (request.form.get('event') or '').strip().upper()
+    if event and event not in {code for code, _ in EVENT_TABS}:
+        flash(f'Unknown event code "{event}".', 'danger')
+        return redirect(url_for('admin_panel'))
+
+    level = request.form.get('experience_level', 'N')
+    if level not in {'N', 'E'}:
+        level = 'N'
+    competing = request.form.get('is_competing', 'yes') == 'yes'
+
+    member = User(
+        username=username,
+        password=generate_password_hash(NEW_MEMBER_PASSWORD),
+        role='member',
+        email=email or None,
+        is_admin=False,
+        has_officer_access=False,
+        is_competing=competing,
+        must_change_password=True,
+    )
+    db.session.add(member)
+    db.session.flush()
+
+    if mentor:
+        pod_number = request.form.get('pod_number', type=int)
+        if not pod_number:
+            existing = MentorPod.query.filter_by(mentor_id=mentor.id).first()
+            pod_number = existing.pod_number if existing else 0
+        db.session.add(MentorPod(
+            mentor_id=mentor.id,
+            member_id=member.id,
+            pod_number=pod_number,
+            experience_level=level,
+            event=event or None,
+        ))
+
+    ensure_commitments(member)
+    log_mdp_action(
+        current_user.id, 'member_add', 'user',
+        target_user_id=member.id,
+        details=(f'Created {username}'
+                 + (f', mentor {mentor.username}' if mentor else ', no mentor')
+                 + (f', event {event}' if event else '')
+                 + f', {"Novice" if level == "N" else "Experienced"}'
+                 + (', non-compete' if not competing else '')),
+    )
+    db.session.commit()
+    flash(
+        f'Created {username} with password {NEW_MEMBER_PASSWORD}. '
+        'They must change it at first login.', 'success'
+    )
     return redirect(url_for('admin_panel'))
 
 
@@ -4287,9 +4377,13 @@ def edit_pod(pod_id):
     if experience_level in {'N', 'E'}:
         pod.experience_level = experience_level
 
+    # EVENT_TABS is a list of (code, label) tuples, so testing membership
+    # against it directly was always False and the event never changed.
     event = request.form.get('event', pod.event or '').strip().upper()
-    if event in EVENT_TABS:
+    if event in {code for code, _ in EVENT_TABS}:
         pod.event = event
+    elif event == '':
+        pod.event = None
 
     if pod.member and 'is_competing' in request.form:
         pod.member.is_competing = (

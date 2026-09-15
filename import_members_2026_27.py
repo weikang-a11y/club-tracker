@@ -44,6 +44,7 @@ from app import (
     app,
     db,
     User,
+    OFFICER_ROSTER_2026_27,
     MDPAuditLog,
     MentorPod,
     Commitment,
@@ -328,7 +329,18 @@ def wipe_members():
     member_ids = [m.id for m in members]
     member_names = [m.username for m in members]
     counts = {'members': len(member_ids)}
+
+    # Pods and practice sessions are rebuilt wholesale from the TSV, so clear
+    # them unconditionally — BEFORE the early return below. A previous purge
+    # can leave zero members while stale pods remain, which is how officers
+    # ended up sitting inside another officer's pod.
+    counts['pods'] = MentorPod.query.delete(synchronize_session=False)
+    counts['practice_sessions'] = PracticeSession.query.delete(
+        synchronize_session=False)
+    db.session.flush()
+
     if not member_ids:
+        db.session.expunge_all()
         return counts
 
     # Count before deleting, for the report.
@@ -341,8 +353,6 @@ def wipe_members():
         ('notifications', Notification, ['user_id']),
         ('practice_logs', PracticeLog, ['member_id']),
         ('reminder_logs', ReminderLog, ['user_id']),
-        ('practice_sessions', PracticeSession, ['member_id']),
-        ('pods', MentorPod, ['member_id']),
     ]:
         total = 0
         for column in columns:
@@ -353,10 +363,6 @@ def wipe_members():
     # One code path handles every foreign key, driven by schema metadata.
     detach_user_references(member_ids, member_names)
 
-    # Practice sessions from last year, whoever created them.
-    counts['practice_sessions'] += PracticeSession.query.delete(
-        synchronize_session=False)
-
     User.query.filter(User.id.in_(member_ids)).delete(synchronize_session=False)
     db.session.flush()
     db.session.expunge_all()
@@ -366,6 +372,10 @@ def wipe_members():
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     apply_changes = '--apply' in sys.argv
+    purge_stale = '--purge-stale' in sys.argv or '--stale-only' in sys.argv
+    # --stale-only removes accounts no longer in the chapter and stops. No
+    # members are deleted or recreated, so nothing else is disturbed.
+    stale_only = '--stale-only' in sys.argv
     if not args:
         print(__doc__)
         sys.exit(1)
@@ -462,11 +472,46 @@ def main():
                 print(f'  {role}: {shown}{more}')
             print()
 
+        # Accounts that are neither in the TSV nor on the 2026-27 officer
+        # roster: last year's people who are no longer in the chapter.
+        roster_usernames = {
+            _canonical_officer_username(name).lower()
+            for name, _ in OFFICER_ROSTER_2026_27
+        }
+        tsv_usernames = {entry['username'] for entry in roster}
+        mentor_usernames = {
+            (MENTOR_ALIASES.get(r['mentor']) or
+             _canonical_officer_username(r['mentor'])).lower()
+            for r in roster if r['mentor']
+        }
+        stale_accounts = sorted(
+            (u for u in User.query.all()
+             if u.username.lower() not in tsv_usernames
+             and u.username.lower() not in roster_usernames
+             and u.username.lower() not in mentor_usernames
+             and u.username.lower() not in {n.lower() for n in DEMOTE_TO_MEMBER}),
+            key=lambda u: u.username.lower(),
+        )
+        if stale_accounts:
+            label = 'WILL BE DELETED' if purge_stale else 'kept — add --purge-stale to remove'
+            print(f'Accounts in neither the TSV nor the officer roster '
+                  f'({len(stale_accounts)}) [{label}]:')
+            for account in stale_accounts[:30]:
+                print(f'  {account.username}  (role={account.role}, '
+                      f'admin={bool(account.is_admin)})')
+            if len(stale_accounts) > 30:
+                print(f'  … and {len(stale_accounts) - 30} more')
+            print()
+
         existing_members = User.query.filter_by(role='member').count()
         print(f'Will DELETE {existing_members} existing member account(s) and all their data.')
         print(f'Will CREATE {len(roster)} member account(s), password {DEFAULT_PASSWORD}, '
               f'forced change at first login.')
         print('Attendance starts empty; commitments are seeded per level and event.\n')
+
+        if stale_only:
+            print('MODE: --stale-only — only the accounts listed above will be '
+                  'removed.\n       No member is deleted or recreated.')
 
         if not apply_changes:
             print('Dry run complete. Re-run with --apply to make these changes.')
@@ -481,6 +526,30 @@ def main():
         purged = purge_test_accounts()
         if purged:
             print(f'\n[Accounts] purged {len(purged)} test/demo account(s)')
+
+        if stale_only:
+            if stale_accounts:
+                stale_ids = [u.id for u in stale_accounts]
+                detach_user_references(stale_ids, [u.username for u in stale_accounts])
+                User.query.filter(User.id.in_(stale_ids)).delete(
+                    synchronize_session=False)
+                db.session.commit()
+                print(f'\nRemoved {len(stale_ids)} account(s) no longer in the chapter.')
+            else:
+                print('\nNothing to remove.')
+            print(f'Members now: {User.query.filter_by(role="member").count()}')
+            print(f'Pods now:    {MentorPod.query.count()}')
+            return
+
+        if purge_stale and stale_accounts:
+            stale_ids = [u.id for u in stale_accounts]
+            stale_names = [u.username for u in stale_accounts]
+            detach_user_references(stale_ids, stale_names)
+            User.query.filter(User.id.in_(stale_ids)).delete(
+                synchronize_session=False)
+            db.session.flush()
+            print(f'[Accounts] removed {len(stale_ids)} account(s) no longer '
+                  f'in the chapter')
 
         counts = wipe_members()
         print('\nDeleted:')

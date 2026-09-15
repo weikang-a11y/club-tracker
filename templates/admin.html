@@ -82,6 +82,67 @@
 
 
 {# ── User Table ─────────────────────────────────────────────── #}
+{# ── Add Member ─────────────────────────────────────────────── #}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+    <div class="card-header bg-white p-4 pb-0">
+        <h5 class="mb-1 fw-bold">Add Member</h5>
+        <p class="text-muted small mb-0">
+            For mentees who join after the roster import. Creates the account,
+            seeds their commitments and places them in a pod.
+        </p>
+    </div>
+    <div class="card-body p-4">
+        <form method="POST" action="{{ url_for('admin_add_member') }}" class="row g-2">
+            <div class="col-md-4">
+                <label class="form-label small fw-semibold">School email</label>
+                <input type="email" name="email" class="form-control form-control-sm"
+                       placeholder="first.last@warriorlife.net" required>
+                <div class="form-text">Username is taken from the part before the @.</div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small fw-semibold">Mentor</label>
+                <select name="mentor_id" class="form-select form-select-sm">
+                    <option value="">No mentor yet</option>
+                    {% for mentor_id, mentor_name in mentor_choices %}
+                    <option value="{{ mentor_id }}">{{ mentor_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-1">
+                <label class="form-label small fw-semibold">Pod #</label>
+                <input type="number" name="pod_number" class="form-control form-control-sm"
+                       min="0" placeholder="auto">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">Event</label>
+                <select name="event" class="form-select form-select-sm">
+                    <option value="">No event</option>
+                    {% for event_code, event_label in event_choices %}
+                    <option value="{{ event_code }}">{{ event_code }} — {{ event_label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">Experience</label>
+                <select name="experience_level" class="form-select form-select-sm">
+                    <option value="N">Novice</option>
+                    <option value="E">Experienced</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">Competing status</label>
+                <select name="is_competing" class="form-select form-select-sm">
+                    <option value="yes">Competing</option>
+                    <option value="no">Non-Compete</option>
+                </select>
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <button type="submit" class="btn btn-success btn-sm w-100">Add Member</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <div class="card border-0 shadow-sm rounded-4">
     <div class="card-header bg-white p-4 d-flex justify-content-between align-items-center">
         <h5 class="mb-0 fw-bold">
