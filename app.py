@@ -2629,6 +2629,54 @@ def log_pod_edit(actor_id, member_id, action, details=""):
     )
 
 
+# Tables that reference user.id. Rows in DELETE_WITH_USER belong to that user;
+# rows in NULL_WITH_USER are history kept with the reference cleared. Driven by
+# schema metadata so a column added later cannot be silently missed — deleting
+# a user without clearing these raises a ForeignKeyViolation on Postgres.
+_DELETE_WITH_USER = {
+    'ah_attendance', 'ws_attendance', 'commitment', 'checklist_item',
+    'exam_upload', 'notification', 'practice_log', 'reminder_log',
+    'practice_session', 'mentor_pod', 'general_attendance',
+    'attendance_submission', 'workshop', 'workshop_signups',
+}
+_NULL_WITH_USER = {'mdp_audit_log', 'mentor_pod_edit_log'}
+
+
+def detach_user_rows(user_ids):
+    """Clear every reference to these users so the accounts can be deleted."""
+    if not user_ids:
+        return
+    doomed = [row[0] for row in db.session.query(Commitment.id).filter(
+        Commitment.user_id.in_(user_ids)).all()]
+    if doomed:
+        for table in db.metadata.sorted_tables:
+            for column in table.columns:
+                for fk in column.foreign_keys:
+                    if fk.column.table.name == 'commitment':
+                        db.session.execute(
+                            table.delete().where(column.in_(doomed))
+                            if table.name in _DELETE_WITH_USER
+                            else table.update().where(column.in_(doomed))
+                            .values(**{column.name: None})
+                        )
+        db.session.flush()
+
+    for table in db.metadata.sorted_tables:
+        if table.name == 'user':
+            continue
+        for column in table.columns:
+            for fk in column.foreign_keys:
+                if fk.column.table.name != 'user':
+                    continue
+                if table.name in _DELETE_WITH_USER:
+                    db.session.execute(table.delete().where(column.in_(user_ids)))
+                elif table.name in _NULL_WITH_USER:
+                    db.session.execute(
+                        table.update().where(column.in_(user_ids))
+                        .values(**{column.name: None}))
+    db.session.flush()
+
+
 def log_mdp_action(actor_id, action, category, target_user_id=None, details=""):
     db.session.add(MDPAuditLog(
         actor_id=actor_id,
@@ -3904,11 +3952,7 @@ def admin_delete_user(user_id):
     MentorPod.query.filter(
         (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
     ).delete()
-    Commitment.query.filter_by(user_id=user.id).delete()
-    ReminderLog.query.filter_by(user_id=user.id).delete()
-    db.session.execute(
-        workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
-    )
+    detach_user_rows([user.id])
     db.session.delete(user)
     db.session.commit()
     flash(f'User "{username}" deleted successfully.', 'success')
@@ -3932,11 +3976,7 @@ def admin_delete_test_users():
             MentorPod.query.filter(
                 (MentorPod.member_id == user.id) | (MentorPod.mentor_id == user.id)
             ).delete()
-            Commitment.query.filter_by(user_id=user.id).delete()
-            ReminderLog.query.filter_by(user_id=user.id).delete()
-            db.session.execute(
-                workshop_signups.delete().where(workshop_signups.c.user_id == user.id)
-            )
+            detach_user_rows([user.id])
             deleted.append(user.username)
             db.session.delete(user)
     db.session.commit()
