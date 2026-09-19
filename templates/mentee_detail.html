@@ -210,7 +210,7 @@
           <div class="fw-semibold">{{ log.practice_type }} &middot; {{ log.conference }}</div>
           <div class="text-muted small">
             Logged by {{ log.officer.username if log.officer else 'unknown' }}
-            {% if log.submitted_at %}on {{ log.submitted_at.strftime('%b %d, %Y %I:%M %p') }} UTC{% endif %}
+            {% if log.submitted_at %}on {{ log.submitted_at|pacific('%b %d, %Y %I:%M %p') }}{% endif %}
           </div>
         </li>
         {% endfor %}

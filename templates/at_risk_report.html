@@ -24,7 +24,8 @@
     </div>
     <div class="d-flex gap-2 no-print">
       <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
-      <button type="button" class="btn btn-primary" onclick="window.print()">Print Report</button>
+      <a class="btn btn-success" href="{{ url_for('at_risk_report_csv') }}">Download CSV</a>
+      <button type="button" class="btn btn-outline-primary" onclick="window.print()">Print Report</button>
     </div>
   </div>
 </div>

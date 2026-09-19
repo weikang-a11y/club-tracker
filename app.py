@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, Response
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from sqlalchemy.exc import IntegrityError
+import csv
+import io
 import os
 import re
 import posixpath
@@ -2481,6 +2483,21 @@ with app.app_context():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+@app.template_filter('pacific')
+def pacific(value, fmt='%Y-%m-%d %I:%M %p'):
+    """Render a stored UTC timestamp in Pacific time.
+
+    Timestamps are written with datetime.utcnow(), so they are naive UTC.
+    Displaying them raw showed GMT.
+    """
+    if not value:
+        return ''
+    try:
+        return utc_to_local(value).strftime(fmt) + ' PT'
+    except Exception:
+        return str(value)
+
+
 def friendly_slot(dt):
     if not dt:
         return 'N/A'
@@ -4820,6 +4837,95 @@ def admin_member_commitments():
         rows=rows,
         stats=stats,
         checklist_items_by_conf=CHECKLIST_ITEMS,
+    )
+
+
+def _csv_response(filename, header, rows):
+    """Build a downloadable CSV response."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(header)
+    writer.writerows(rows)
+    return Response(
+        buffer.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
+
+
+@app.route('/at_risk_report.csv')
+@login_required
+def at_risk_report_csv():
+    """Mentee status report as CSV."""
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can view this.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    today = datetime.now(LOCAL_TZ).date()
+    event_items, event_deadlines = get_written_checklist_catalog()
+    for event_code, family in WRITTEN_EVENT_FAMILY.items():
+        if event_code not in event_items and family in event_items:
+            event_items[event_code] = list(event_items[family])
+            event_deadlines[event_code] = dict(event_deadlines.get(family, {}))
+
+    rows = build_mentee_risk_report(
+        _members_visible_to_current_user(), event_items, event_deadlines,
+        today=today,
+    )
+    status_labels = {
+        'at_risk': 'At Risk', 'needs_attention': 'At Risk',
+        'on_track': 'On Track', 'non_compete': 'Non-Compete',
+    }
+    out = []
+    for row in rows:
+        attendance = row['attendance']
+        out.append([
+            row['member'].username,
+            status_labels.get(row['status'], row['status']),
+            row['mentor_name'],
+            row['event'],
+            'Novice' if row['level'] == 'N' else 'Experienced',
+            'Yes' if row['member'].is_competing is not False else 'No',
+            attendance['ah_rate'], attendance['ah_sum'], attendance['ah_total'],
+            attendance['ws_rate'], attendance['ws_sum'], attendance['ws_total'],
+            '; '.join(row['hard_risk_reasons']),
+            '; '.join(row['attention_reasons']),
+        ])
+    return _csv_response(
+        f'mentee-status-{today}.csv',
+        ['Mentee', 'Status', 'Mentor', 'Event', 'Level', 'Competing',
+         'AH %', 'AH Attended', 'AH Total', 'WS %', 'WS Attended', 'WS Total',
+         'Risk Reasons', 'Needs Attention'],
+        out,
+    )
+
+
+@app.route('/admin/mentor_pods.csv')
+@login_required
+@admin_required
+def mentor_pods_csv():
+    """Every pod assignment as CSV."""
+    today = datetime.now(LOCAL_TZ).date()
+    pods = MentorPod.query.options(
+        joinedload(MentorPod.mentor), joinedload(MentorPod.member)
+    ).all()
+    rows = []
+    for pod in pods:
+        member = pod.member
+        rows.append([
+            pod.mentor.username if pod.mentor else 'Unassigned',
+            pod.pod_number,
+            member.username if member else '',
+            member.email if member else '',
+            pod.event or '',
+            'Novice' if pod.experience_level == 'N' else 'Experienced',
+            'Yes' if (member and member.is_competing is not False) else 'No',
+        ])
+    rows.sort(key=lambda r: (str(r[0]).lower(), r[1], str(r[2]).lower()))
+    return _csv_response(
+        f'mentor-pods-{today}.csv',
+        ['Mentor', 'Pod', 'Mentee', 'Email', 'Event', 'Level', 'Competing'],
+        rows,
     )
 
 
