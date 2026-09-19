@@ -223,6 +223,18 @@
                             {% if user.id != current_user.id %}
 
 
+                            {# Reset Password #}
+                            <form method="POST" action="{{ url_for('admin_reset_password', user_id=user.id) }}"
+                                  class="js-confirm-form d-inline">
+                                <button type="button" class="btn btn-sm btn-outline-secondary js-open-confirm"
+                                        data-confirm-title="Reset Password"
+                                        data-confirm-message="Reset {{ user.username }}'s password to DECA2026! ? They will be required to set a new one at next login."
+                                        data-confirm-btn-text="Reset Password"
+                                        data-confirm-btn-class="btn-secondary">
+                                    Reset PW
+                                </button>
+                            </form>
+
                             {# Toggle Admin #}
                             <form method="POST" action="{{ url_for('admin_toggle_admin', user_id=user.id) }}"
                                   class="js-confirm-form d-inline">
