@@ -3156,15 +3156,34 @@ def _dashboard_page():
         for member in sorted(pod_member_users, key=lambda u: u.username.lower()):
             stats = get_attendance_stats(member)
             pod = MentorPod.query.filter_by(member_id=member.id).first()
+
+            # Split the raw records into full attendance and excused halves.
+            # ah_sum is a float total (an excused meeting counts 0.5), which is
+            # right for the percentage but not for a "3 of 4 meetings" count.
+            ah_records = AHAttendance.query.filter_by(user_id=member.id).all()
+            ws_records = WSAttendance.query.filter_by(user_id=member.id).all()
+            ah_present = sum(1 for r in ah_records if float(r.value or 0) >= 1)
+            ah_excused = sum(1 for r in ah_records if 0 < float(r.value or 0) < 1)
+            ws_present = sum(1 for r in ws_records if float(r.value or 0) >= 1)
+            ws_excused = sum(1 for r in ws_records if 0 < float(r.value or 0) < 1)
+
             ah_ws_data.append({
                 'member': member,
+                'mentor_name': (pod.mentor.username
+                                if pod and pod.mentor else 'Unassigned'),
+                'event': (pod.event or '') if pod else '',
+                'is_competing': member.is_competing is not False,
                 'pod_number': pod.pod_number if pod else '?',
                 'level': stats['level'],
                 'ah_rate': stats['ah_rate'],
                 'ah_sum': stats['ah_sum'],
+                'ah_present': ah_present,
+                'ah_excused': ah_excused,
                 'ah_total': stats['ah_total'],
                 'ws_rate': stats['ws_rate'],
                 'ws_sum': stats['ws_sum'],
+                'ws_present': ws_present,
+                'ws_excused': ws_excused,
                 'ws_total': stats['ws_total'],
                 'ws_threshold_pct': stats['ws_threshold_pct'],
                 'at_risk': stats['at_risk'],

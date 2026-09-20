@@ -28,10 +28,14 @@ Tab-separated, exported from the attendance sheet. Must contain an Email
 column and one column per meeting date headed like 9/16, 10/7, 1/13.
 
 Cell values accepted (case-insensitive):
-    1, p, present, y, yes, x        -> attended
-    0, a, absent, n, no             -> absent
-    e, ex, excused                  -> counted as attended
+    1, p, present, y, yes, x        -> attended (1.0)
+    0.5, .5, e, ex, excused         -> excused, counts as half a meeting
+    0, a, absent, n, no             -> absent (0.0)
+    any decimal between 0 and 1     -> stored exactly as written
     blank                           -> skipped, meeting not recorded yet
+
+Anything outside 0-1, or text that is not recognised, is reported and
+skipped rather than guessed at.
 
 School year
 -----------
@@ -53,8 +57,12 @@ from app import app, db, User, AHAttendance, WSAttendance
 
 ACADEMIC_START_YEAR = int(os.getenv('WRITTEN_ACADEMIC_START_YEAR', '2026'))
 
-PRESENT = {'1', '1.0', 'p', 'present', 'y', 'yes', 'x', 'e', 'ex', 'excused'}
+PRESENT = {'1', '1.0', 'p', 'present', 'y', 'yes', 'x'}
 ABSENT = {'0', '0.0', 'a', 'absent', 'n', 'no'}
+# The sheet records an excused absence as 0.5, and the attendance column is a
+# float, so partial credit is stored and averaged exactly as written.
+EXCUSED_VALUE = 0.5
+EXCUSED = {'e', 'ex', 'excused', '0.5', '.5'}
 
 DATE_HEADER = re.compile(r'^\s*(\d{1,2})\s*/\s*(\d{1,2})\s*$')
 
@@ -73,10 +81,17 @@ def parse_header_date(header, start_year):
 
 
 def parse_value(raw):
-    """Return 1.0, 0.0, or None to skip."""
+    """Return the attendance value, None to skip, or 'BAD' if unreadable.
+
+    Fractions are preserved: 0.5 is an excused absence and counts as half a
+    meeting, matching how the sheet totals it. Rounding these to 0 or 1 would
+    silently change everyone's attendance percentage.
+    """
     text = (raw or '').strip().lower()
     if not text:
         return None
+    if text in EXCUSED:
+        return EXCUSED_VALUE
     if text in PRESENT:
         return 1.0
     if text in ABSENT:
@@ -85,12 +100,15 @@ def parse_value(raw):
         number = float(text)
     except ValueError:
         return 'BAD'
-    return 1.0 if number >= 1 else 0.0
+    if 0.0 <= number <= 1.0:
+        return number
+    return 'BAD'
 
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     apply_changes = '--apply' in sys.argv
+    last_wins = '--last-wins' in sys.argv
     kind = 'ah'
     if '--type' in sys.argv:
         kind = sys.argv[sys.argv.index('--type') + 1].strip().lower()
@@ -134,7 +152,13 @@ def main():
 
         created = updated = unchanged = 0
         unknown_people, bad_values, dates_seen = [], [], set()
+        conflicts = []
 
+        # Collapse the file to one value per (member, date) BEFORE touching the
+        # database. A member listed on two rows would otherwise be inserted
+        # twice in the same batch and trip the uq_..._user_date constraint.
+        wanted = {}
+        row_count = {}
         for row in rows:
             email = (row.get('Email') or '').strip()
             username = email.split('@')[0].lower()
@@ -143,6 +167,7 @@ def main():
                 if email:
                     unknown_people.append(email)
                 continue
+            row_count[username] = row_count.get(username, 0) + 1
             for header, session_date in date_columns:
                 value = parse_value(row.get(header))
                 if value is None:
@@ -150,22 +175,48 @@ def main():
                 if value == 'BAD':
                     bad_values.append(f'{username} {header}={row.get(header)!r}')
                     continue
-                dates_seen.add(session_date)
-                record = existing.get((member.id, session_date))
-                if record is None:
-                    created += 1
-                    if apply_changes:
-                        db.session.add(model(
-                            user_id=member.id,
-                            session_date=session_date,
-                            value=value,
-                        ))
-                elif float(record.value or 0) != value:
-                    updated += 1
-                    if apply_changes:
-                        record.value = value
-                else:
-                    unchanged += 1
+                key = (member.id, session_date)
+                if key in wanted and abs(wanted[key] - value) > 1e-9:
+                    conflicts.append(
+                        f'{username} {header}: {wanted[key]} on one row, '
+                        f'{value} on another'
+                    )
+                wanted[key] = value
+
+        duplicated = sorted(name for name, n in row_count.items() if n > 1)
+        if duplicated:
+            print(f'\nMembers listed on more than one row ({len(duplicated)}):')
+            for name in duplicated[:15]:
+                print(f'  {name} — {row_count[name]} rows')
+            if len(duplicated) > 15:
+                print(f'  … and {len(duplicated) - 15} more')
+            print('  Duplicate rows are merged; fix the sheet when you can.')
+
+        if conflicts:
+            print(f'\nCONFLICTING values for the same member and date '
+                  f'({len(conflicts)}):')
+            for item in conflicts[:15]:
+                print(f'  {item}')
+            if len(conflicts) > 15:
+                print(f'  … and {len(conflicts) - 15} more')
+
+        for (user_id, session_date), value in wanted.items():
+            dates_seen.add(session_date)
+            record = existing.get((user_id, session_date))
+            if record is None:
+                created += 1
+                if apply_changes:
+                    db.session.add(model(
+                        user_id=user_id,
+                        session_date=session_date,
+                        value=value,
+                    ))
+            elif abs(float(record.value or 0) - value) > 1e-9:
+                updated += 1
+                if apply_changes:
+                    record.value = value
+            else:
+                unchanged += 1
 
         if unknown_people:
             print(f'\nEmails with no matching member account ({len(unknown_people)}):')
@@ -185,11 +236,23 @@ def main():
         print(f'  changed:        {updated}')
         print(f'  already correct:{unchanged}')
 
+        if conflicts and not last_wins:
+            print('\nREFUSING TO APPLY: the same member and date have two '
+                  'different values.\nFix the sheet, or re-run with '
+                  '--last-wins to accept the later row.')
+            return
+
         if not apply_changes:
             print('\nDry run complete. Re-run with --apply to write these changes.')
             return
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            print(f'\nNOTHING WAS WRITTEN — the database rejected the batch:'
+                  f'\n  {exc}')
+            return
         print(f'\nWrote {created} new and {updated} updated {label} record(s).')
         print(f'{label} rows now: {model.query.count()}')
 
