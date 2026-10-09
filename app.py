@@ -184,7 +184,7 @@ OFFICER_ROSTER_2026_27 = [
     ("Philina Chen", "Officer, Admin"),
     ("Natalie Zhang", "Officer"),
     ("Melody Leong", "Officer"),
-    ("Aryahi Sharma", "Officer"),
+    ("Aryahi Sharma", "Officer", "Admin"),
     ("Olivia Kang", "Officer"),
     ("Zihan Liu", "Officer"),
     ("Aaron Vu", "Admin, Officer"),
@@ -258,8 +258,27 @@ OFFICER_IMPORT_KEY = "2026-27-officer-roster-v3-advisors-and-additions"
 
 # This migration updates already-imported databases without rerunning the full
 # roster import (which would reset every officer's temporary password).
-REMOVED_ADMIN_ACCESS = ("Aryahi Sharma", "Olivia Kang", "Zihan Liu")
+REMOVED_ADMIN_ACCESS = ("Olivia Kang", "Zihan Liu")
 REMOVED_ADMIN_ACCESS_KEY = "2026-27-remove-admin-access-aryahi-olivia-zihan-v1"
+
+GRANT_ARYAHI_ADMIN_KEY = "2026-27-grant-aryahi-admin-v1"
+
+def grant_aryahi_admin():
+    if db.session.get(DataMigration, GRANT_ARYAHI_ADMIN_KEY):
+        return
+    user = User.query.filter(
+        db.func.lower(User.username) == 'aryahi.sharma'
+    ).first()
+    if user:
+        user.is_admin = True
+        user.has_officer_access = True
+        user.role = 'officer'
+    db.session.add(DataMigration(
+        key=GRANT_ARYAHI_ADMIN_KEY,
+        details='Granted admin access to aryahi.sharma',
+    ))
+    db.session.commit()
+    print('[Admin Grant] aryahi.sharma granted admin access.')
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -439,6 +458,21 @@ class Notification(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref='notifications')
 
+class WeeklyQuizResult(db.Model):
+    """Per-member result for a weekly workshop quiz session."""
+    __tablename__ = 'weekly_quiz_result'
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'session_date', name='uq_quiz_user_date'),
+    )
+    id           = db.Column(db.Integer, primary_key=True)
+    user_id      = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    session_date = db.Column(db.Date, nullable=False)
+    attended     = db.Column(db.Boolean, default=False, nullable=False)
+    excused      = db.Column(db.Boolean, default=False, nullable=False)
+    score        = db.Column(db.Float, nullable=True)
+    uploaded_by  = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+    member       = db.relationship('User', foreign_keys=[user_id], backref='quiz_results')
 
 class PracticeLog(db.Model):
     """Completion record submitted by officer after a practice session."""
@@ -953,7 +987,38 @@ def create_new_officer_demo_pods():
             "[Demo Pods] officer accounts not found: "
             + ", ".join(missing_officers)
         )
+ANNEKA_EXPERIENCED_KEY = "2026-27-anneka-prusty-experienced-v1"
 
+def set_anneka_prusty_experienced():
+    if db.session.get(DataMigration, ANNEKA_EXPERIENCED_KEY):
+        return
+    user = (
+        User.query.filter(db.func.lower(User.username) == 'anneka.prusty').first()
+        or User.query.filter(db.func.lower(User.username).like('%anneka%')).first()
+    )
+    if user:
+        pod = MentorPod.query.filter_by(member_id=user.id).first()
+        if pod:
+            pod.experience_level = 'E'
+        reqs = EVENT_REQUIREMENTS.get('E', EVENT_REQUIREMENTS['N'])
+        for conf, rule in reqs.items():
+            com = Commitment.query.filter_by(member_name=user.username, event=conf).first()
+            if com:
+                completed_rp = com.required_roleplay - com.remaining_roleplay
+                completed_ex = com.required_exam - com.remaining_exam
+                completed_wr = com.required_written - com.remaining_written
+                com.required_roleplay = rule["roleplay"]
+                com.required_written  = rule["written"]
+                com.required_exam     = rule["exam"]
+                com.remaining_roleplay = max(0, rule["roleplay"] - completed_rp)
+                com.remaining_written  = max(0, rule["written"]  - completed_wr)
+                com.remaining_exam     = max(0, rule["exam"]     - completed_ex)
+    db.session.add(DataMigration(
+        key=ANNEKA_EXPERIENCED_KEY,
+        details='Set Anneka Prusty experience_level to E',
+    ))
+    db.session.commit()
+    print('[Experience Update] Anneka Prusty set to Experienced.')
 
 def reconcile_saron_access():
     """Correct the old Saron username typo without changing the password."""
@@ -2418,11 +2483,27 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Officer Access] synchronization skipped: {exc}')
+
+
+    try:
+        if not SKIP_STARTUP_WORK:
+            grant_aryahi_admin()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Admin Grant] skipped: {exc}')
+        
     try:
         reconcile_saron_access()
     except Exception as exc:
         db.session.rollback()
         print(f'[Saron Access] reconciliation skipped: {exc}')
+
+    try:
+        if not SKIP_STARTUP_WORK:
+            set_anneka_prusty_experienced()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Experience Update] skipped: {exc}')
 
 
 
@@ -5252,6 +5333,144 @@ def mentee_detail(member_id):
         report_date=today,
     )
 
+# ── Weekly Quiz routes ────────────────────────────────────────────────────────
+
+QUIZ_PASS_THRESHOLD = 80.0
+
+@app.route('/workshop_quiz')
+@login_required
+def workshop_quiz():
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can view quiz results.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    dates = [
+        row[0] for row in
+        db.session.query(WeeklyQuizResult.session_date)
+        .distinct()
+        .order_by(WeeklyQuizResult.session_date.desc())
+        .all()
+    ]
+
+    selected_date_str = request.args.get('date', '')
+    selected_date = None
+    results = []
+
+    if selected_date_str:
+        try:
+            selected_date = datetime.strptime(selected_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            pass
+
+    if selected_date:
+        results = (
+            WeeklyQuizResult.query
+            .filter_by(session_date=selected_date)
+            .join(WeeklyQuizResult.member)
+            .order_by(User.username)
+            .all()
+        )
+
+    return render_template(
+        'workshop_quiz.html',
+        dates=dates,
+        selected_date=selected_date,
+        results=results,
+        pass_threshold=QUIZ_PASS_THRESHOLD,
+    )
+
+
+@app.route('/workshop_quiz/upload', methods=['POST'])
+@login_required
+def workshop_quiz_upload():
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can upload quiz results.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    session_date_str = request.form.get('session_date', '').strip()
+    file = request.files.get('quiz_csv')
+
+    if not session_date_str:
+        flash('Please provide a session date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    if not file or file.filename == '':
+        flash('Please choose a CSV file to upload.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    try:
+        session_date = datetime.strptime(session_date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date format. Use YYYY-MM-DD.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    stream = io.StringIO(file.stream.read().decode('utf-8-sig'))
+    reader = csv.DictReader(stream)
+
+    required_cols = {'username', 'attended'}
+    if not required_cols.issubset({c.strip().lower() for c in (reader.fieldnames or [])}):
+        flash('CSV must have at least "username" and "attended" columns.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    saved = errors = 0
+    for row in reader:
+        username = (row.get('username') or '').strip().lower()
+        if not username:
+            continue
+        member = User.query.filter(db.func.lower(User.username) == username).first()
+        if not member:
+            errors += 1
+            continue
+
+        attended = str(row.get('attended', '0')).strip() in {'1', 'true', 'yes'}
+        excused  = str(row.get('excused',  '0')).strip() in {'1', 'true', 'yes'}
+        score_raw = str(row.get('score', '')).strip()
+        try:
+            score = float(score_raw) if score_raw else None
+        except ValueError:
+            score = None
+
+        existing = WeeklyQuizResult.query.filter_by(
+            user_id=member.id, session_date=session_date
+        ).first()
+        if existing:
+            existing.attended    = attended
+            existing.excused     = excused
+            existing.score       = score
+            existing.uploaded_by = current_user.id
+        else:
+            db.session.add(WeeklyQuizResult(
+                user_id=member.id,
+                session_date=session_date,
+                attended=attended,
+                excused=excused,
+                score=score,
+                uploaded_by=current_user.id,
+            ))
+        saved += 1
+
+    db.session.commit()
+    flash(
+        f'Uploaded {saved} result(s) for {session_date_str}.'
+        + (f' {errors} username(s) not found.' if errors else ''),
+        'success' if not errors else 'warning',
+    )
+    return redirect(url_for('workshop_quiz', date=session_date_str))
+
+
+@app.route('/workshop_quiz/delete_session', methods=['POST'])
+@login_required
+@admin_required
+def workshop_quiz_delete_session():
+    date_str = request.form.get('session_date', '').strip()
+    try:
+        session_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    deleted = WeeklyQuizResult.query.filter_by(session_date=session_date).delete()
+    db.session.commit()
+    flash(f'Deleted {deleted} result(s) for {date_str}.', 'success')
+    return redirect(url_for('workshop_quiz'))
 
 @app.route('/checklist_completion')
 @login_required
