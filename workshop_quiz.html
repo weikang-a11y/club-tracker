@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Weekly Workshop Quiz Results</h2>
+
+<form method="POST" action="{{ url_for('workshop_quiz_upload') }}" enctype="multipart/form-data" class="mb-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="row g-2 align-items-end">
+    <div class="col-auto">
+      <label class="form-label">Session Date</label>
+      <input type="date" name="session_date" class="form-control" required>
+    </div>
+    <div class="col-auto">
+      <label class="form-label">CSV File</label>
+      <input type="file" name="quiz_csv" class="form-control" accept=".csv" required>
+    </div>
+    <div class="col-auto pt-3">
+      <button class="btn btn-primary" type="submit">Upload</button>
+    </div>
+  </div>
+  <small class="text-muted">CSV columns: <code>username, attended, excused, score</code></small>
+</form>
+
+<form method="GET" class="mb-3">
+  <select name="date" class="form-select w-auto" onchange="this.form.submit()">
+    <option value="">— pick a session —</option>
+    {% for d in dates %}
+      <option value="{{ d }}" {% if d == selected_date %}selected{% endif %}>{{ d }}</option>
+    {% endfor %}
+  </select>
+</form>
+
+{% if selected_date %}
+  <h4>Results for {{ selected_date }}</h4>
+  {% if results %}
+  <table class="table table-sm table-striped">
+    <thead>
+      <tr>
+        <th>Member</th>
+        <th>Attended</th>
+        <th>Excused</th>
+        <th>Score</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in results %}
+      <tr>
+        <td>{{ r.member.username }}</td>
+        <td>{{ '✓' if r.attended else '✗' }}</td>
+        <td>{{ '✓' if r.excused else '' }}</td>
+        <td>{{ '%.1f%%'|format(r.score) if r.score is not none else '—' }}</td>
+        <td>
+          {% if not r.attended and r.excused %}
+            <span class="badge bg-secondary">Excused</span>
+          {% elif not r.attended %}
+            <span class="badge bg-danger">Absent</span>
+          {% elif r.score is none %}
+            <span class="badge bg-warning text-dark">No Score</span>
+          {% elif r.score >= pass_threshold %}
+            <span class="badge bg-success">Passed</span>
+          {% else %}
+            <span class="badge bg-danger">Failed ({{ '%.1f'|format(r.score) }}%)</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if current_user.is_admin %}
+  <form method="POST" action="{{ url_for('workshop_quiz_delete_session') }}"
+        onsubmit="return confirm('Delete all results for {{ selected_date }}?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="session_date" value="{{ selected_date }}">
+    <button class="btn btn-sm btn-outline-danger mt-2">Delete this session</button>
+  </form>
+  {% endif %}
+
+  {% else %}
+    <p class="text-muted">No results uploaded yet for this date.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}
