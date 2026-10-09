@@ -2009,9 +2009,8 @@ _UNSET = object()
 def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     """Return AH rate, WS rate, and at-risk flag for a member.
 
-    ah_records/ws_records/pod may be supplied by a caller that has already
-    loaded them in bulk. Left at their defaults the behaviour is identical
-    to querying per member.
+    Rate = present / (total - excused), so excused absences don't hurt the %.
+    Excused absences are still shown separately in the returned dict.
     """
     if ah_records is None:
         ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
@@ -2021,23 +2020,25 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     total_ah = len(ah_records)
     total_ws = len(ws_records)
 
-    ah_sum = sum(r.value for r in ah_records)
-    ws_sum = sum(r.value for r in ws_records)
+    ah_present = sum(1 for r in ah_records if float(r.value or 0) >= 1.0)
+    ah_excused = sum(1 for r in ah_records if 0.0 < float(r.value or 0) < 1.0)
+    ah_absent  = total_ah - ah_present - ah_excused
+    ah_denom   = total_ah - ah_excused
+    ah_rate    = round((ah_present / ah_denom) * 100, 1) if ah_denom > 0 else 0.0
 
-    ah_rate = round((ah_sum / total_ah) * 100, 1) if total_ah > 0 else 0.0
-    ws_rate = round((ws_sum / total_ws) * 100, 1) if total_ws > 0 else 0.0
+    ws_present = sum(1 for r in ws_records if float(r.value or 0) >= 1.0)
+    ws_excused = sum(1 for r in ws_records if 0.0 < float(r.value or 0) < 1.0)
+    ws_absent  = total_ws - ws_present - ws_excused
+    ws_denom   = total_ws - ws_excused
+    ws_rate    = round((ws_present / ws_denom) * 100, 1) if ws_denom > 0 else 0.0
 
-    # Get experience level from pod
     if pod is _UNSET:
         pod = MentorPod.query.filter_by(member_id=user.id).first()
     level = pod.experience_level if pod else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
-    # A member with no records yet has not missed anything — at the start of
-    # the year every mentee sits at 0 of 0, and flagging them all would make
-    # the report meaningless. Only judge a category once it has data.
-    ah_ok = total_ah == 0 or ah_rate >= (AH_THRESHOLD * 100)
-    ws_ok = total_ws == 0 or ws_rate >= ws_threshold_pct
+    ah_ok = ah_denom == 0 or ah_rate >= (AH_THRESHOLD * 100)
+    ws_ok = ws_denom == 0 or ws_rate >= ws_threshold_pct
 
     at_risk = not ah_ok or not ws_ok
     risk_reasons = []
@@ -2047,19 +2048,23 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
         risk_reasons.append(f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required")
 
     return {
-        'ah_total': total_ah,
-        'ah_sum': ah_sum,
-        'ah_rate': ah_rate,
-        'ws_total': total_ws,
-        'ws_sum': ws_sum,
-        'ws_rate': ws_rate,
-        'level': level,
+        'ah_total':         total_ah,
+        'ah_present':       ah_present,
+        'ah_excused':       ah_excused,
+        'ah_absent':        ah_absent,
+        'ah_sum':           float(ah_present),   # kept for back-compat
+        'ah_rate':          ah_rate,
+        'ws_total':         total_ws,
+        'ws_present':       ws_present,
+        'ws_excused':       ws_excused,
+        'ws_absent':        ws_absent,
+        'ws_sum':           float(ws_present),   # kept for back-compat
+        'ws_rate':          ws_rate,
+        'level':            level,
         'ws_threshold_pct': ws_threshold_pct,
-        'at_risk': at_risk,
-        'risk_reasons': risk_reasons,
+        'at_risk':          at_risk,
+        'risk_reasons':     risk_reasons,
     }
-
-# ── Forms ─────────────────────────────────────────────────────────────────────
 
 class RegisterForm(FlaskForm):
     """Retained so /register can still render a form if self-signup is ever
