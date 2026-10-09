@@ -80,6 +80,21 @@
     </div>
 </div>
 
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+    <div class="card-header bg-white p-4 pb-0">
+        <h5 class="mb-1 fw-bold">Danger Zone</h5>
+        <p class="text-muted small mb-0">Destructive actions — use with caution.</p>
+    </div>
+    <div class="card-body p-4">
+        <form method="POST" action="{{ url_for('admin_delete_test_users') }}"
+              onsubmit="return confirm('Delete all test accounts (test1, test2, etc)? This cannot be undone.')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-danger btn-sm">Delete Test Accounts</button>
+            <span class="text-muted small ms-2">Removes any account named test1, test2, officer1, member1, etc.</span>
+        </form>
+    </div>
+</div>
+
 
 {# ── User Table ─────────────────────────────────────────────── #}
 {# ── Add Member ─────────────────────────────────────────────── #}
