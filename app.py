@@ -159,7 +159,16 @@ CHECKLIST_ITEMS = {
 PRACTICE_LOG_EMAIL = os.getenv("PRACTICE_LOG_EMAIL", "mentorship@vchsdeca.org")
 
 # Attendance thresholds by experience level
-AH_THRESHOLD = 1.00   # 100% — every All-Hands meeting is required
+# AH attendance has two numbers on purpose:
+#   AH_THRESHOLD         — what actually flags a mentee as at risk (80%),
+#                          giving roughly one absence of grace.
+#   AH_DISPLAY_THRESHOLD — the requirement shown to mentees and officers
+#                          (100%), so the stated expectation stays full
+#                          attendance.
+# Every user-facing string uses AH_DISPLAY_THRESHOLD; only the comparison
+# uses AH_THRESHOLD.
+AH_THRESHOLD = 0.80
+AH_DISPLAY_THRESHOLD = 1.00
 WS_THRESHOLD = {
     'N': 0.75,  # Novice: 75% workshop attendance
     'E': 0.25,  # Experienced: 25% workshop attendance
@@ -1977,7 +1986,8 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     at_risk = not ah_ok or not ws_ok
     risk_reasons = []
     if not ah_ok:
-        risk_reasons.append(f"AH attendance {ah_rate}% < {AH_THRESHOLD*100:.0f}% required")
+        risk_reasons.append(
+            f"AH attendance {ah_rate}% < {AH_DISPLAY_THRESHOLD*100:.0f}% required")
     if not ws_ok:
         risk_reasons.append(f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required")
 
@@ -3009,7 +3019,8 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
         attendance_reasons = []
         if attendance['ah_total'] > 0 and attendance['ah_rate'] < AH_THRESHOLD * 100:
             attendance_reasons.append(
-                f"AH attendance {attendance['ah_rate']}% (requires {AH_THRESHOLD * 100:.0f}%)"
+                f"AH attendance {attendance['ah_rate']}% "
+                f"(requires {AH_DISPLAY_THRESHOLD * 100:.0f}%)"
             )
         if attendance['ws_total'] > 0 and attendance['ws_rate'] < attendance['ws_threshold_pct']:
             attendance_reasons.append(

@@ -270,14 +270,64 @@
         }
 
         @media (max-width: 991.98px) {
+            /* Mobile: the sidebar becomes a compact strip at the top.
+               The menu turns into a horizontally scrolling row of tabs
+               so the page content starts near the top of the screen
+               instead of below a full screen of navigation.
+               CSS only - the markup is identical at every width. */
             .sidebar {
                 position: relative;
                 width: 100%;
                 min-height: auto;
+                padding: .75rem 1rem;
+            }
+
+            .sidebar .brand {
+                padding-bottom: .5rem !important;
+                margin-bottom: .5rem !important;
+            }
+
+            .sidebar nav.nav.flex-column {
+                flex-direction: row !important;
+                flex-wrap: nowrap;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                gap: .25rem;
+                padding-bottom: .25rem;
+            }
+
+            .sidebar nav.nav.flex-column .nav-link {
+                white-space: nowrap;
+                padding: .5rem .75rem;
+            }
+
+            .sidebar hr {
+                display: none;
             }
 
             .content-shell {
-                padding: 1.25rem;
+                padding: 1rem;
+            }
+
+            .card-body {
+                padding: 1rem !important;
+            }
+
+            h2 { font-size: 1.4rem; }
+            h3 { font-size: 1.2rem; }
+            h4 { font-size: 1.05rem; }
+        }
+
+        @media (max-width: 575.98px) {
+            .content-shell {
+                padding: .75rem;
+            }
+
+            /* Inline min-widths on search boxes force toolbars wider
+               than a narrow phone screen. */
+            .form-control,
+            .form-select {
+                min-width: 0 !important;
             }
         }
     </style>
