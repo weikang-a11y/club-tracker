@@ -13,7 +13,8 @@
         <h5 class="fw-semibold mb-3">Upload Results (CSV)</h5>
         <p class="text-muted small mb-3">
             CSV columns: <code>Email Address, Score</code><br>
-            Only include members who <strong>attended</strong>. Everyone else is automatically marked absent (score 0).
+            Only include members who <strong>attended</strong>. Everyone else is automatically marked absent (score 0).<br>
+            For IMC workshops, upload both CSVs at once using the second file input.
         </p>
         <form method="POST" action="{{ url_for('workshop_quiz_upload') }}" enctype="multipart/form-data">
             <div class="row g-2 align-items-end">
@@ -22,8 +23,12 @@
                     <input type="date" name="session_date" class="form-control" required>
                 </div>
                 <div class="col-auto">
-                    <label class="form-label small fw-semibold">CSV File</label>
+                    <label class="form-label small fw-semibold">CSV File 1</label>
                     <input type="file" name="quiz_csv" accept=".csv" class="form-control" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small fw-semibold">CSV File 2 <span class="text-muted fw-normal">(optional — IMC)</span></label>
+                    <input type="file" name="quiz_csv2" accept=".csv" class="form-control">
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Upload</button>
