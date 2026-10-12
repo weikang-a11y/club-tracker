@@ -5433,13 +5433,15 @@ def workshop_quiz():
         flash('Only officers/admins can view quiz results.', 'danger')
         return redirect(url_for('dashboard'))
 
-    dates = [
+    quiz_dates = {
         row[0] for row in
-        db.session.query(WeeklyQuizResult.session_date)
-        .distinct()
-        .order_by(WeeklyQuizResult.session_date.desc())
-        .all()
-    ]
+        db.session.query(WeeklyQuizResult.session_date).distinct().all()
+    }
+    ws_dates = {
+        row[0] for row in
+        db.session.query(WSAttendance.session_date).distinct().all()
+    }
+    dates = sorted(quiz_dates | ws_dates, reverse=True)
 
     selected_date_str = request.args.get('date', '')
     selected_date = None
