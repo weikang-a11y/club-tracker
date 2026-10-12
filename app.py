@@ -472,6 +472,7 @@ class WeeklyQuizResult(db.Model):
     score        = db.Column(db.Float, nullable=True)
     uploaded_by  = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+    total_questions = db.Column(db.Integer, nullable=True, default=10)
     member       = db.relationship('User', foreign_keys=[user_id], backref='quiz_results')
 
 class PracticeLog(db.Model):
@@ -2411,6 +2412,7 @@ with app.app_context():
 
     # Migrate: reminders moved from workshops to practice sessions.
     _ensure_column('reminder_log', 'practice_session_id', 'INTEGER')
+    _ensure_column('weekly_quiz_result', 'total_questions', 'INTEGER DEFAULT 10')
     if db.engine.dialect.name != 'sqlite':
         try:
             db.session.execute(sql_text(
