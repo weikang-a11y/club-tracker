@@ -6,8 +6,8 @@
     <h2 class="fw-bold mb-0">Workshop Quiz Results</h2>
 </div>
 
-{# ── Upload form (admin only) ── #}
-{% if active_view == 'admin' %}
+{# ── Upload form (admin or users who can switch views) ── #}
+{% if active_view == 'admin' or can_switch_view %}
 <div class="card mb-4">
     <div class="card-body">
         <h5 class="fw-semibold mb-3">Upload Results (CSV)</h5>
@@ -37,6 +37,7 @@
 
 {# ── Date selector (month + day dropdowns) ── #}
 {% if dates %}
+{# Build ordered list of unique months (dates are sorted ascending so months appear in order) #}
 {% set months_seen = [] %}
 {% for d in dates %}{% if d.strftime('%Y-%m') not in months_seen %}{% if months_seen.append(d.strftime('%Y-%m')) %}{% endif %}{% endif %}{% endfor %}
 
@@ -60,7 +61,7 @@
                 {% endfor %}
             </select>
 
-            {# Day dropdown — populated by JS based on month selection #}
+            {# Day dropdown — JS filters by selected month; days are in ascending order within each month #}
             <select name="date" id="daySelect" class="form-select w-auto">
                 <option value="">— day —</option>
                 {% for d in dates %}
@@ -92,7 +93,7 @@
             opt.hidden = !show;
             if (show && !firstVal) firstVal = opt.value;
         });
-        // If current selection is now hidden, reset
+        // If current selection is now hidden, reset to first visible day
         if (daySel.value && daySel.options[daySel.selectedIndex] && daySel.options[daySel.selectedIndex].hidden) {
             daySel.value = firstVal || '';
         }
@@ -193,7 +194,7 @@
         </div>
         {% else %}
         <p class="text-muted">No quiz results uploaded for this session yet.
-            {% if active_view == 'admin' %}Use the upload form above to add them.{% endif %}
+            {% if active_view == 'admin' or can_switch_view %}Use the upload form above to add them.{% endif %}
         </p>
         {% endif %}
     </div>
