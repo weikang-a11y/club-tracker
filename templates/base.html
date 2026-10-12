@@ -453,6 +453,13 @@
                                 Exam Uploads
                             </a>
 
+                            <a
+                                class="nav-link {% if request.endpoint == 'workshop_quiz' %}active{% endif %}"
+                                href="{{ url_for('workshop_quiz') }}"
+                            >
+                                Workshop Quiz
+                            </a>
+
                         {% else %}
                             <a
                                 class="nav-link {% if request.endpoint == 'member_commitments' %}active{% endif %}"
