@@ -5446,8 +5446,11 @@ def workshop_quiz():
     dates = sorted(quiz_dates | ws_dates, reverse=True)
 
     selected_date_str = request.args.get('date', '')
+    filter_attended   = request.args.get('filter_attended', '')
+    filter_status     = request.args.get('filter_status', '')
     selected_date = None
     results = []
+    ws_excused_ids = set()
 
     if selected_date_str:
         try:
@@ -5456,6 +5459,13 @@ def workshop_quiz():
             pass
 
     if selected_date:
+        ws_excused_ids = {
+            row[0] for row in
+            db.session.query(WSAttendance.user_id)
+            .filter_by(session_date=selected_date, value=0.5)
+            .all()
+        }
+
         results = (
             WeeklyQuizResult.query
             .filter_by(session_date=selected_date)
@@ -5464,12 +5474,29 @@ def workshop_quiz():
             .all()
         )
 
+        if filter_attended == 'yes':
+            results = [r for r in results if r.attended]
+        elif filter_attended == 'no':
+            results = [r for r in results if not r.attended]
+
+        if filter_status == 'complete':
+            results = [r for r in results
+                       if r.score is not None and r.score >= QUIZ_PASS_THRESHOLD]
+        elif filter_status == 'incomplete':
+            results = [r for r in results
+                       if not r.attended and r.user_id not in ws_excused_ids]
+        elif filter_status == 'excused':
+            results = [r for r in results if r.user_id in ws_excused_ids]
+
     return render_template(
         'workshop_quiz.html',
         dates=dates,
         selected_date=selected_date,
         results=results,
         pass_threshold=QUIZ_PASS_THRESHOLD,
+        ws_excused_ids=ws_excused_ids,
+        filter_attended=filter_attended,
+        filter_status=filter_status,
     )
 
 
@@ -5532,21 +5559,29 @@ def workshop_quiz_upload():
             return redirect(url_for('workshop_quiz'))
         attended_map.update(map2)
 
+    ws_excused_ids = {
+        row[0] for row in
+        db.session.query(WSAttendance.user_id)
+        .filter_by(session_date=session_date, value=0.5)
+        .all()
+    }
+
     all_members = User.query.filter_by(role='member').all()
     saved = not_found = 0
 
     for member in all_members:
         username = (member.username or '').strip().lower()
-        in_csv = username in attended_map
+        in_csv   = username in attended_map
         attended = in_csv
-        score    = attended_map[username] if in_csv else 0.0
+        excused  = (not in_csv) and (member.id in ws_excused_ids)
+        score    = attended_map[username] if in_csv else None
 
         existing = WeeklyQuizResult.query.filter_by(
             user_id=member.id, session_date=session_date
         ).first()
         if existing:
             existing.attended    = attended
-            existing.excused     = False
+            existing.excused     = excused
             existing.score       = score
             existing.uploaded_by = current_user.id
         else:
@@ -5554,12 +5589,11 @@ def workshop_quiz_upload():
                 user_id=member.id,
                 session_date=session_date,
                 attended=attended,
-                excused=False,
+                excused=excused,
                 score=score,
                 uploaded_by=current_user.id,
             ))
         saved += 1
-
     for username in attended_map:
         if not User.query.filter(db.func.lower(User.username) == username).first():
             not_found += 1
