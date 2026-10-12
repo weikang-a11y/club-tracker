@@ -4088,6 +4088,23 @@ def review_exam_upload(upload_id):
     db.session.commit()
     return redirect(url_for('exam_uploads'))
 
+
+# ── Admin routes ─────────────────────────────────────────────────────────────
+
+def admin_required(f):
+    """Decorator that restricts a route to admin users only."""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        # is_admin_view() rather than the raw flag, so a user who has switched
+        # to officer view is treated as an officer everywhere, not just in the
+        # data they can see.
+        if not is_admin_view():
+            flash('Admin access required.', 'danger')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated
+
 @app.route('/admin/assign_commitment', methods=['GET', 'POST'])
 @login_required
 @admin_required
@@ -4146,22 +4163,6 @@ def delete_commitment(commitment_id):
     db.session.commit()
     flash(f'Deleted {event} commitment for {member_name}.', 'success')
     return redirect(url_for('assign_commitment'))
-
-# ── Admin routes ─────────────────────────────────────────────────────────────
-
-def admin_required(f):
-    """Decorator that restricts a route to admin users only."""
-    from functools import wraps
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        # is_admin_view() rather than the raw flag, so a user who has switched
-        # to officer view is treated as an officer everywhere, not just in the
-        # data they can see.
-        if not is_admin_view():
-            flash('Admin access required.', 'danger')
-            return redirect(url_for('dashboard'))
-        return f(*args, **kwargs)
-    return decorated
 
 
 @app.route('/admin')
