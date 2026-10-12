@@ -305,10 +305,10 @@ class Commitment(db.Model):
     event = db.Column(db.String(20))
     required_roleplay = db.Column(db.Integer, default=0)
     required_written = db.Column(db.Integer, default=0)
-    required_exam = db.Column(db.Integer, default=0)
+    required_exam = db.Column(db.Float, default=0)
     remaining_roleplay = db.Column(db.Integer, default=0)
     remaining_written = db.Column(db.Integer, default=0)
-    remaining_exam = db.Column(db.Integer, default=0)
+    remaining_exam = db.Column(db.Float, default=0)
     deadline = db.Column(db.Date)
     grade = db.Column(db.String(10), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
@@ -2354,6 +2354,24 @@ with app.app_context():
     # Migrate: add grade column to commitment
     _ensure_column('commitment', 'grade', 'VARCHAR(10)')
 
+        # Migrate: change exam columns to FLOAT for partial-credit support (0.5 = half credit)
+    if db.engine.dialect.name != 'sqlite':
+        try:
+            commitment_col_types = {
+                c['name']: str(c['type'])
+                for c in db.inspect(db.engine).get_columns('commitment')
+            }
+            for col in ('remaining_exam', 'required_exam'):
+                if 'FLOAT' not in commitment_col_types.get(col, '').upper() and \
+                   'DOUBLE' not in commitment_col_types.get(col, '').upper():
+                    db.session.execute(sql_text(
+                        f'ALTER TABLE commitment ALTER COLUMN {col} TYPE FLOAT USING {col}::float'
+                    ))
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            print(f'[Migration] exam Float migration skipped: {exc}')
+
     # Migrate: add event column to mentor_pod
     _ensure_column('mentor_pod', 'event', 'VARCHAR(50)')
 
@@ -4048,14 +4066,21 @@ def review_exam_upload(upload_id):
 
     if action == 'credit':
         upload.credited = True
+        credit_raw = request.form.get('credit_amount', '1')
+        try:
+            credit_amount = float(credit_raw)
+        except ValueError:
+            credit_amount = 1.0
+        credit_amount = max(0.0, min(1.0, credit_amount))
         # Decrement the member's exam commitment for the conference
         commitment = Commitment.query.filter_by(
             member_name=upload.member.username, event=upload.conference).first()
-        if commitment and commitment.remaining_exam > 0:
-            commitment.remaining_exam -= 1
+        if commitment and commitment.remaining_exam > 0 and credit_amount > 0:
+            commitment.remaining_exam = max(0, commitment.remaining_exam - credit_amount)
             db.session.add(commitment)
         upload.commitment_id = commitment.id if commitment else None
-        flash(f'Exam credited for {upload.member.username} ({upload.conference}).', 'success')
+        label = '½' if credit_amount == 0.5 else ('full' if credit_amount == 1.0 else f'{credit_amount}')
+        flash(f'Exam credited ({label}) for {upload.member.username} ({upload.conference}).', 'success')
     else:
         flash(f'Exam marked as reviewed for {upload.member.username}.', 'success')
 
@@ -4063,6 +4088,64 @@ def review_exam_upload(upload_id):
     db.session.commit()
     return redirect(url_for('exam_uploads'))
 
+@app.route('/admin/assign_commitment', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def assign_commitment():
+    form = CommitmentForm()
+    if form.validate_on_submit():
+        member = User.query.filter(
+            db.func.lower(User.username) == form.member_name.data.strip().lower()
+        ).first()
+        if not member:
+            flash(f'Member "{form.member_name.data}" not found.', 'danger')
+        else:
+            event = form.event.data
+            existing = Commitment.query.filter_by(
+                member_name=member.username, event=event
+            ).first()
+            if existing:
+                flash(f'{member.username} already has a {event} commitment.', 'warning')
+            else:
+                pod = MentorPod.query.filter_by(member_id=member.id).first()
+                level = pod.experience_level if pod else 'N'
+                rule = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N']).get(event, {})
+                com = Commitment(
+                    member_name=member.username,
+                    user_id=member.id,
+                    event=event,
+                    required_roleplay=rule.get('roleplay', 0),
+                    required_written=rule.get('written', 0),
+                    required_exam=rule.get('exam', 0),
+                    remaining_roleplay=rule.get('roleplay', 0),
+                    remaining_written=rule.get('written', 0),
+                    remaining_exam=rule.get('exam', 0),
+                    deadline=(
+                        datetime.strptime(rule['deadline'], '%Y-%m-%d').date()
+                        if rule.get('deadline') else None
+                    ),
+                )
+                db.session.add(com)
+                db.session.commit()
+                flash(f'Commitment assigned for {member.username} ({event}).', 'success')
+                return redirect(url_for('assign_commitment'))
+    commitments = Commitment.query.order_by(
+        Commitment.member_name, Commitment.event
+    ).all()
+    return render_template('assign_commitment.html', form=form, commitments=commitments)
+
+
+@app.route('/admin/delete_commitment/<int:commitment_id>', methods=['POST'])
+@login_required
+@admin_required
+def delete_commitment(commitment_id):
+    commitment = Commitment.query.get_or_404(commitment_id)
+    member_name = commitment.member_name
+    event = commitment.event
+    db.session.delete(commitment)
+    db.session.commit()
+    flash(f'Deleted {event} commitment for {member_name}.', 'success')
+    return redirect(url_for('assign_commitment'))
 
 # ── Admin routes ─────────────────────────────────────────────────────────────
 
