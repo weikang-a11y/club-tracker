@@ -5478,10 +5478,15 @@ def workshop_quiz():
             results = [r for r in results if not r.attended]
         if filter_status == 'complete':
             results = [r for r in results
-                       if r.attended and r.score is not None and r.score >= QUIZ_PASS_THRESHOLD]
+                       if r.attended and r.score is not None
+                       and (r.score / (r.total_questions or 10) * 100) >= QUIZ_PASS_THRESHOLD]
         elif filter_status == 'incomplete':
             results = [r for r in results
-                       if not r.attended and r.user_id not in ws_excused_ids]
+                       if not (r.attended and r.score is not None
+                       and (r.score / (r.total_questions or 10) * 100) >= QUIZ_PASS_THRESHOLD)
+                       and r.user_id not in ws_excused_ids]
+        elif filter_status == 'excused':
+            results = [r for r in results if r.user_id in ws_excused_ids]
         elif filter_status == 'excused':
             results = [r for r in results if r.user_id in ws_excused_ids]
 
