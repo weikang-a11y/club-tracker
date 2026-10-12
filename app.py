@@ -5521,6 +5521,8 @@ def workshop_quiz_upload():
         flash('Invalid date format. Use YYYY-MM-DD.', 'danger')
         return redirect(url_for('workshop_quiz'))
 
+    total_q = max(1, int(request.form.get('total_questions', 10) or 10))
+
     def parse_csv_to_attended_map(f):
         """Return {username_lower: score_or_None} from an Email Address + Score CSV."""
         stream = io.StringIO(f.stream.read().decode('utf-8-sig'))
@@ -5586,6 +5588,7 @@ def workshop_quiz_upload():
             existing.attended    = attended
             existing.excused     = excused
             existing.score       = score
+            existing.total_questions = total_q
             existing.uploaded_by = current_user.id
         else:
             db.session.add(WeeklyQuizResult(
@@ -5594,6 +5597,7 @@ def workshop_quiz_upload():
                 attended=attended,
                 excused=excused,
                 score=score,
+                total_questions=total_q,
                 uploaded_by=current_user.id,
             ))
         saved += 1
