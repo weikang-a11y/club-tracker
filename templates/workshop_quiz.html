@@ -12,9 +12,8 @@
     <div class="card-body">
         <h5 class="fw-semibold mb-3">Upload Results (CSV)</h5>
         <p class="text-muted small mb-3">
-            CSV columns: <code>username, attended, excused, score</code><br>
-            <code>attended</code> / <code>excused</code>: 1 or 0 &nbsp;|&nbsp;
-            <code>score</code>: numeric or blank
+            CSV columns: <code>Email Address, Score</code><br>
+            Only include members who <strong>attended</strong>. Everyone else is automatically marked absent (score 0).
         </p>
         <form method="POST" action="{{ url_for('workshop_quiz_upload') }}" enctype="multipart/form-data">
             <div class="row g-2 align-items-end">
