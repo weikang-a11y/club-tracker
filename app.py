@@ -5465,7 +5465,6 @@ def workshop_quiz():
             .filter_by(session_date=selected_date, value=0.5)
             .all()
         }
-
         results = (
             WeeklyQuizResult.query
             .filter_by(session_date=selected_date)
@@ -5473,15 +5472,13 @@ def workshop_quiz():
             .order_by(User.username)
             .all()
         )
-
         if filter_attended == 'yes':
             results = [r for r in results if r.attended]
         elif filter_attended == 'no':
             results = [r for r in results if not r.attended]
-
         if filter_status == 'complete':
             results = [r for r in results
-                       if r.score is not None and r.score >= QUIZ_PASS_THRESHOLD]
+                       if r.attended and r.score is not None and r.score >= QUIZ_PASS_THRESHOLD]
         elif filter_status == 'incomplete':
             results = [r for r in results
                        if not r.attended and r.user_id not in ws_excused_ids]
@@ -5541,7 +5538,13 @@ def workshop_quiz_upload():
             username = raw_email.split('@')[0]
             score_raw = (row.get(score_col, '') if score_col else '').strip()
             try:
-                score = float(score_raw) if score_raw else None
+                if score_raw:
+                    if '/' in score_raw:
+                        score = float(score_raw.split('/')[0].strip())
+                    else:
+                        score = float(score_raw)
+                else:
+                    score = None
             except ValueError:
                 score = None
             result[username] = score
