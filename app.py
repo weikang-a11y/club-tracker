@@ -2945,7 +2945,9 @@ def _written_status(item_names, completed_by_item, deadlines_by_item, today=None
             'deadline_date': deadline_date,
         }
         missing_items.append(item)
-        if deadline_date and deadline_date < today:
+        VCMC_DAY = date(2026, 10, 31)
+        effective_deadline = VCMC_DAY if (deadline_date and deadline_date <= VCMC_DAY) else deadline_date
+        if effective_deadline and effective_deadline < today:
             overdue_items.append(item)
     if overdue_items:
         status, label = 'overdue', 'Overdue'
