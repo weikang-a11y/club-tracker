@@ -1,0 +1,161 @@
+{% extends 'base.html' %}
+{% block title %}Workshop Quiz — DECA Tracker{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+    <h2 class="fw-bold mb-0">Workshop Quiz Results</h2>
+</div>
+
+{# ── Upload form (admin only) ── #}
+{% if active_view == 'admin' %}
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="fw-semibold mb-3">Upload Results (CSV)</h5>
+        <p class="text-muted small mb-3">
+            CSV columns: <code>username, attended, excused, score</code><br>
+            <code>attended</code> / <code>excused</code>: 1 or 0 &nbsp;|&nbsp;
+            <code>score</code>: numeric or blank
+        </p>
+        <form method="POST" action="{{ url_for('workshop_quiz_upload') }}" enctype="multipart/form-data">
+            <div class="row g-2 align-items-end">
+                <div class="col-auto">
+                    <label class="form-label small fw-semibold">Session Date</label>
+                    <input type="date" name="session_date" class="form-control" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small fw-semibold">CSV File</label>
+                    <input type="file" name="csv_file" accept=".csv" class="form-control" required>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
+
+{# ── Date selector ── #}
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('workshop_quiz') }}" class="d-flex align-items-center gap-2 flex-wrap">
+            <label class="fw-semibold mb-0">View session:</label>
+            <select name="date" class="form-select w-auto" onchange="this.form.submit()">
+                <option value="">— select a date —</option>
+                {% for d in dates %}
+                <option value="{{ d.strftime('%Y-%m-%d') }}"
+                    {% if selected_date and d == selected_date %}selected{% endif %}>
+                    {{ d.strftime('%B %-d, %Y') }}
+                </option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
+</div>
+
+{# ── Results table ── #}
+{% if selected_date %}
+<div class="card">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="fw-semibold mb-0">{{ selected_date.strftime('%B %-d, %Y') }}</h5>
+            {% if active_view == 'admin' %}
+            <form method="POST" action="{{ url_for('workshop_quiz_delete_session') }}"
+                  class="js-confirm-form d-inline">
+                <input type="hidden" name="session_date" value="{{ selected_date.strftime('%Y-%m-%d') }}">
+                <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
+                    data-confirm-title="Delete Session"
+                    data-confirm-message="Delete ALL quiz results for {{ selected_date.strftime('%B %-d, %Y') }}? This cannot be undone."
+                    data-confirm-btn-text="Delete"
+                    data-confirm-btn-class="btn-danger">
+                    Delete Session
+                </button>
+            </form>
+            {% endif %}
+        </div>
+
+        {% if results %}
+        {% set present_count = results | selectattr('attended') | list | length %}
+        {% set pass_count = results | selectattr('score') | selectattr('score', 'ge', pass_threshold) | list | length %}
+        <div class="row g-3 mb-4">
+            <div class="col-auto">
+                <div class="summary-card card px-3 py-2 light-blue">
+                    <div class="small text-muted">Attended</div>
+                    <div class="fs-4 fw-bold">{{ present_count }} / {{ results | length }}</div>
+                </div>
+            </div>
+            {% if pass_threshold %}
+            <div class="col-auto">
+                <div class="summary-card card px-3 py-2">
+                    <div class="small text-muted">Passed (≥{{ pass_threshold }})</div>
+                    <div class="fs-4 fw-bold">{{ pass_count }}</div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th>Member</th>
+                        <th>Attended</th>
+                        <th>Excused</th>
+                        <th>Score</th>
+                        {% if pass_threshold %}<th>Status</th>{% endif %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in results %}
+                    <tr>
+                        <td>{{ r.member.username }}</td>
+                        <td>
+                            {% if r.attended %}
+                                <span class="badge bg-success">Yes</span>
+                            {% else %}
+                                <span class="badge bg-secondary">No</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.excused %}
+                                <span class="badge bg-warning text-dark">Excused</span>
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.score is not none %}
+                                {{ r.score }}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        {% if pass_threshold %}
+                        <td>
+                            {% if r.score is not none %}
+                                {% if r.score >= pass_threshold %}
+                                    <span class="badge bg-success">Pass</span>
+                                {% else %}
+                                    <span class="badge bg-danger">Fail</span>
+                                {% endif %}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        {% endif %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">No results uploaded for this session yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% elif dates %}
+<p class="text-muted">Select a session date above to view results.</p>
+{% else %}
+<p class="text-muted">No workshop quiz sessions have been uploaded yet.</p>
+{% endif %}
+{% endblock %}
