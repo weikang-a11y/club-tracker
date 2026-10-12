@@ -5479,12 +5479,13 @@ def workshop_quiz_upload():
         return redirect(url_for('workshop_quiz'))
 
     session_date_str = request.form.get('session_date', '').strip()
-    file = request.files.get('quiz_csv')
+    file1 = request.files.get('quiz_csv')
+    file2 = request.files.get('quiz_csv2')
 
     if not session_date_str:
         flash('Please provide a session date.', 'danger')
         return redirect(url_for('workshop_quiz'))
-    if not file or file.filename == '':
+    if not file1 or file1.filename == '':
         flash('Please choose a CSV file to upload.', 'danger')
         return redirect(url_for('workshop_quiz'))
 
@@ -5494,38 +5495,56 @@ def workshop_quiz_upload():
         flash('Invalid date format. Use YYYY-MM-DD.', 'danger')
         return redirect(url_for('workshop_quiz'))
 
-    stream = io.StringIO(file.stream.read().decode('utf-8-sig'))
-    reader = csv.DictReader(stream)
+    def parse_csv_to_attended_map(f):
+        """Return {username_lower: score_or_None} from an Email Address + Score CSV."""
+        stream = io.StringIO(f.stream.read().decode('utf-8-sig'))
+        reader = csv.DictReader(stream)
+        fieldnames_lower = {c.strip().lower(): c for c in (reader.fieldnames or [])}
+        email_col = next((fieldnames_lower[k] for k in fieldnames_lower if 'email' in k), None)
+        score_col = next((fieldnames_lower[k] for k in fieldnames_lower if 'score' in k), None)
+        if not email_col:
+            return None, 'CSV must have an "Email Address" column.'
+        result = {}
+        for row in reader:
+            raw_email = (row.get(email_col) or '').strip().lower()
+            if not raw_email:
+                continue
+            username = raw_email.split('@')[0]
+            score_raw = (row.get(score_col, '') if score_col else '').strip()
+            try:
+                score = float(score_raw) if score_raw else None
+            except ValueError:
+                score = None
+            result[username] = score
+        return result, None
 
-    required_cols = {'username', 'attended'}
-    if not required_cols.issubset({c.strip().lower() for c in (reader.fieldnames or [])}):
-        flash('CSV must have at least "username" and "attended" columns.', 'danger')
+    attended_map, err = parse_csv_to_attended_map(file1)
+    if err:
+        flash(err, 'danger')
         return redirect(url_for('workshop_quiz'))
 
-    saved = errors = 0
-    for row in reader:
-        username = (row.get('username') or '').strip().lower()
-        if not username:
-            continue
-        member = User.query.filter(db.func.lower(User.username) == username).first()
-        if not member:
-            errors += 1
-            continue
+    if file2 and file2.filename:
+        map2, err2 = parse_csv_to_attended_map(file2)
+        if err2:
+            flash(f'Second CSV: {err2}', 'danger')
+            return redirect(url_for('workshop_quiz'))
+        attended_map.update(map2)
 
-        attended = str(row.get('attended', '0')).strip() in {'1', 'true', 'yes'}
-        excused  = str(row.get('excused',  '0')).strip() in {'1', 'true', 'yes'}
-        score_raw = str(row.get('score', '')).strip()
-        try:
-            score = float(score_raw) if score_raw else None
-        except ValueError:
-            score = None
+    all_members = User.query.filter_by(active=True).all()
+    saved = not_found = 0
+
+    for member in all_members:
+        username = (member.username or '').strip().lower()
+        in_csv = username in attended_map
+        attended = in_csv
+        score    = attended_map[username] if in_csv else 0.0
 
         existing = WeeklyQuizResult.query.filter_by(
             user_id=member.id, session_date=session_date
         ).first()
         if existing:
             existing.attended    = attended
-            existing.excused     = excused
+            existing.excused     = False
             existing.score       = score
             existing.uploaded_by = current_user.id
         else:
@@ -5533,17 +5552,22 @@ def workshop_quiz_upload():
                 user_id=member.id,
                 session_date=session_date,
                 attended=attended,
-                excused=excused,
+                excused=False,
                 score=score,
                 uploaded_by=current_user.id,
             ))
         saved += 1
 
+    for username in attended_map:
+        if not User.query.filter(db.func.lower(User.username) == username).first():
+            not_found += 1
+
     db.session.commit()
     flash(
-        f'Uploaded {saved} result(s) for {session_date_str}.'
-        + (f' {errors} username(s) not found.' if errors else ''),
-        'success' if not errors else 'warning',
+        f'Uploaded results for {saved} member(s) on {session_date_str} '
+        f'({len(attended_map)} attended, {saved - len(attended_map)} marked absent).'
+        + (f' {not_found} email(s) in CSV not matched to a member.' if not_found else ''),
+        'success' if not not_found else 'warning',
     )
     return redirect(url_for('workshop_quiz', date=session_date_str))
 
