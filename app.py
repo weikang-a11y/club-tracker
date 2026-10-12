@@ -5530,7 +5530,7 @@ def workshop_quiz_upload():
             return redirect(url_for('workshop_quiz'))
         attended_map.update(map2)
 
-    all_members = User.query.filter_by(is_active=True).all()
+    all_members = User.query.filter_by(role='member').all()
     saved = not_found = 0
 
     for member in all_members:
