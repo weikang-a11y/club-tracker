@@ -184,6 +184,11 @@
                                 {% endif %}
                                 <form method="POST" action="{{ url_for('review_exam_upload', upload_id=u.id) }}" class="js-confirm-form d-inline">
                                     <input type="hidden" name="action" value="credit">
+                                    <select name="credit_amount" class="form-select form-select-sm d-inline-block w-auto me-1">
+                                        <option value="1">Full (1)</option>
+                                        <option value="0.5">Half (½)</option>
+                                        <option value="0">None (0)</option>
+                                    </select>
                                     <button type="button" class="btn btn-sm btn-success js-open-confirm"
                                         data-confirm-title="Credit Exam"
                                         data-confirm-message="Credit this exam for {{ username }} ({{ u.conference }})? This will decrement their remaining exam count."

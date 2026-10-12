@@ -1,0 +1,242 @@
+{% extends 'base.html' %}
+{% block title %}Workshop Quiz — DECA Tracker{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+    <h2 class="fw-bold mb-0">Workshop Quiz Results</h2>
+</div>
+
+{# ── Upload form (admin or users who can switch views) ── #}
+{% if active_view == 'admin' or can_switch_view %}
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="fw-semibold mb-3">Upload Results (CSV)</h5>
+        <p class="text-muted small mb-3">
+            CSV columns: <code>Email Address, Score</code><br>
+            Only include members who <strong>attended</strong>. Everyone else is automatically marked absent.
+            Excused absences are pulled from WS attendance data automatically.<br>
+            For IMC workshops, upload both CSVs at once using the second file input.
+        </p>
+        <form method="POST" action="{{ url_for('workshop_quiz_upload') }}" enctype="multipart/form-data">
+            <div class="row g-2 align-items-end">
+                <div class="col-auto">
+                    <label class="form-label small fw-semibold">Session Date</label>
+                    <input type="date" name="session_date" class="form-control" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small fw-semibold">Total Questions</label>
+                    <input type="number" name="total_questions" value="10" min="1" class="form-control" style="width:90px">
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small fw-semibold">CSV File 1</label>
+                    <input type="file" name="quiz_csv" accept=".csv" class="form-control" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small fw-semibold">CSV File 2 <span class="text-muted fw-normal">(optional — IMC)</span></label>
+                    <input type="file" name="quiz_csv2" accept=".csv" class="form-control">
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
+
+{# ── Date selector (month + day dropdowns) ── #}
+{% if dates %}
+{% set months_seen = [] %}
+{% for d in dates %}{% if d.strftime('%Y-%m') not in months_seen %}{% if months_seen.append(d.strftime('%Y-%m')) %}{% endif %}{% endif %}{% endfor %}
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('workshop_quiz') }}" class="d-flex align-items-center gap-2 flex-wrap" id="dateForm">
+            <label class="fw-semibold mb-0">Session:</label>
+
+            {# Month dropdown #}
+            <select name="_month" id="monthSelect" class="form-select w-auto">
+                <option value="">— month —</option>
+                {% for ym in months_seen %}
+                {% set parts = ym.split('-') %}
+                {% set mo = parts[1]|int %}
+                {% set yr = parts[0]|int %}
+                {% set month_names = ['','January','February','March','April','May','June','July','August','September','October','November','December'] %}
+                <option value="{{ ym }}"
+                    {% if selected_date and selected_date.strftime('%Y-%m') == ym %}selected{% endif %}>
+                    {{ month_names[mo] }} {{ yr }}
+                </option>
+                {% endfor %}
+            </select>
+
+            {# Day dropdown — JS filters by selected month #}
+            <select name="date" id="daySelect" class="form-select w-auto">
+                <option value="">— day —</option>
+                {% for d in dates %}
+                <option value="{{ d.strftime('%Y-%m-%d') }}"
+                        data-month="{{ d.strftime('%Y-%m') }}"
+                    {% if selected_date and d == selected_date %}selected{% endif %}>
+                    {{ d.strftime('%-d') }}
+                </option>
+                {% endfor %}
+            </select>
+
+            <button type="submit" class="btn btn-primary btn-sm">View</button>
+
+            {# ── Filters (only when a date is selected) ── #}
+            {% if selected_date %}
+            <span class="text-muted mx-1">|</span>
+
+            <select name="filter_attended" class="form-select w-auto form-select-sm">
+                <option value="" {% if not filter_attended %}selected{% endif %}>All members</option>
+                <option value="yes" {% if filter_attended == 'yes' %}selected{% endif %}>Attended only</option>
+                <option value="no"  {% if filter_attended == 'no'  %}selected{% endif %}>Absent only</option>
+            </select>
+
+            <select name="filter_status" class="form-select w-auto form-select-sm">
+                <option value=""           {% if not filter_status %}selected{% endif %}>All statuses</option>
+                <option value="complete"   {% if filter_status == 'complete'   %}selected{% endif %}>Complete</option>
+                <option value="incomplete" {% if filter_status == 'incomplete' %}selected{% endif %}>Incomplete</option>
+                <option value="excused"    {% if filter_status == 'excused'    %}selected{% endif %}>Excused</option>
+            </select>
+
+            <button type="submit" class="btn btn-outline-secondary btn-sm">Filter</button>
+            {% endif %}
+        </form>
+    </div>
+</div>
+
+<script>
+(function () {
+    const monthSel = document.getElementById('monthSelect');
+    const daySel   = document.getElementById('daySelect');
+    if (!monthSel || !daySel) return;
+
+    function filterDays() {
+        const chosen = monthSel.value;
+        let firstVal = '';
+        Array.from(daySel.options).forEach(opt => {
+            if (!opt.value) return;
+            const show = !chosen || opt.dataset.month === chosen;
+            opt.disabled = !show;
+            opt.style.display = show ? '' : 'none';
+            if (show && !firstVal) firstVal = opt.value;
+        });
+        const sel = daySel.options[daySel.selectedIndex];
+        if (sel && sel.value && sel.disabled) {
+            daySel.value = firstVal || '';
+        }
+    }
+
+    monthSel.addEventListener('change', filterDays);
+    filterDays();
+})();
+</script>
+{% endif %}
+
+{# ── Results table ── #}
+{% if selected_date %}
+<div class="card">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="fw-semibold mb-0">{{ selected_date.strftime('%B %-d, %Y') }}</h5>
+            {% if active_view == 'admin' and results %}
+            <form method="POST" action="{{ url_for('workshop_quiz_delete_session') }}"
+                  class="js-confirm-form d-inline">
+                <input type="hidden" name="session_date" value="{{ selected_date.strftime('%Y-%m-%d') }}">
+                <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
+                    data-confirm-title="Delete Session"
+                    data-confirm-message="Delete ALL quiz results for {{ selected_date.strftime('%B %-d, %Y') }}? This cannot be undone."
+                    data-confirm-btn-text="Delete"
+                    data-confirm-btn-class="btn-danger">
+                    Delete Quiz Data
+                </button>
+            </form>
+            {% endif %}
+        </div>
+
+        {% if results %}
+        {% set present_count = results | selectattr('attended') | list | length %}
+        {% set excused_count = results | selectattr('user_id', 'in', ws_excused_ids) | list | length %}
+        {% set complete_count = results | selectattr('attended') | list | length %}
+        <div class="row g-3 mb-4">
+            <div class="col-auto">
+                <div class="summary-card card px-3 py-2 light-blue">
+                    <div class="small text-muted">Attended</div>
+                    <div class="fs-4 fw-bold">{{ present_count }} / {{ results | length }}</div>
+                </div>
+            </div>
+            {% if excused_count %}
+            <div class="col-auto">
+                <div class="summary-card card px-3 py-2">
+                    <div class="small text-muted">Excused</div>
+                    <div class="fs-4 fw-bold">{{ excused_count }}</div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th>Member</th>
+                        <th>Attended</th>
+                        <th>Score</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in results %}
+                    {% set is_excused = r.user_id in ws_excused_ids %}
+                    {% set tq = r.total_questions if r.total_questions else 10 %}
+                    {% set pct = (r.score / tq * 100) if (r.score is not none and tq) else none %}
+                    <tr>
+                        <td>{{ r.member.username }}</td>
+                        <td>
+                            {% if r.attended %}
+                                <span class="badge bg-success">Yes</span>
+                            {% elif is_excused %}
+                                <span class="badge bg-warning text-dark">Excused</span>
+                            {% else %}
+                                <span class="badge bg-secondary">No</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.score is not none %}
+                                {% if r.score == r.score | int %}
+                                    {{ r.score | int }}/{{ tq }}
+                                {% else %}
+                                    {{ r.score }}/{{ tq }}
+                                {% endif %}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if is_excused %}
+                                <span class="badge bg-warning text-dark">Excused</span>
+                            {% elif r.attended and pct is not none and pct >= pass_threshold %}
+                                <span class="badge bg-success">Complete</span>
+                            {% else %}
+                                <span class="badge bg-danger">Incomplete</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">No quiz results uploaded for this session yet.
+            {% if active_view == 'admin' or can_switch_view %}Use the upload form above to add them.{% endif %}
+        </p>
+        {% endif %}
+    </div>
+</div>
+{% elif dates %}
+<p class="text-muted">Select a month and day above to view results.</p>
+{% else %}
+<p class="text-muted">No workshop sessions found yet.</p>
+{% endif %}
+{% endblock %}

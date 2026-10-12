@@ -193,7 +193,7 @@ OFFICER_ROSTER_2026_27 = [
     ("Philina Chen", "Officer, Admin"),
     ("Natalie Zhang", "Officer"),
     ("Melody Leong", "Officer"),
-    ("Aryahi Sharma", "Officer"),
+    ("Aryahi Sharma", "Officer", "Admin"),
     ("Olivia Kang", "Officer"),
     ("Zihan Liu", "Officer"),
     ("Aaron Vu", "Admin, Officer"),
@@ -267,8 +267,27 @@ OFFICER_IMPORT_KEY = "2026-27-officer-roster-v3-advisors-and-additions"
 
 # This migration updates already-imported databases without rerunning the full
 # roster import (which would reset every officer's temporary password).
-REMOVED_ADMIN_ACCESS = ("Aryahi Sharma", "Olivia Kang", "Zihan Liu")
+REMOVED_ADMIN_ACCESS = ("Olivia Kang", "Zihan Liu")
 REMOVED_ADMIN_ACCESS_KEY = "2026-27-remove-admin-access-aryahi-olivia-zihan-v1"
+
+GRANT_ARYAHI_ADMIN_KEY = "2026-27-grant-aryahi-admin-v1"
+
+def grant_aryahi_admin():
+    if db.session.get(DataMigration, GRANT_ARYAHI_ADMIN_KEY):
+        return
+    user = User.query.filter(
+        db.func.lower(User.username) == 'aryahi.sharma'
+    ).first()
+    if user:
+        user.is_admin = True
+        user.has_officer_access = True
+        user.role = 'officer'
+    db.session.add(DataMigration(
+        key=GRANT_ARYAHI_ADMIN_KEY,
+        details='Granted admin access to aryahi.sharma',
+    ))
+    db.session.commit()
+    print('[Admin Grant] aryahi.sharma granted admin access.')
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -295,10 +314,10 @@ class Commitment(db.Model):
     event = db.Column(db.String(20))
     required_roleplay = db.Column(db.Integer, default=0)
     required_written = db.Column(db.Integer, default=0)
-    required_exam = db.Column(db.Integer, default=0)
+    required_exam = db.Column(db.Float, default=0)
     remaining_roleplay = db.Column(db.Integer, default=0)
     remaining_written = db.Column(db.Integer, default=0)
-    remaining_exam = db.Column(db.Integer, default=0)
+    remaining_exam = db.Column(db.Float, default=0)
     deadline = db.Column(db.Date)
     grade = db.Column(db.String(10), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
@@ -448,6 +467,22 @@ class Notification(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref='notifications')
 
+class WeeklyQuizResult(db.Model):
+    """Per-member result for a weekly workshop quiz session."""
+    __tablename__ = 'weekly_quiz_result'
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'session_date', name='uq_quiz_user_date'),
+    )
+    id           = db.Column(db.Integer, primary_key=True)
+    user_id      = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    session_date = db.Column(db.Date, nullable=False)
+    attended     = db.Column(db.Boolean, default=False, nullable=False)
+    excused      = db.Column(db.Boolean, default=False, nullable=False)
+    score        = db.Column(db.Float, nullable=True)
+    uploaded_by  = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+    total_questions = db.Column(db.Integer, nullable=True, default=10)
+    member       = db.relationship('User', foreign_keys=[user_id], backref='quiz_results')
 
 class PracticeLog(db.Model):
     """Completion record submitted by officer after a practice session."""
@@ -962,7 +997,38 @@ def create_new_officer_demo_pods():
             "[Demo Pods] officer accounts not found: "
             + ", ".join(missing_officers)
         )
+ANNEKA_EXPERIENCED_KEY = "2026-27-anneka-prusty-experienced-v1"
 
+def set_anneka_prusty_experienced():
+    if db.session.get(DataMigration, ANNEKA_EXPERIENCED_KEY):
+        return
+    user = (
+        User.query.filter(db.func.lower(User.username) == 'anneka.prusty').first()
+        or User.query.filter(db.func.lower(User.username).like('%anneka%')).first()
+    )
+    if user:
+        pod = MentorPod.query.filter_by(member_id=user.id).first()
+        if pod:
+            pod.experience_level = 'E'
+        reqs = EVENT_REQUIREMENTS.get('E', EVENT_REQUIREMENTS['N'])
+        for conf, rule in reqs.items():
+            com = Commitment.query.filter_by(member_name=user.username, event=conf).first()
+            if com:
+                completed_rp = com.required_roleplay - com.remaining_roleplay
+                completed_ex = com.required_exam - com.remaining_exam
+                completed_wr = com.required_written - com.remaining_written
+                com.required_roleplay = rule["roleplay"]
+                com.required_written  = rule["written"]
+                com.required_exam     = rule["exam"]
+                com.remaining_roleplay = max(0, rule["roleplay"] - completed_rp)
+                com.remaining_written  = max(0, rule["written"]  - completed_wr)
+                com.remaining_exam     = max(0, rule["exam"]     - completed_ex)
+    db.session.add(DataMigration(
+        key=ANNEKA_EXPERIENCED_KEY,
+        details='Set Anneka Prusty experience_level to E',
+    ))
+    db.session.commit()
+    print('[Experience Update] Anneka Prusty set to Experienced.')
 
 def reconcile_saron_access():
     """Correct the old Saron username typo without changing the password."""
@@ -1953,9 +2019,8 @@ _UNSET = object()
 def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     """Return AH rate, WS rate, and at-risk flag for a member.
 
-    ah_records/ws_records/pod may be supplied by a caller that has already
-    loaded them in bulk. Left at their defaults the behaviour is identical
-    to querying per member.
+    Rate = present / (total - excused), so excused absences don't hurt the %.
+    Excused absences are still shown separately in the returned dict.
     """
     if ah_records is None:
         ah_records = AHAttendance.query.filter_by(user_id=user.id).all()
@@ -1965,23 +2030,25 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     total_ah = len(ah_records)
     total_ws = len(ws_records)
 
-    ah_sum = sum(r.value for r in ah_records)
-    ws_sum = sum(r.value for r in ws_records)
+    ah_present = sum(1 for r in ah_records if float(r.value or 0) >= 1.0)
+    ah_excused = sum(1 for r in ah_records if 0.0 < float(r.value or 0) < 1.0)
+    ah_absent  = total_ah - ah_present - ah_excused
+    ah_denom   = total_ah - ah_excused
+    ah_rate    = round((ah_present / ah_denom) * 100, 1) if ah_denom > 0 else 0.0
 
-    ah_rate = round((ah_sum / total_ah) * 100, 1) if total_ah > 0 else 0.0
-    ws_rate = round((ws_sum / total_ws) * 100, 1) if total_ws > 0 else 0.0
+    ws_present = sum(1 for r in ws_records if float(r.value or 0) >= 1.0)
+    ws_excused = sum(1 for r in ws_records if 0.0 < float(r.value or 0) < 1.0)
+    ws_absent  = total_ws - ws_present - ws_excused
+    ws_denom   = total_ws - ws_excused
+    ws_rate    = round((ws_present / ws_denom) * 100, 1) if ws_denom > 0 else 0.0
 
-    # Get experience level from pod
     if pod is _UNSET:
         pod = MentorPod.query.filter_by(member_id=user.id).first()
     level = pod.experience_level if pod else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
-    # A member with no records yet has not missed anything — at the start of
-    # the year every mentee sits at 0 of 0, and flagging them all would make
-    # the report meaningless. Only judge a category once it has data.
-    ah_ok = total_ah == 0 or ah_rate >= (AH_THRESHOLD * 100)
-    ws_ok = total_ws == 0 or ws_rate >= ws_threshold_pct
+    ah_ok = ah_denom == 0 or ah_rate >= (AH_THRESHOLD * 100)
+    ws_ok = ws_denom == 0 or ws_rate >= ws_threshold_pct
 
     at_risk = not ah_ok or not ws_ok
     risk_reasons = []
@@ -1992,19 +2059,23 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
         risk_reasons.append(f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required")
 
     return {
-        'ah_total': total_ah,
-        'ah_sum': ah_sum,
-        'ah_rate': ah_rate,
-        'ws_total': total_ws,
-        'ws_sum': ws_sum,
-        'ws_rate': ws_rate,
-        'level': level,
+        'ah_total':         total_ah,
+        'ah_present':       ah_present,
+        'ah_excused':       ah_excused,
+        'ah_absent':        ah_absent,
+        'ah_sum':           float(ah_present),   # kept for back-compat
+        'ah_rate':          ah_rate,
+        'ws_total':         total_ws,
+        'ws_present':       ws_present,
+        'ws_excused':       ws_excused,
+        'ws_absent':        ws_absent,
+        'ws_sum':           float(ws_present),   # kept for back-compat
+        'ws_rate':          ws_rate,
+        'level':            level,
         'ws_threshold_pct': ws_threshold_pct,
-        'at_risk': at_risk,
-        'risk_reasons': risk_reasons,
+        'at_risk':          at_risk,
+        'risk_reasons':     risk_reasons,
     }
-
-# ── Forms ─────────────────────────────────────────────────────────────────────
 
 class RegisterForm(FlaskForm):
     """Retained so /register can still render a form if self-signup is ever
@@ -2294,6 +2365,24 @@ with app.app_context():
     # Migrate: add grade column to commitment
     _ensure_column('commitment', 'grade', 'VARCHAR(10)')
 
+        # Migrate: change exam columns to FLOAT for partial-credit support (0.5 = half credit)
+    if db.engine.dialect.name != 'sqlite':
+        try:
+            commitment_col_types = {
+                c['name']: str(c['type'])
+                for c in db.inspect(db.engine).get_columns('commitment')
+            }
+            for col in ('remaining_exam', 'required_exam'):
+                if 'FLOAT' not in commitment_col_types.get(col, '').upper() and \
+                   'DOUBLE' not in commitment_col_types.get(col, '').upper():
+                    db.session.execute(sql_text(
+                        f'ALTER TABLE commitment ALTER COLUMN {col} TYPE FLOAT USING {col}::float'
+                    ))
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            print(f'[Migration] exam Float migration skipped: {exc}')
+
     # Migrate: add event column to mentor_pod
     _ensure_column('mentor_pod', 'event', 'VARCHAR(50)')
 
@@ -2333,6 +2422,7 @@ with app.app_context():
 
     # Migrate: reminders moved from workshops to practice sessions.
     _ensure_column('reminder_log', 'practice_session_id', 'INTEGER')
+    _ensure_column('weekly_quiz_result', 'total_questions', 'INTEGER DEFAULT 10')
     if db.engine.dialect.name != 'sqlite':
         try:
             db.session.execute(sql_text(
@@ -2428,11 +2518,27 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Officer Access] synchronization skipped: {exc}')
+
+
+    try:
+        if not SKIP_STARTUP_WORK:
+            grant_aryahi_admin()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Admin Grant] skipped: {exc}')
+        
     try:
         reconcile_saron_access()
     except Exception as exc:
         db.session.rollback()
         print(f'[Saron Access] reconciliation skipped: {exc}')
+
+    try:
+        if not SKIP_STARTUP_WORK:
+            set_anneka_prusty_experienced()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Experience Update] skipped: {exc}')
 
 
 
@@ -2849,7 +2955,10 @@ def _written_status(item_names, completed_by_item, deadlines_by_item, today=None
             'deadline_date': deadline_date,
         }
         missing_items.append(item)
-        if deadline_date and deadline_date < today:
+        VCMC_DAY = datetime(2026, 10, 31).date()
+        dd = deadline_date.date() if isinstance(deadline_date, datetime) else deadline_date
+        effective_deadline = VCMC_DAY if (dd and dd <= VCMC_DAY) else dd
+        if effective_deadline and effective_deadline < today:
             overdue_items.append(item)
     if overdue_items:
         status, label = 'overdue', 'Overdue'
@@ -3973,14 +4082,21 @@ def review_exam_upload(upload_id):
 
     if action == 'credit':
         upload.credited = True
+        credit_raw = request.form.get('credit_amount', '1')
+        try:
+            credit_amount = float(credit_raw)
+        except ValueError:
+            credit_amount = 1.0
+        credit_amount = max(0.0, min(1.0, credit_amount))
         # Decrement the member's exam commitment for the conference
         commitment = Commitment.query.filter_by(
             member_name=upload.member.username, event=upload.conference).first()
-        if commitment and commitment.remaining_exam > 0:
-            commitment.remaining_exam -= 1
+        if commitment and commitment.remaining_exam > 0 and credit_amount > 0:
+            commitment.remaining_exam = max(0, commitment.remaining_exam - credit_amount)
             db.session.add(commitment)
         upload.commitment_id = commitment.id if commitment else None
-        flash(f'Exam credited for {upload.member.username} ({upload.conference}).', 'success')
+        label = '½' if credit_amount == 0.5 else ('full' if credit_amount == 1.0 else f'{credit_amount}')
+        flash(f'Exam credited ({label}) for {upload.member.username} ({upload.conference}).', 'success')
     else:
         flash(f'Exam marked as reviewed for {upload.member.username}.', 'success')
 
@@ -4004,6 +4120,65 @@ def admin_required(f):
             return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
     return decorated
+
+@app.route('/admin/assign_commitment', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def assign_commitment():
+    form = CommitmentForm()
+    if form.validate_on_submit():
+        member = User.query.filter(
+            db.func.lower(User.username) == form.member_name.data.strip().lower()
+        ).first()
+        if not member:
+            flash(f'Member "{form.member_name.data}" not found.', 'danger')
+        else:
+            event = form.event.data
+            existing = Commitment.query.filter_by(
+                member_name=member.username, event=event
+            ).first()
+            if existing:
+                flash(f'{member.username} already has a {event} commitment.', 'warning')
+            else:
+                pod = MentorPod.query.filter_by(member_id=member.id).first()
+                level = pod.experience_level if pod else 'N'
+                rule = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N']).get(event, {})
+                com = Commitment(
+                    member_name=member.username,
+                    user_id=member.id,
+                    event=event,
+                    required_roleplay=rule.get('roleplay', 0),
+                    required_written=rule.get('written', 0),
+                    required_exam=rule.get('exam', 0),
+                    remaining_roleplay=rule.get('roleplay', 0),
+                    remaining_written=rule.get('written', 0),
+                    remaining_exam=rule.get('exam', 0),
+                    deadline=(
+                        datetime.strptime(rule['deadline'], '%Y-%m-%d').date()
+                        if rule.get('deadline') else None
+                    ),
+                )
+                db.session.add(com)
+                db.session.commit()
+                flash(f'Commitment assigned for {member.username} ({event}).', 'success')
+                return redirect(url_for('assign_commitment'))
+    commitments = Commitment.query.order_by(
+        Commitment.member_name, Commitment.event
+    ).all()
+    return render_template('assign_commitment.html', form=form, commitments=commitments)
+
+
+@app.route('/admin/delete_commitment/<int:commitment_id>', methods=['POST'])
+@login_required
+@admin_required
+def delete_commitment(commitment_id):
+    commitment = Commitment.query.get_or_404(commitment_id)
+    member_name = commitment.member_name
+    event = commitment.event
+    db.session.delete(commitment)
+    db.session.commit()
+    flash(f'Deleted {event} commitment for {member_name}.', 'success')
+    return redirect(url_for('assign_commitment'))
 
 
 @app.route('/admin')
@@ -5263,6 +5438,216 @@ def mentee_detail(member_id):
         report_date=today,
     )
 
+# ── Weekly Quiz routes ────────────────────────────────────────────────────────
+
+QUIZ_PASS_THRESHOLD = 80.0
+
+@app.route('/workshop_quiz')
+@login_required
+def workshop_quiz():
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can view quiz results.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    quiz_dates = {
+        row[0] for row in
+        db.session.query(WeeklyQuizResult.session_date).distinct().all()
+    }
+    ws_dates = {
+        row[0] for row in
+        db.session.query(WSAttendance.session_date).distinct().all()
+    }
+    dates = sorted(quiz_dates | ws_dates, reverse=True)
+
+    selected_date_str = request.args.get('date', '')
+    filter_attended   = request.args.get('filter_attended', '')
+    filter_status     = request.args.get('filter_status', '')
+    selected_date = None
+    results = []
+    ws_excused_ids = set()
+
+    if selected_date_str:
+        try:
+            selected_date = datetime.strptime(selected_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            pass
+
+    if selected_date:
+        ws_excused_ids = {
+            row[0] for row in
+            db.session.query(WSAttendance.user_id)
+            .filter_by(session_date=selected_date, value=0.5)
+            .all()
+        }
+        results = (
+            WeeklyQuizResult.query
+            .filter_by(session_date=selected_date)
+            .join(WeeklyQuizResult.member)
+            .order_by(User.username)
+            .all()
+        )
+        if filter_attended == 'yes':
+            results = [r for r in results if r.attended]
+        elif filter_attended == 'no':
+            results = [r for r in results if not r.attended]
+        if filter_status == 'complete':
+            results = [r for r in results
+                       if r.attended and r.score is not None
+                       and (r.score / (r.total_questions or 10) * 100) >= QUIZ_PASS_THRESHOLD]
+        elif filter_status == 'incomplete':
+            results = [r for r in results
+                       if not (r.attended and r.score is not None
+                       and (r.score / (r.total_questions or 10) * 100) >= QUIZ_PASS_THRESHOLD)
+                       and r.user_id not in ws_excused_ids]
+        elif filter_status == 'excused':
+            results = [r for r in results if r.user_id in ws_excused_ids]
+        elif filter_status == 'excused':
+            results = [r for r in results if r.user_id in ws_excused_ids]
+
+    return render_template(
+        'workshop_quiz.html',
+        dates=dates,
+        selected_date=selected_date,
+        results=results,
+        pass_threshold=QUIZ_PASS_THRESHOLD,
+        ws_excused_ids=ws_excused_ids,
+        filter_attended=filter_attended,
+        filter_status=filter_status,
+    )
+
+
+@app.route('/workshop_quiz/upload', methods=['POST'])
+@login_required
+def workshop_quiz_upload():
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers/admins can upload quiz results.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    session_date_str = request.form.get('session_date', '').strip()
+    file1 = request.files.get('quiz_csv')
+    file2 = request.files.get('quiz_csv2')
+
+    if not session_date_str:
+        flash('Please provide a session date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    if not file1 or file1.filename == '':
+        flash('Please choose a CSV file to upload.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    try:
+        session_date = datetime.strptime(session_date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date format. Use YYYY-MM-DD.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    total_q = max(1, int(request.form.get('total_questions', 10) or 10))
+
+    def parse_csv_to_attended_map(f):
+        """Return {username_lower: score_or_None} from an Email Address + Score CSV."""
+        stream = io.StringIO(f.stream.read().decode('utf-8-sig'))
+        reader = csv.DictReader(stream)
+        fieldnames_lower = {c.strip().lower(): c for c in (reader.fieldnames or [])}
+        email_col = next((fieldnames_lower[k] for k in fieldnames_lower if 'email' in k), None)
+        score_col = next((fieldnames_lower[k] for k in fieldnames_lower if 'score' in k), None)
+        if not email_col:
+            return None, 'CSV must have an "Email Address" column.'
+        result = {}
+        for row in reader:
+            raw_email = (row.get(email_col) or '').strip().lower()
+            if not raw_email:
+                continue
+            username = raw_email.split('@')[0]
+            score_raw = (row.get(score_col, '') if score_col else '').strip()
+            try:
+                if score_raw:
+                    if '/' in score_raw:
+                        score = float(score_raw.split('/')[0].strip())
+                    else:
+                        score = float(score_raw)
+                else:
+                    score = None
+            except ValueError:
+                score = None
+            result[username] = score
+        return result, None
+
+    attended_map, err = parse_csv_to_attended_map(file1)
+    if err:
+        flash(err, 'danger')
+        return redirect(url_for('workshop_quiz'))
+
+    if file2 and file2.filename:
+        map2, err2 = parse_csv_to_attended_map(file2)
+        if err2:
+            flash(f'Second CSV: {err2}', 'danger')
+            return redirect(url_for('workshop_quiz'))
+        attended_map.update(map2)
+
+    ws_excused_ids = {
+        row[0] for row in
+        db.session.query(WSAttendance.user_id)
+        .filter_by(session_date=session_date, value=0.5)
+        .all()
+    }
+
+    all_members = User.query.filter_by(role='member').all()
+    saved = not_found = 0
+
+    for member in all_members:
+        username = (member.username or '').strip().lower()
+        in_csv   = username in attended_map
+        attended = in_csv
+        excused  = (not in_csv) and (member.id in ws_excused_ids)
+        score    = attended_map[username] if in_csv else None
+
+        existing = WeeklyQuizResult.query.filter_by(
+            user_id=member.id, session_date=session_date
+        ).first()
+        if existing:
+            existing.attended    = attended
+            existing.excused     = excused
+            existing.score       = score
+            existing.total_questions = total_q
+            existing.uploaded_by = current_user.id
+        else:
+            db.session.add(WeeklyQuizResult(
+                user_id=member.id,
+                session_date=session_date,
+                attended=attended,
+                excused=excused,
+                score=score,
+                total_questions=total_q,
+                uploaded_by=current_user.id,
+            ))
+        saved += 1
+    for username in attended_map:
+        if not User.query.filter(db.func.lower(User.username) == username).first():
+            not_found += 1
+
+    db.session.commit()
+    flash(
+        f'Uploaded results for {saved} member(s) on {session_date_str} '
+        f'({len(attended_map)} attended, {saved - len(attended_map)} marked absent).'
+        + (f' {not_found} email(s) in CSV not matched to a member.' if not_found else ''),
+        'success' if not not_found else 'warning',
+    )
+    return redirect(url_for('workshop_quiz', date=session_date_str))
+
+
+@app.route('/workshop_quiz/delete_session', methods=['POST'])
+@login_required
+@admin_required
+def workshop_quiz_delete_session():
+    date_str = request.form.get('session_date', '').strip()
+    try:
+        session_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    deleted = WeeklyQuizResult.query.filter_by(session_date=session_date).delete()
+    db.session.commit()
+    flash(f'Deleted {deleted} result(s) for {date_str}.', 'success')
+    return redirect(url_for('workshop_quiz'))
 
 @app.route('/checklist_completion')
 @login_required
