@@ -187,7 +187,7 @@
                 <tbody>
                     {% for r in results %}
                     {% set is_excused = r.user_id in ws_excused_ids %}
-                    {% set tq = r.total_questions if r.total_questions else 10 %}
+                    {% set tq = 10 %}
                     <tr>
                         <td>{{ r.member.username }}</td>
                         <td>
