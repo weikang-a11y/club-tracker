@@ -118,10 +118,12 @@
         Array.from(daySel.options).forEach(opt => {
             if (!opt.value) return;
             const show = !chosen || opt.dataset.month === chosen;
-            opt.hidden = !show;
+            opt.disabled = !show;
+            opt.style.display = show ? '' : 'none';
             if (show && !firstVal) firstVal = opt.value;
         });
-        if (daySel.value && daySel.options[daySel.selectedIndex] && daySel.options[daySel.selectedIndex].hidden) {
+        const sel = daySel.options[daySel.selectedIndex];
+        if (sel && sel.value && sel.disabled) {
             daySel.value = firstVal || '';
         }
     }
@@ -187,7 +189,8 @@
                 <tbody>
                     {% for r in results %}
                     {% set is_excused = r.user_id in ws_excused_ids %}
-                    {% set tq = 10 %}
+                    {% set tq = r.total_questions if r.total_questions else 10 %}
+                    {% set pct = (r.score / tq * 100) if (r.score is not none and tq) else none %}
                     <tr>
                         <td>{{ r.member.username }}</td>
                         <td>
@@ -213,7 +216,7 @@
                         <td>
                             {% if is_excused %}
                                 <span class="badge bg-warning text-dark">Excused</span>
-                            {% elif r.attended and r.score is not none and r.score >= pass_threshold %}
+                            {% elif r.attended and pct is not none and pct >= pass_threshold %}
                                 <span class="badge bg-success">Complete</span>
                             {% else %}
                                 <span class="badge bg-danger">Incomplete</span>
