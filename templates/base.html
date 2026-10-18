@@ -269,40 +269,66 @@
             color: #64748b;
         }
 
+        .sidebar-toggle {
+            background: transparent;
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, .35);
+            border-radius: 8px;
+            line-height: 1;
+            padding: .3rem .55rem;
+            font-size: 1.15rem;
+            cursor: pointer;
+            flex: 0 0 auto;
+        }
+
+        .sidebar-toggle:hover,
+        .sidebar-toggle:focus {
+            background: rgba(255, 255, 255, .12);
+        }
+
+        /* Collapsed state: the sidebar narrows to a rail holding only the
+           hamburger. It stays on the side; nothing moves to the top. */
+        .sidebar.is-collapsed {
+            width: 58px;
+            padding-left: .5rem;
+            padding-right: .5rem;
+        }
+
+        .sidebar.is-collapsed .sidebar-body,
+        .sidebar.is-collapsed .brand-text {
+            display: none;
+        }
+
+        .sidebar.is-collapsed .brand {
+            border-bottom: 0 !important;
+            padding-bottom: 0 !important;
+            margin-bottom: 0 !important;
+            justify-content: center;
+        }
+
         @media (max-width: 991.98px) {
-            /* Mobile: the sidebar becomes a compact strip at the top.
-               The menu turns into a horizontally scrolling row of tabs
-               so the page content starts near the top of the screen
-               instead of below a full screen of navigation.
-               CSS only - the markup is identical at every width. */
+            /* The sidebar stays on the side at every width. Below this
+               breakpoint it defaults to the narrow rail, so the page content
+               starts immediately to its right rather than below a stacked
+               menu. Bootstrap gives .row > * a width of 100%, which is what
+               pushed the sidebar onto its own line, so the column is pinned
+               to its content width here. */
+            .sidebar-col {
+                width: auto !important;
+                flex: 0 0 auto !important;
+                max-width: none !important;
+            }
+
             .sidebar {
-                position: relative;
-                width: 100%;
-                min-height: auto;
-                padding: .75rem 1rem;
+                position: sticky;
+                top: 0;
+                min-height: 100vh;
             }
 
-            .sidebar .brand {
-                padding-bottom: .5rem !important;
-                margin-bottom: .5rem !important;
-            }
-
-            .sidebar nav.nav.flex-column {
-                flex-direction: row !important;
-                flex-wrap: nowrap;
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
-                gap: .25rem;
-                padding-bottom: .25rem;
-            }
-
-            .sidebar nav.nav.flex-column .nav-link {
-                white-space: nowrap;
-                padding: .5rem .75rem;
-            }
-
-            .sidebar hr {
-                display: none;
+            /* Expanded on a narrow screen: keep it usable but leave room. */
+            .sidebar:not(.is-collapsed) {
+                width: 210px;
+                padding: 1rem .75rem;
             }
 
             .content-shell {
@@ -337,11 +363,18 @@
     {% if current_user.is_authenticated %}
     <div class="container-fluid px-0">
         <div class="row g-0 min-vh-100">
-            <div class="col-lg-auto">
-                <aside class="sidebar">
-                    <div class="brand border-bottom pb-3 mb-3 text-uppercase">
-                        DECA Tracker
+            <div class="col-lg-auto sidebar-col">
+                <aside class="sidebar" id="appSidebar">
+                    <div class="brand border-bottom pb-3 mb-3 d-flex align-items-center justify-content-between gap-2">
+                        <span class="brand-text text-uppercase">DECA Tracker</span>
+                        <button class="sidebar-toggle" type="button" id="sidebarToggle"
+                                aria-expanded="true" aria-controls="sidebarBody"
+                                aria-label="Toggle menu" title="Toggle menu">
+                            <i class="bi bi-list"></i>
+                        </button>
                     </div>
+
+                    <div class="sidebar-body" id="sidebarBody">
                     {# ── Notification bell ── #}
                     <div class="dropdown mt-2 mb-2">
                         <button class="notif-btn"
@@ -541,6 +574,7 @@
                     >
                         Logout
                     </a>
+                    </div>{# /#sidebarBody #}
                 </aside>
             </div>
 
@@ -691,5 +725,41 @@
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+/* Collapse the sidebar to a narrow rail. Plain class toggle, no Bootstrap
+   collapse involved. The choice is remembered per browser. */
+(function () {
+    try {
+        var sidebar = document.getElementById('appSidebar');
+        var button = document.getElementById('sidebarToggle');
+        if (!sidebar || !button) { return; }
+
+        var KEY = 'decaSidebarCollapsed';
+
+        function paint(collapsed) {
+            sidebar.classList.toggle('is-collapsed', collapsed);
+            button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        }
+
+        var saved = null;
+        try { saved = window.localStorage.getItem(KEY); } catch (e) { saved = null; }
+
+        /* With no saved choice, start collapsed on narrow screens so a phone
+           opens to the rail, and expanded on a wide screen. */
+        var startCollapsed = (saved === null)
+            ? window.matchMedia('(max-width: 991.98px)').matches
+            : (saved === '1');
+        paint(startCollapsed);
+
+        button.addEventListener('click', function () {
+            var collapsed = !sidebar.classList.contains('is-collapsed');
+            paint(collapsed);
+            try { window.localStorage.setItem(KEY, collapsed ? '1' : '0'); } catch (e) { /* ignore */ }
+        });
+    } catch (err) {
+        /* Sidebar stays expanded. */
+    }
+})();
+</script>
 </body>
 </html>

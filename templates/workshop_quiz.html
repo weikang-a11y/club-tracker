@@ -76,7 +76,7 @@
                 <option value="{{ d.strftime('%Y-%m-%d') }}"
                         data-month="{{ d.strftime('%Y-%m') }}"
                     {% if selected_date and d == selected_date %}selected{% endif %}>
-                    {{ d.strftime('%-d') }}
+                    {{ d.day }}
                 </option>
                 {% endfor %}
             </select>
@@ -139,14 +139,14 @@
 <div class="card">
     <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-            <h5 class="fw-semibold mb-0">{{ selected_date.strftime('%B %-d, %Y') }}</h5>
+            <h5 class="fw-semibold mb-0">{{ selected_date.strftime('%B') }} {{ selected_date.day }}, {{ selected_date.year }}</h5>
             {% if active_view == 'admin' and results %}
             <form method="POST" action="{{ url_for('workshop_quiz_delete_session') }}"
                   class="js-confirm-form d-inline">
                 <input type="hidden" name="session_date" value="{{ selected_date.strftime('%Y-%m-%d') }}">
                 <button type="button" class="btn btn-sm btn-outline-danger js-open-confirm"
                     data-confirm-title="Delete Session"
-                    data-confirm-message="Delete ALL quiz results for {{ selected_date.strftime('%B %-d, %Y') }}? This cannot be undone."
+                    data-confirm-message="Delete ALL quiz results for {{ selected_date.strftime('%B') }} {{ selected_date.day }}, {{ selected_date.year }}? This cannot be undone."
                     data-confirm-btn-text="Delete"
                     data-confirm-btn-class="btn-danger">
                     Delete Quiz Data
