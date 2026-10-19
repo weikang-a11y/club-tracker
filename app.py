@@ -2365,7 +2365,7 @@ with app.app_context():
     # Migrate: add grade column to commitment
     _ensure_column('commitment', 'grade', 'VARCHAR(10)')
 
-        # Migrate: change exam columns to FLOAT for partial-credit support (0.5 = half credit)
+    # Migrate: change exam columns to FLOAT for partial-credit support (0.5 = half credit)
     if db.engine.dialect.name != 'sqlite':
         try:
             commitment_col_types = {
