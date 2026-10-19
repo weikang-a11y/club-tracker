@@ -245,7 +245,10 @@
                                   {{ 'Novice' if row.level == 'N' else 'Experienced' }}
                               </span>
                           </td>
-                          <td>{{ row.event or '—' }}</td>
+                          <td>
+                            <div>{{ row.event or '—' }}</div>
+                            {% if row.roleplay_event %}<small class="text-muted">RP: {{ row.roleplay_event }}</small>{% endif %}
+                          </td>
                           <td>{{ row.ah_present }} / {{ row.ah_total }}</td>
                           <td>{{ row.ah_excused }}</td>
                           <td>{{ row.ws_present }} / {{ row.ws_total }}</td>
@@ -723,6 +726,9 @@ function resetAhWsFilters() {
                   <h4 class="mb-1">
                       My {{ progress_summary.event if progress_summary and progress_summary.event else '' }} Commitment Progress
                   </h4>
+                  {% if progress_summary and progress_summary.roleplay_event %}
+                  <p class="text-muted small mb-0">Roleplay event: {{ progress_summary.roleplay_event }}</p>
+                  {% endif %}
                   <p class="text-muted mb-0">Track what you have completed and what is still remaining.</p>
               </div>
               {% if progress_summary %}
