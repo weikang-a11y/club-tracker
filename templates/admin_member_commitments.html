@@ -188,7 +188,10 @@
                                {{ 'Novice' if row.level == 'N' else 'Experienced' }}
 </span>
 </td>
-<td>{{ row.event or '—' }}</td>
+<td>
+    <div>{{ row.event or '—' }}</div>
+    {% if row.roleplay_event %}<small class="text-muted">RP: {{ row.roleplay_event }}</small>{% endif %}
+</td>
                        {% for conf in ['VCMC', 'SVCDC', 'SCDC'] %}
                        {% set c = row.conferences[conf] %}
 <td class="text-center small">
