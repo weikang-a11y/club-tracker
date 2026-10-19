@@ -1695,6 +1695,15 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                     checklist_items_by_key[item_key] = item
                 item.completed = completed
                 checklist_items_updated += 1
+        return {
+        'matched_members': len(matched_user_ids),
+        'pods_updated': pods_updated,
+        'commitments_updated': commitments_updated,
+        'checklist_items_updated': checklist_items_updated,
+        'unmatched_members': unmatched_members,
+        'members_without_completion': members_without_completion,
+        'unmatched_mentors': unmatched_mentors,
+    }
 # ── Notification helper ──────────────────────────────────────────────────────
 
 def create_notification(user_id, message):
