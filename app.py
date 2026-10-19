@@ -272,6 +272,25 @@ REMOVED_ADMIN_ACCESS_KEY = "2026-27-remove-admin-access-aryahi-olivia-zihan-v1"
 
 GRANT_ARYAHI_ADMIN_KEY = "2026-27-grant-aryahi-admin-v1"
 
+GRANT_ZIHAN_ADMIN_KEY = "2026-27-grant-zihan-admin-v1"
+
+def grant_zihan_admin():
+    if db.session.get(DataMigration, GRANT_ZIHAN_ADMIN_KEY):
+        return
+    user = User.query.filter(
+        db.func.lower(User.username) == 'zihan.liu'
+    ).first()
+    if user:
+        user.is_admin = True
+        user.has_officer_access = True
+        user.role = 'officer'
+    db.session.add(DataMigration(
+        key=GRANT_ZIHAN_ADMIN_KEY,
+        details='Granted admin access to zihan.liu',
+    ))
+    db.session.commit()
+    print('[Admin Grant] zihan.liu granted admin access.')
+
 def grant_aryahi_admin():
     if db.session.get(DataMigration, GRANT_ARYAHI_ADMIN_KEY):
         return
@@ -288,6 +307,8 @@ def grant_aryahi_admin():
     ))
     db.session.commit()
     print('[Admin Grant] aryahi.sharma granted admin access.')
+
+
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -2523,6 +2544,7 @@ with app.app_context():
     try:
         if not SKIP_STARTUP_WORK:
             grant_aryahi_admin()
+            grant_zihan_admin()
     except Exception as exc:
         db.session.rollback()
         print(f'[Admin Grant] skipped: {exc}')
@@ -5445,8 +5467,8 @@ QUIZ_PASS_THRESHOLD = 80.0
 @app.route('/workshop_quiz')
 @login_required
 def workshop_quiz():
-    if not (is_officer_view() or is_admin_view()):
-        flash('Only officers/admins can view quiz results.', 'danger')
+    if not is_admin_view():
+        flash('Only admins can view quiz results.', 'danger')
         return redirect(url_for('dashboard'))
 
     quiz_dates = {
@@ -5519,8 +5541,8 @@ def workshop_quiz():
 @app.route('/workshop_quiz/upload', methods=['POST'])
 @login_required
 def workshop_quiz_upload():
-    if not (is_officer_view() or is_admin_view()):
-        flash('Only officers/admins can upload quiz results.', 'danger')
+    if not is_admin_view():
+        flash('Only admins can upload quiz results.', 'danger')
         return redirect(url_for('workshop_quiz'))
 
     session_date_str = request.form.get('session_date', '').strip()
