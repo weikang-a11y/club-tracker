@@ -4961,7 +4961,7 @@ def admin_import_commitments():
 
         stats = import_mdp_tracking_workbook(
             temporary_path,
-            commitments_only=True,
+            commitments_only=False,
         )
         log_mdp_action(
             current_user.id,
