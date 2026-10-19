@@ -1695,7 +1695,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                     checklist_items_by_key[item_key] = item
                 item.completed = completed
                 checklist_items_updated += 1
-        return {
+    return {
         'matched_members': len(matched_user_ids),
         'pods_updated': pods_updated,
         'commitments_updated': commitments_updated,
