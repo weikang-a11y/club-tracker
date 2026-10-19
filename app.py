@@ -1573,7 +1573,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         status = _spreadsheet_text(_row_value(row, status_col))
         level = 'E' if status.lower() == 'experienced' else 'N'
         event = _spreadsheet_event_key(_row_value(row, pod_event_col))
-        roleplay_event = _spreadsheet_event_key(_row_value(row, pod_roleplay_event_col)) or None
+        roleplay_event = _row_value(row, pod_roleplay_event_col) or None
         year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
         if not commitments_only:
             if email and not member.email:
