@@ -142,13 +142,14 @@
 <th>Status</th>
 <th>Mentor</th>
 <th>Level</th>
-<th>Event</th>
+<th>Written Event</th>
+<th>Roleplay Event</th>
 <th colspan="3" class="text-center">VCMC</th>
 <th colspan="3" class="text-center">SVCDC</th>
 <th colspan="3" class="text-center">SCDC</th>
 </tr>
 <tr class="table-light" style="border-top: none;">
-<th colspan="5"></th>
+<th colspan="6"></th>
 <th class="text-center small">RP</th>
 <th class="text-center small">EX</th>
 <th class="text-center small">WR</th>
@@ -188,10 +189,8 @@
                                {{ 'Novice' if row.level == 'N' else 'Experienced' }}
 </span>
 </td>
-<td>
-    <div>{{ row.event or '—' }}</div>
-    {% if row.roleplay_event %}<small class="text-muted">RP: {{ row.roleplay_event }}</small>{% endif %}
-</td>
+<td>{{ row.event or '—' }}</td>
+<td>{{ row.roleplay_event or '—' }}</td>
                        {% for conf in ['VCMC', 'SVCDC', 'SCDC'] %}
                        {% set c = row.conferences[conf] %}
 <td class="text-center small">
@@ -218,7 +217,7 @@
                        {% endfor %}
 </tr>
                    {% else %}
-<tr><td colspan="14" class="text-muted text-center py-4">No members found.</td></tr>
+<tr><td colspan="15" class="text-muted text-center py-4">No members found.</td></tr>
                    {% endfor %}
 </tbody>
 </table>
@@ -382,5 +381,3 @@ function resetFilters() {
 
 
 {% endblock %}
-
-
