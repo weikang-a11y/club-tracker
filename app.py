@@ -2373,9 +2373,11 @@ with app.app_context():
                 ChecklistRequirement.__table__.drop(db.engine, checkfirst=True)
                 ChecklistRequirement.__table__.create(db.engine, checkfirst=True)
                 print('[Migration] rebuilt checklist_requirement with corrected columns.')
-    except Exception as exc:
-        db.session.rollback()
-        print(f'[Migration] checklist_requirement rebuild skipped: {exc}')
+        except Exception as exc:
+            import traceback
+            db.session.rollback()
+            print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
+            traceback.print_exc()
 
     # Migrate: add is_competing to user
     _ensure_column('user', 'is_competing', 'BOOLEAN DEFAULT TRUE')
