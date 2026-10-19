@@ -2374,10 +2374,8 @@ with app.app_context():
                 ChecklistRequirement.__table__.create(db.engine, checkfirst=True)
                 print('[Migration] rebuilt checklist_requirement with corrected columns.')
         except Exception as exc:
-            import traceback
             db.session.rollback()
-            print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
-            traceback.print_exc()
+            print(f'[Migration] checklist_requirement rebuild failed: {exc}')
 
     # Migrate: add is_competing to user
     _ensure_column('user', 'is_competing', 'BOOLEAN DEFAULT TRUE')
@@ -4987,10 +4985,10 @@ def admin_import_commitments():
         )
         db.session.commit()
     except Exception as exc:
+        import traceback
         db.session.rollback()
         print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
-        flash('The import failed. Check the Railway deployment logs for details.', 'danger')
-        return redirect(url_for('checklist_completion'))
+        traceback.print_exc()
     finally:
         if temporary_path:
             try:
