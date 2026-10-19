@@ -1401,7 +1401,7 @@ def normalize_stored_conference_grades():
 
 def import_mdp_tracking_workbook(path, commitments_only=False):
     """Synchronize matched members from the MDP workbook transactionally."""
-    wanted_sheets = set(EVENT_TABS) | {
+    wanted_sheets = {tab for tab, _ in EVENT_TABS} | {
         'Pods (VIEW ONLY)',
         'Mentee Commitment TrackingMDP',
     }
@@ -1440,7 +1440,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
     completion_by_identity = {}
     written_requirements = {}
     written_completion = {}
-    for tab in EVENT_TABS:
+    for tab, _ in EVENT_TABS:
         rows = sheets[tab]
         if not rows:
             continue
