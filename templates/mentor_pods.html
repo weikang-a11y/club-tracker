@@ -249,6 +249,10 @@
                             {{ pod.event or 'No Event' }}
                         </span>
 
+                        <span class="badge bg-secondary">
+                            RP: {{ pod.roleplay_event or '—' }}
+                        </span>
+
                         <span class="badge {{ 'bg-warning text-dark' if pod.member.is_competing else 'bg-secondary' }}">
                             {{ 'Competing' if pod.member.is_competing else 'Non-Compete' }}
                         </span>
