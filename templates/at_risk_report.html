@@ -97,7 +97,8 @@
              onkeyup="applyRiskFilters()">
     </div>
 
-    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetRiskFilters()">Clear</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetRiskFilters()">Clear</button>
+
   </div>
 </div>
 
@@ -134,6 +135,7 @@
             <td>{{ row.mentor_name }}</td>
             <td>
               <div>{{ row.event }}</div>
+              {% if row.roleplay_event %}<div class="text-muted small">RP: {{ row.roleplay_event }}</div>{% endif %}
               <small class="text-muted">{{ 'Novice' if row.level == 'N' else 'Experienced' }}</small>
             </td>
             <td>
