@@ -436,6 +436,7 @@ class MentorPod(db.Model):
     event = db.Column(db.String(50), nullable=True)
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
+    roleplay_event = db.Column(db.String(50), nullable=True)
 
 
 class PracticeSession(db.Model):
@@ -1487,6 +1488,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
     status_col = _header_index(pod_headers, 'Status')
     years_col = _header_index(pod_headers, 'Years in DECA')
     pod_event_col = _header_index(pod_headers, 'Event')
+    pod_roleplay_event_col = _header_index(pod_headers, 'Roleplay')
     legal_name_col = _header_index(pod_headers, 'Legal name', 'Legal Name')
 
     all_users = User.query.all()
@@ -1571,6 +1573,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         status = _spreadsheet_text(_row_value(row, status_col))
         level = 'E' if status.lower() == 'experienced' else 'N'
         event = _spreadsheet_event_key(_row_value(row, pod_event_col))
+        roleplay_event = _spreadsheet_event_key(_row_value(row, pod_roleplay_event_col)) or None
         year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
         if not commitments_only:
             if email and not member.email:
@@ -1588,6 +1591,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                 pod.experience_level = level
                 pod.year_in_deca = year_in_deca
                 pod.event = event or None
+                pod.roleplay_event = roleplay_event
                 pod_number = _spreadsheet_number(_row_value(row, pod_number_col))
                 if pod_number:
                     pod.pod_number = pod_number
