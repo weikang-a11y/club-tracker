@@ -193,7 +193,7 @@ OFFICER_ROSTER_2026_27 = [
     ("Philina Chen", "Officer, Admin"),
     ("Natalie Zhang", "Officer"),
     ("Melody Leong", "Officer"),
-    ("Aryahi Sharma", "Officer", "Admin"),
+    ("Aryahi Sharma", "Officer, Admin"),
     ("Olivia Kang", "Officer"),
     ("Zihan Liu", "Officer"),
     ("Aaron Vu", "Admin, Officer"),
@@ -2240,10 +2240,18 @@ def _backfill_column(table, source, destination):
     except Exception:
         db.session.rollback()
 
+def add_roleplay_event_column():
+    with db.engine.connect() as conn:
+        conn.execute(sql_text(
+            'ALTER TABLE mentor_pod ADD COLUMN IF NOT EXISTS roleplay_event VARCHAR(50)'
+        ))
+        conn.commit()
+    print('[Migration] mentor_pod.roleplay_event column ensured.')
 
 with app.app_context():
     db.create_all()
 
+    add_roleplay_event_column()
     engine_name = db.engine.dialect.name
     cols = {c['name'] for c in db.inspect(db.engine).get_columns('workshop')}
     if 'creator_id' not in cols:
