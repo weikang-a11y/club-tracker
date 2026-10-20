@@ -173,7 +173,7 @@
 </span>
 </td>
 <td>{{ row.event or '—' }}</td>
-<td>{{ row.roleplay_event.split('(')[-1].replace(')', '').strip() if row.roleplay_event else '—' }}</td>
+<td>{{ row.roleplay_event_code or '—' }}</td>
                        {% for conf in ['VCMC', 'SVCDC', 'SCDC'] %}
                        {% set c = row.conferences[conf] %}
 <td class="text-center small">
@@ -328,4 +328,3 @@ function resetFilters() {
 }
 </script>
 {% endblock %}
-
