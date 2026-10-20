@@ -135,9 +135,10 @@
             <td>
               <div>{{ row.event }}</div>
               <small class="text-muted">{{ 'Novice' if row.level == 'N' else 'Experienced' }}</small>
-              {% if row.roleplay_event %}
-                <div><small class="text-muted">{{ roleplay_code(row.roleplay_event) }}</small></div>
+              {% if row.roleplay_event_code %}
+                <div><small class="text-muted">{{ row.roleplay_event_code }}</small></div>
               {% endif %}
+
             </td>
 
             
