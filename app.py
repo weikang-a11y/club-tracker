@@ -1574,14 +1574,9 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         level = 'E' if status.lower() == 'experienced' else 'N'
         event = _spreadsheet_event_key(_row_value(row, pod_event_col))
         raw = _spreadsheet_text(
-             _row_value(row, pod_roleplay_event_col)
-         )
-         match = re.search(r'([()]*)\s*$', raw)
-         roleplay_event = (
-             match.group(1).strip()
-             if match
-             else (raw or None)
-         )
+            _row_value(row, pod_roleplay_event_col)
+        )
+        roleplay_event = raw or None
 
 
         year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
