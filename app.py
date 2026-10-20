@@ -1098,15 +1098,14 @@ def _spreadsheet_text(value):
 
 def _roleplay_code(value):
     text = _spreadsheet_text(value)
-    if not text:
-        return ''
-
     text = re.sub(r'^\s*RP\s*:\s*', '', text, flags=re.IGNORECASE)
-    match = re.search(r'([()]*)\s*$', text)
-    return match.group(1).strip() if match else text
 
+    # Match the extraction used on Mentor Pods:
+    # "Human Resources Management (HRM)" becomes "HRM".
+    if '(' in text:
+        return text.rsplit('(', 1)[-1].replace(')', '').strip()
 
-
+    return text
 
 @app.context_processor
 def inject_roleplay_code_helper():
