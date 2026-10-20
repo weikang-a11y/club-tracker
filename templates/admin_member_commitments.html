@@ -20,15 +20,11 @@
 </div>
 </div>
 </div>
-
-
 {% with messages = get_flashed_messages(with_categories=true) %}
  {% for category, message in messages %}
 <div class="alert alert-{{ category }} py-2">{{ message }}</div>
  {% endfor %}
 {% endwith %}
-
-
 {# ── Summary cards ─────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
    <div class="col-md-3">
@@ -69,8 +65,6 @@
        </div>
    </div>
 </div>
-
-
 {# ── Filter Controls ─────────────────────────────────────────── #}
 <div class="mb-4">
     <div class="d-flex gap-2 flex-wrap align-items-end">
@@ -79,7 +73,6 @@
                    class="form-label small mb-1">
                 Filter by:
             </label>
-
             <select id="filterTypeSelect"
                     class="form-select w-auto"
                     onchange="updateFilterOptions()">
@@ -92,33 +85,28 @@
                 <option value="competing">Competing Status</option>
             </select>
         </div>
-
         <div id="filterSearchContainer" style="display:none;">
             <label for="filterSearchInput"
                    class="form-label small mb-1">
                 Search:
             </label>
-
             <input type="search"
                    id="filterSearchInput"
                    class="form-control"
                    placeholder="Type a name…"
                    oninput="applyFilters()">
         </div>
-
         <div id="filterValueContainer" style="display:none;">
             <label for="filterValueSelect"
                    class="form-label small mb-1">
                 Select:
             </label>
-
             <select id="filterValueSelect"
                     class="form-select w-auto"
                     onchange="applyFilters()">
                 <option value="">All</option>
             </select>
         </div>
-
         <button type="button"
                 class="btn btn-sm btn-outline-secondary"
                 onclick="resetFilters()">
@@ -126,11 +114,6 @@
         </button>
     </div>
 </div>
-
-
-
-
-
 {# ── Members Table ─────────────────────────────────────────── #}
 <div class="card border-0 shadow-sm rounded-4">
 <div class="card-body p-0">
@@ -190,7 +173,7 @@
 </span>
 </td>
 <td>{{ row.event or '—' }}</td>
-<td>{{ row.roleplay_event or '—' }}</td>
+<td>{{ row.roleplay_event.split('(')[-1].replace(')', '').strip() if row.roleplay_event else '—' }}</td>
                        {% for conf in ['VCMC', 'SVCDC', 'SCDC'] %}
                        {% set c = row.conferences[conf] %}
 <td class="text-center small">
@@ -224,65 +207,50 @@
 </div>
 </div>
 </div>
-
 <script>
 function updateFilterOptions() {
     const filterType =
         document.getElementById('filterTypeSelect').value;
-
     const searchContainer =
         document.getElementById('filterSearchContainer');
-
     const searchInput =
         document.getElementById('filterSearchInput');
-
     const filterValueContainer =
         document.getElementById('filterValueContainer');
-
     const filterValueSelect =
         document.getElementById('filterValueSelect');
-
     searchInput.value = '';
     filterValueSelect.innerHTML =
         '<option value="">All</option>';
-
     if (!filterType) {
         searchContainer.style.display = 'none';
         filterValueContainer.style.display = 'none';
         applyFilters();
         return;
     }
-
     // Member and Mentor use typed searches.
     if (filterType === 'member' || filterType === 'mentor') {
         searchContainer.style.display = 'block';
         filterValueContainer.style.display = 'none';
-
         searchInput.placeholder = filterType === 'member'
             ? 'Search for a member…'
             : 'Search for a mentor…';
-
         searchInput.focus();
         applyFilters();
         return;
     }
-
     // Other filters use dropdown choices.
     searchContainer.style.display = 'none';
     filterValueContainer.style.display = 'block';
-
     const values = new Set();
-
     document.querySelectorAll(
         '#memberCommitmentsTable tbody tr[data-member]'
     ).forEach(row => {
         const value = row.dataset[filterType] || '';
-
         if (value) {
             values.add(value);
         }
     });
-
     const valueMap = {
         status: {
             on_track: 'On Track',
@@ -299,41 +267,31 @@ function updateFilterOptions() {
         },
         event: {}
     };
-
     Array.from(values).sort().forEach(value => {
         const option = document.createElement('option');
         option.value = value;
         option.textContent =
             valueMap[filterType]?.[value] || value;
-
         filterValueSelect.appendChild(option);
     });
-
     applyFilters();
 }
-
-
 function applyFilters() {
     const filterType =
         document.getElementById('filterTypeSelect').value;
-
     const searchValue =
         document.getElementById('filterSearchInput')
         .value
         .trim()
         .toLowerCase();
-
     const filterValue =
         document.getElementById('filterValueSelect').value;
-
     document.querySelectorAll(
         '#memberCommitmentsTable tbody tr[data-member]'
     ).forEach(row => {
         const rowValue =
             row.dataset[filterType] || '';
-
         let show = true;
-
         if (filterType === 'member' || filterType === 'mentor') {
             show =
                 !searchValue ||
@@ -343,33 +301,25 @@ function applyFilters() {
                 !filterValue ||
                 rowValue === filterValue;
         }
-
         row.style.display = show ? 'table-row' : 'none';
     });
 }
-
-
 function resetFilters() {
     document.getElementById(
         'filterTypeSelect'
     ).value = '';
-
     document.getElementById(
         'filterSearchInput'
     ).value = '';
-
     document.getElementById(
         'filterValueSelect'
     ).value = '';
-
     document.getElementById(
         'filterSearchContainer'
     ).style.display = 'none';
-
     document.getElementById(
         'filterValueContainer'
     ).style.display = 'none';
-
     document.querySelectorAll(
         '#memberCommitmentsTable tbody tr[data-member]'
     ).forEach(row => {
@@ -377,7 +327,5 @@ function resetFilters() {
     });
 }
 </script>
-
-
-
 {% endblock %}
+
