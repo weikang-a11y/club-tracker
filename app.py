@@ -1107,6 +1107,8 @@ def _roleplay_code(value):
 
     return text
 
+
+
 @app.context_processor
 def inject_roleplay_code_helper():
     return {'roleplay_code': _roleplay_code}
