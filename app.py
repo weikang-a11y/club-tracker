@@ -2409,19 +2409,22 @@ with app.app_context():
     # Migrate: add grade column to commitment
     _ensure_column('commitment', 'grade', 'VARCHAR(10)')
 
-        # Migrate: change exam columns to FLOAT for partial-credit support (0.5 = half credit)
+    # Migrate: change exam columns to FLOAT for partial-credit support
     if db.engine.dialect.name != 'sqlite':
         try:
             commitment_col_types = {
-                c['name']: str(c['type'])
-                for c in db.inspect(db.engine).get_columns('commitment')
+                column['name']: str(column['type']).upper()
+                for column in db.inspect(db.engine).get_columns('commitment')
             }
-            for col in ('remaining_exam', 'required_exam'):
-                if 'FLOAT' not in commitment_col_types.get(col, '').upper() and \
-                   'DOUBLE' not in commitment_col_types.get(col, '').upper():
+
+            for column in ('remaining_exam', 'required_exam'):
+                column_type = commitment_col_types.get(column, '')
+                if 'FLOAT' not in column_type and 'DOUBLE' not in column_type:
                     db.session.execute(sql_text(
-                        f'ALTER TABLE commitment ALTER COLUMN {col} TYPE FLOAT USING {col}::float'
+                        f'ALTER TABLE commitment ALTER COLUMN {column} '
+                        f'TYPE FLOAT USING {column}::float'
                     ))
+
             db.session.commit()
         except Exception as exc:
             db.session.rollback()
