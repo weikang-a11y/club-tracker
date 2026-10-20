@@ -1098,13 +1098,14 @@ def _spreadsheet_text(value):
 
 def _roleplay_code(value):
     text = _spreadsheet_text(value)
+    if not text:
+        return ''
 
-    # Remove an existing RP: prefix, if one is stored in the database.
     text = re.sub(r'^\s*RP\s*:\s*', '', text, flags=re.IGNORECASE)
-
-    # For values like "Human Resources Management (HRM)", return "HRM".
     match = re.search(r'([()]*)\s*$', text)
     return match.group(1).strip() if match else text
+
+
 
 
 @app.context_processor
