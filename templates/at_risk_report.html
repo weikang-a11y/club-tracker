@@ -135,9 +135,12 @@
             <td>
               <div>{{ row.event }}</div>
               <small class="text-muted">{{ 'Novice' if row.level == 'N' else 'Experienced' }}</small>
+              {% if row.roleplay_event %}
+                <div><small class="text-muted">{{ roleplay_code(row.roleplay_event) }}</small></div>
+              {% endif %}
             </td>
-            <td>{{ row.roleplay_event or '—' }}</td>
 
+            
             <td>
               {% if row.status == 'at_risk' %}
                 <span class="badge bg-danger">At Risk</span>
