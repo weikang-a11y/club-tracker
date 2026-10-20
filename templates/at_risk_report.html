@@ -111,7 +111,6 @@
             <th>Member</th>
             <th>Mentor</th>
             <th>Written / Level</th>
-            <th>Roleplay Event</th>
             <th>Status</th>
             <th>Reasons</th>
             <th>Attendance</th>
@@ -136,10 +135,8 @@
             <td>
               <div>{{ row.event }}</div>
               <small class="text-muted">{{ 'Novice' if row.level == 'N' else 'Experienced' }}</small>
-            {% if row.roleplay_event %}
-              <div><small class="text-muted">{{ roleplay_code(row.roleplay_event) }}</small></div>
-            {% endif %}
             </td>
+            <td>{{ row.roleplay_event or '—' }}</td>
 
             <td>
               {% if row.status == 'at_risk' %}
