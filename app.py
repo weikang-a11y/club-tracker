@@ -3360,6 +3360,12 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             'grades': conference['grades'],
             'conference': conference,
             'written': written,
+            'roleplay_event_code': (
+                _roleplay_code(pod.roleplay_event)
+                if pod and pod.roleplay_event else ''
+            ),
+
+
         })
     return rows
 
