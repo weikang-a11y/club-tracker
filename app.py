@@ -1573,9 +1573,17 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         status = _spreadsheet_text(_row_value(row, status_col))
         level = 'E' if status.lower() == 'experienced' else 'N'
         event = _spreadsheet_event_key(_row_value(row, pod_event_col))
-        raw = _row_value(row, pod_roleplay_event_col) or ''
-        m = re.search(r'\(([^)]+)\)$', raw.strip())
-        roleplay_event = m.group(1) if m else (raw or None)
+        raw = _spreadsheet_text(
+             _row_value(row, pod_roleplay_event_col)
+         )
+         match = re.search(r'([()]*)\s*$', raw)
+         roleplay_event = (
+             match.group(1).strip()
+             if match
+             else (raw or None)
+         )
+
+
         year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
         if not commitments_only:
             if email and not member.email:
@@ -2373,9 +2381,9 @@ with app.app_context():
                 ChecklistRequirement.__table__.drop(db.engine, checkfirst=True)
                 ChecklistRequirement.__table__.create(db.engine, checkfirst=True)
                 print('[Migration] rebuilt checklist_requirement with corrected columns.')
-        except Exception as exc:
-            db.session.rollback()
-            print(f'[Migration] checklist_requirement rebuild failed: {exc}')
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Migration] checklist_requirement rebuild failed: {exc}')
 
     # Migrate: add is_competing to user
     _ensure_column('user', 'is_competing', 'BOOLEAN DEFAULT TRUE')
