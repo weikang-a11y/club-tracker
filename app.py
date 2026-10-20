@@ -436,7 +436,7 @@ class MentorPod(db.Model):
     event = db.Column(db.String(50), nullable=True)
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
-    roleplay_event = db.Column(db.String(50), nullable=True)
+    roleplay_event = db.Column(db.String(100), nullable=True)
 
 
 class PracticeSession(db.Model):
@@ -1366,6 +1366,78 @@ def _format_spreadsheet_grade(value):
     formatted = f'{number:.3f}'.rstrip('0').rstrip('.')
     return f'{formatted}%'
 
+def import_roleplay_events_from_attendance_workbook(path):
+    sheets = _read_xlsx_sheets(path, {'AH Attendance'})
+    rows = sheets['AH Attendance']
+
+    if not rows:
+        raise RuntimeError('AH Attendance sheet is empty.')
+
+    headers = rows[0]
+    email_col = _header_index(headers, 'Email')
+    roleplay_col = _header_index(headers, 'Roleplay')
+
+    if email_col is None or roleplay_col is None:
+        raise RuntimeError(
+            'AH Attendance must contain Email and Roleplay columns.'
+        )
+
+    users = User.query.all()
+    users_by_username = {user.username.lower(): user for user in users}
+    users_by_email = {
+        _spreadsheet_key(user.email): user
+        for user in users
+        if user.email
+    }
+    pods_by_member = {
+        pod.member_id: pod
+        for pod in MentorPod.query.all()
+    }
+
+    stats = {
+        'matched': 0,
+        'updated': 0,
+        'unmatched': [],
+        'without_pod': [],
+        'blank': [],
+    }
+
+    for row in rows[1:]:
+        email = _spreadsheet_key(_row_value(row, email_col))
+        roleplay_event = _spreadsheet_text(
+            _row_value(row, roleplay_col)
+        )
+
+        if not email:
+            continue
+
+        member = _find_spreadsheet_user(
+            '',
+            email,
+            users_by_username,
+            users_by_email,
+        )
+
+        if not member:
+            stats['unmatched'].append(email)
+            continue
+
+        if not roleplay_event:
+            stats['blank'].append(member.username)
+            continue
+
+        pod = pods_by_member.get(member.id)
+        if not pod:
+            stats['without_pod'].append(member.username)
+            continue
+
+        stats['matched'] += 1
+        if pod.roleplay_event != roleplay_event:
+            pod.roleplay_event = roleplay_event
+            stats['updated'] += 1
+
+    return stats
+
 
 
 def normalize_stored_conference_grades():
@@ -2257,10 +2329,20 @@ def _backfill_column(table, source, destination):
 def add_roleplay_event_column():
     with db.engine.connect() as conn:
         conn.execute(sql_text(
-            'ALTER TABLE mentor_pod ADD COLUMN IF NOT EXISTS roleplay_event VARCHAR(50)'
+            'ALTER TABLE mentor_pod '
+            'ADD COLUMN IF NOT EXISTS roleplay_event VARCHAR(100)'
         ))
+
+        if db.engine.dialect.name == 'postgresql':
+            conn.execute(sql_text(
+                'ALTER TABLE mentor_pod '
+                'ALTER COLUMN roleplay_event TYPE VARCHAR(100)'
+            ))
+
         conn.commit()
+
     print('[Migration] mentor_pod.roleplay_event column ensured.')
+
 
 with app.app_context():
     db.create_all()
@@ -4970,9 +5052,69 @@ def admin_import_commitments():
 
     temporary_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temporary_file:
+        with tempfile.NamedTemporaryFile(
+            suffix='.xlsx',
+            delete=False,
+        ) as temporary_file:
             temporary_path = temporary_file.name
+
         form.workbook.data.save(temporary_path)
+
+        try:
+            _read_xlsx_sheets(temporary_path, {'AH Attendance'})
+            is_attendance_workbook = True
+        except RuntimeError as exc:
+            if 'missing sheet(s): AH Attendance' not in str(exc):
+                raise
+            is_attendance_workbook = False
+
+        if is_attendance_workbook:
+            stats = import_roleplay_events_from_attendance_workbook(
+                temporary_path
+            )
+            db.session.commit()
+
+            log_mdp_action(
+                current_user.id,
+                'workbook_import',
+                'roleplay_events',
+                details=(
+                    f"Matched {stats['matched']}; "
+                    f"updated {stats['updated']}; "
+                    f"unmatched {len(stats['unmatched'])}; "
+                    f"without pod {len(stats['without_pod'])}"
+                ),
+            )
+            db.session.commit()
+
+            flash(
+                f"Roleplay import complete: matched {stats['matched']} "
+                f"members and updated {stats['updated']} roleplay events.",
+                'success',
+            )
+
+            if stats['unmatched']:
+                flash(
+                    'Members not found by email: '
+                    + ', '.join(stats['unmatched']),
+                    'warning',
+                )
+
+            if stats['without_pod']:
+                flash(
+                    'Members without a mentor pod: '
+                    + ', '.join(stats['without_pod']),
+                    'warning',
+                )
+
+            if stats['blank']:
+                flash(
+                    'Members with a blank Roleplay cell: '
+                    + ', '.join(stats['blank']),
+                    'warning',
+                )
+
+            return redirect(url_for('checklist_completion'))
 
         stats = import_mdp_tracking_workbook(
             temporary_path,
@@ -4986,15 +5128,23 @@ def admin_import_commitments():
                 f"Matched {stats['matched_members']}; "
                 f"commitments {stats['commitments_updated']}; "
                 f"unmatched {len(stats['unmatched_members'])}; "
-                f"missing completion {len(stats['members_without_completion'])}"
+                f"missing completion "
+                f"{len(stats['members_without_completion'])}"
             ),
         )
         db.session.commit()
+
     except Exception as exc:
+        import traceback
         db.session.rollback()
-        print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
+        print(
+            f'[MDP Admin Import] failed: '
+            f'{type(exc).__name__}: {exc}'
+        )
+        traceback.print_exc()
         flash(f'Import failed: {exc}', 'danger')
         return redirect(url_for('checklist_completion'))
+
     finally:
         if temporary_path:
             try:
@@ -5003,22 +5153,27 @@ def admin_import_commitments():
                 pass
 
     flash(
-        f"Import complete: matched {stats['matched_members']} members and updated "
-        f"{stats['commitments_updated']} commitment rows.",
+        f"Import complete: matched {stats['matched_members']} members "
+        f"and updated {stats['commitments_updated']} commitment rows.",
         'success',
     )
+
     if stats['unmatched_members']:
         flash(
-            'Unmatched workbook members: ' + ', '.join(stats['unmatched_members']),
+            'Unmatched workbook members: '
+            + ', '.join(stats['unmatched_members']),
             'warning',
         )
+
     if stats['members_without_completion']:
         flash(
             'Members without completion rows: '
             + ', '.join(stats['members_without_completion']),
             'warning',
         )
+
     return redirect(url_for('checklist_completion'))
+
 
 
 @app.route('/member_commitments')
