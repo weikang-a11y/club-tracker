@@ -4991,10 +4991,10 @@ def admin_import_commitments():
         )
         db.session.commit()
     except Exception as exc:
-        import traceback
         db.session.rollback()
         print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
-        traceback.print_exc()
+        flash(f'Import failed: {exc}', 'danger')
+        return redirect(url_for('checklist_completion'))
     finally:
         if temporary_path:
             try:
