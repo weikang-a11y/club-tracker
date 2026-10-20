@@ -34,36 +34,12 @@
       {% endif %}
   </div>
 </div>
-
-
-
-
-
-
-
-
 {% with messages = get_flashed_messages(with_categories=true) %}
 {% for category, message in messages %}
   <div class="alert alert-{{ category }} py-2">{{ message }}</div>
 {% endfor %}
 {% endwith %}
-
-
-
-
-
-
-
-
 {% if user.role == 'officer' or user.is_admin %}
-
-
-
-
-
-
-
-
   {% set dashboard_stats = namespace(at_risk=0, commitments_complete=0, commitments_incomplete=0, non_compete=0) %}
   {% set event_names = ah_ws_data|selectattr('event')|map(attribute='event')|unique|list %}
   {% for row in ah_ws_data %}
@@ -80,14 +56,6 @@
       {% endif %}
   {% endfor %}
   {% set competing_count = ah_ws_data|length - dashboard_stats.non_compete %}
-
-
-
-
-
-
-
-
   {# ── Summary cards ─────────────────────────────────────────── #}
   <div class="row g-3 mb-4">
       <div class="col-md-3">
@@ -126,21 +94,13 @@
           </div>
       </div>
   </div>
-
-
-
-
-
-
-
-
   {# ── AH / WS Attendance Table ──────────────────────────────── #}
   {% if ah_ws_data %}
   <div class="card mb-4 border-0 shadow-sm rounded-4">
       <div class="card-header bg-white border-bottom p-4 d-flex justify-content-between align-items-center flex-wrap gap-2">
           <div>
-              <h4 class="mb-1">All-Hands &amp; Workshop Attendance</h4>
-              <p class="text-muted mb-0">AH threshold: 100% for all members &nbsp;·&nbsp; WS threshold: 75% Novice / 25% Experienced</p>
+              <h4 class="mb-1">All-Hands & Workshop Attendance</h4>
+              <p class="text-muted mb-0">AH threshold: 100% for all members  ·  WS threshold: 75% Novice / 25% Experienced</p>
               <p class="text-muted small mb-0"><i class="bi bi-info-circle me-1"></i>AH/WS Present does not include excused absences. </p>
           </div>
           <div class="d-flex align-items-end gap-2 flex-wrap">
@@ -167,7 +127,6 @@
                        placeholder="Type a name…"
                        oninput="applyAhWsFilters()">
             </div>
-            
             <div id="ahWsFilterValueContainer" style="display:none;">
                 <label for="ahWsFilterValueSelect" class="form-label small mb-1">
                     Select:
@@ -178,8 +137,6 @@
                     <option value="">All</option>
                 </select>
             </div>
-
-
               <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetAhWsFilters()">Clear</button>
           </div>
       </div>
@@ -212,8 +169,6 @@
                           data-level="{{ row.level }}"
                           data-event="{{ row.event or '' }}"
                           data-competing="{{ 'competing' if row.is_competing else 'non_compete' }}">
-
-
                           <td class="fw-semibold">
                               {{ row.member.username }}
                               {% if row.is_competing %}
@@ -247,7 +202,7 @@
                               </span>
                           </td>
                           <td>{{ row.event or '—' }}</td>
-                          <td>{{ row.roleplay_event or '—' }}</td>
+                          <td>{{ row.roleplay_event.split('(')[-1].replace(')', '').strip() if row.roleplay_event else '—' }}</td>
                           <td>{{ row.ah_present }} / {{ row.ah_total }}</td>
                           <td>{{ row.ah_excused }}</td>
                           <td>{{ row.ws_present }} / {{ row.ws_total }}</td>
@@ -267,22 +222,6 @@
       </div>
   </div>
   {% endif %}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   {# ── Manual attendance confirm modal ───────────────────────── #}
   <div class="modal fade" id="manualAttendanceModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
@@ -301,14 +240,6 @@
           </div>
       </div>
   </div>
-
-
-
-
-
-
-
-
   <script>
   document.addEventListener('DOMContentLoaded', function () {
       const modalElement = document.getElementById('manualAttendanceModal');
@@ -328,108 +259,65 @@
           if (activeForm) activeForm.submit();
       });
   });
-
-
-
-
-
-
-
-
   function getAhWsRowGroups() {
       const table = document.getElementById('ahWsTable');
       if (!table) return [];
       const rows = Array.from(table.querySelectorAll('tbody tr'));
       const groups = [];
-
-
-
-
       for (let i = 0; i < rows.length; i++) {
           const mainRow = rows[i];
           if (mainRow.hasAttribute('data-ahws-detail-row')) {
               continue;
           }
-
-
-
-
           const detailRow = rows[i + 1] && rows[i + 1].hasAttribute('data-ahws-detail-row')
               ? rows[i + 1]
               : null;
-
-
-
-
           groups.push({ mainRow, detailRow });
           if (detailRow) i++;
       }
-
-
-
-
       return groups;
   }
-
-
-
-
-
 function updateAhWsFilterOptions() {
     const filterType =
         document.getElementById('ahWsFilterTypeSelect').value;
-
     const searchContainer =
         document.getElementById('ahWsFilterSearchContainer');
-
     const filterValueContainer =
         document.getElementById('ahWsFilterValueContainer');
-
     const searchInput =
         document.getElementById('ahWsFilterSearch');
-
     const filterValueSelect =
         document.getElementById('ahWsFilterValueSelect');
-
     searchInput.value = '';
     filterValueSelect.innerHTML = '<option value="">All</option>';
-
     if (!filterType) {
         searchContainer.style.display = 'none';
         filterValueContainer.style.display = 'none';
         applyAhWsFilters();
         return;
     }
-
     // Member and Mentor use typed searches.
     if (filterType === 'member' || filterType === 'mentor') {
         searchContainer.style.display = 'block';
         filterValueContainer.style.display = 'none';
-
         searchInput.placeholder = filterType === 'member'
             ? 'Search for a member…'
             : 'Search for a mentor…';
-
         searchInput.focus();
         applyAhWsFilters();
         return;
     }
-
     // All other filter types use dropdown choices.
     searchContainer.style.display = 'none';
     filterValueContainer.style.display = 'block';
-
     const values = new Set();
-
     getAhWsRowGroups().forEach(group => {
         const value =
             group.mainRow.dataset[filterType] || '';
-
         if (value) {
             values.add(value);
         }
     });
-
     const valueMap = {
         attendance: {
             on_track: 'On Track',
@@ -451,39 +339,29 @@ function updateAhWsFilterOptions() {
         },
         event: {}
     };
-
     Array.from(values).sort().forEach(value => {
         const option = document.createElement('option');
         option.value = value;
         option.textContent =
             valueMap[filterType]?.[value] || value;
-
         filterValueSelect.appendChild(option);
     });
-
     applyAhWsFilters();
 }
-
-
 function applyAhWsFilters() {
     const filterType =
         document.getElementById('ahWsFilterTypeSelect').value;
-
     const searchValue =
         document.getElementById('ahWsFilterSearch')
         .value
         .trim()
         .toLowerCase();
-
     const selectedValue =
         document.getElementById('ahWsFilterValueSelect').value;
-
     getAhWsRowGroups().forEach(group => {
         const rowValue =
             group.mainRow.dataset[filterType] || '';
-
         let show = true;
-
         if (filterType === 'member' || filterType === 'mentor') {
             show =
                 !searchValue ||
@@ -493,68 +371,37 @@ function applyAhWsFilters() {
                 !selectedValue ||
                 rowValue === selectedValue;
         }
-
         group.mainRow.style.display =
             show ? 'table-row' : 'none';
-
         if (group.detailRow) {
             group.detailRow.style.display =
                 show ? 'table-row' : 'none';
         }
     });
 }
-
-
 function resetAhWsFilters() {
     document.getElementById(
         'ahWsFilterTypeSelect'
     ).value = '';
-
     document.getElementById(
         'ahWsFilterSearch'
     ).value = '';
-
     document.getElementById(
         'ahWsFilterValueSelect'
     ).value = '';
-
     document.getElementById(
         'ahWsFilterSearchContainer'
     ).style.display = 'none';
-
     document.getElementById(
         'ahWsFilterValueContainer'
     ).style.display = 'none';
-
     applyAhWsFilters();
 }
-
-
-
-
-
-
   </script>
-
-
-
-
-
-
-
-
 {% else %}
 {# ════════════════════════════════════════════════════════════
  MEMBER DASHBOARD
  ════════════════════════════════════════════════════════════ #}
-
-
-
-
-
-
-
-
 {% set rp_done = progress_summary.roleplay.split('/')[0] | int if progress_summary else 0 %}
 {% set rp_req  = progress_summary.roleplay.split('/')[1] | int if progress_summary else 0 %}
 {% set wr_done = progress_summary.written.split('/')[0] | int if progress_summary else 0 %}
@@ -565,14 +412,6 @@ function resetAhWsFilters() {
 {% set total_req  = rp_req + wr_req + ex_req %}
 {% set overall_pct = ((total_done / total_req) * 100) | round(1) if total_req > 0 else 0 %}
 {% set next_ws = workshops[0] if workshops else None %}
-
-
-
-
-
-
-
-
 {# ── Competing status banner ───────────────────────────────── #}
 {% if member_stats and not member_stats.is_competing %}
 <div class="alert alert-secondary d-flex align-items-center gap-2 mb-4" role="alert">
@@ -580,14 +419,6 @@ function resetAhWsFilters() {
   <div>You are marked as <strong>Non-Compete</strong> for this cycle and are not evaluated as at risk.</div>
 </div>
 {% endif %}
-
-
-
-
-
-
-
-
 {# ── Summary cards ─────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
   <div class="col-lg-3 col-md-6">
@@ -631,14 +462,6 @@ function resetAhWsFilters() {
       </div>
   </div>
 </div>
-
-
-
-
-
-
-
-
 {# ── At-risk alert banner ──────────────────────────────────── #}
 {% if member_stats and member_stats.is_competing and member_stats.at_risk %}
 <div class="alert alert-danger d-flex align-items-center gap-2 mb-4" role="alert">
@@ -653,14 +476,6 @@ function resetAhWsFilters() {
   <div>You are on track with all attendance requirements.</div>
 </div>
 {% endif %}
-
-
-
-
-
-
-
-
 {# ── AH / WS Attendance detail card ───────────────────────── #}
 {% if member_stats %}
 <div class="card border-0 shadow-sm rounded-4 mb-4">
@@ -685,7 +500,7 @@ function resetAhWsFilters() {
               </div>
               <small class="text-muted">
                   {{ member_stats.ah_sum|int }} of {{ member_stats.ah_total }} sessions attended
-                  &nbsp;·&nbsp; Required: 100%
+                   ·  Required: 100%
               </small>
           </div>
           <div class="col-md-6">
@@ -701,21 +516,13 @@ function resetAhWsFilters() {
               </div>
               <small class="text-muted">
                   {{ member_stats.ws_sum|int }} of {{ member_stats.ws_total }} sessions attended
-                  &nbsp;·&nbsp; Required: {{ member_stats.ws_threshold_pct|int }}%
+                   ·  Required: {{ member_stats.ws_threshold_pct|int }}%
               </small>
           </div>
       </div>
   </div>
 </div>
 {% endif %}
-
-
-
-
-
-
-
-
 {# ── Commitment progress bars ──────────────────────────────── #}
 <div class="row g-4 mb-4">
   <div class="col-12">
@@ -724,6 +531,9 @@ function resetAhWsFilters() {
               <div>
                   <h4 class="mb-1">
                       My {{ progress_summary.event if progress_summary and progress_summary.event else '' }} Commitment Progress
+ {% if roleplay_event %}
+ <div class="text-muted small mt-1">Roleplay Event: {{ roleplay_event.split('(')[-1].replace(')', '').strip() }}</div>
+ {% endif %}
                   </h4>
                   <p class="text-muted mb-0">Track what you have completed and what is still remaining.</p>
               </div>
@@ -765,14 +575,6 @@ function resetAhWsFilters() {
       </div>
   </div>
 </div>
-
-
-
-
-
-
-
-
 {# ── Practice sessions ─────────────────────────────────────── #}
 <div class="row g-3">
   <div class="col-12">
@@ -805,22 +607,7 @@ function resetAhWsFilters() {
           </div>
       </div>
   </div>
-
-
-
-
-
-
-
-
 </div>
-
-
-
-
-
-
-
-
 {% endif %}
 {% endblock %}
+
