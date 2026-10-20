@@ -1096,6 +1096,21 @@ def _spreadsheet_text(value):
         value = int(value)
     return re.sub(r'\s+', ' ', str(value).replace('\n', ' ')).strip()
 
+def _roleplay_code(value):
+    text = _spreadsheet_text(value)
+
+    # Remove an existing RP: prefix, if one is stored in the database.
+    text = re.sub(r'^\s*RP\s*:\s*', '', text, flags=re.IGNORECASE)
+
+    # For values like "Human Resources Management (HRM)", return "HRM".
+    match = re.search(r'([()]*)\s*$', text)
+    return match.group(1).strip() if match else text
+
+
+@app.context_processor
+def inject_roleplay_code_helper():
+    return {'roleplay_code': _roleplay_code}
+
 
 def _spreadsheet_key(value):
     return _spreadsheet_text(value).lower()
@@ -3464,6 +3479,11 @@ def _dashboard_page():
                 'ws_threshold_pct': stats['ws_threshold_pct'],
                 'at_risk': stats['at_risk'],
                 'risk_reasons': stats['risk_reasons'],
+                'roleplay_event_code': (
+                    _roleplay_code(pod.roleplay_event)
+                    if pod and pod.roleplay_event else ''
+                ),
+
             })
 
     else:
@@ -3521,6 +3541,16 @@ def _dashboard_page():
 
     signed_times = [(w.time, w.time + timedelta(minutes=20)) for w in my_signups] if current_user.role == 'member' else []
 
+    current_pod = MentorPod.query.filter_by(
+        member_id=current_user.id
+    ).first()
+    
+    current_roleplay_event_code = (
+        _roleplay_code(current_pod.roleplay_event)
+        if current_pod and current_pod.roleplay_event else ''
+    )
+    
+    
     active_conf = get_active_conference() if current_user.role == 'member' else None
     return render_template('dashboard.html',
         commitments=commitments,
@@ -3540,6 +3570,8 @@ def _dashboard_page():
         active_conf=active_conf,
         all_commitments=all_commitments if current_user.role == 'member' else [],
         conference_order=CONFERENCE_ORDER,
+        roleplay_event_code=current_roleplay_event_code,
+
     )
 
 # Public self-registration is closed. Every account is created either by the
@@ -3726,6 +3758,11 @@ def member_commitments():
         written_items=written_items,
         written_done=written_done,
         written_total=len(written_items),
+        roleplay_event_code=(
+            _roleplay_code(pod.roleplay_event)
+            if pod and pod.roleplay_event else ''
+        ),
+        
     )
 
 
@@ -5303,6 +5340,12 @@ def admin_member_commitments():
             'conferences': conferences,
             'overall_pct': overall_pct,
             'commitments_incomplete': incomplete,
+            'roleplay_event_code': (
+                _roleplay_code(pod.roleplay_event)
+                if pod and pod.roleplay_event else ''
+            ),
+
+
         })
     total_members = len(rows)
     stats = {
