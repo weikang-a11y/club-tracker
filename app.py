@@ -101,20 +101,56 @@ WRITTEN_TYPES  = {'Written Presentation'}
 # Experienced:VCMC(RP:0,W:1,E:0), SVCDC(RP:2,W:1,E:2), SCDC(RP:1,W:1,E:1)
 EVENT_REQUIREMENTS = {
     "N": {  # Novice
-        "VCMC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-11-15"},
+        "VCMC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-10-26"},
         "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
         "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-02-23"},
     },
     "E": {  # Experienced
-        "VCMC":  {"roleplay": 0, "written": 1, "exam": 0, "deadline": "2026-11-15"},
+        "VCMC":  {"roleplay": 0, "written": 1, "exam": 0, "deadline": "2026-10-26"},
         "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-01-08"},
         "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2027-02-23"},
     },
 }
 
+# Experienced members are exempt from the VCMC written presentation, except
+# for these, who still have to complete it. Novices are unaffected, and so is
+# every other conference. Listing the exceptions in code rather than editing
+# rows directly matters: the startup sync rebuilds commitments from the matrix
+# on every boot, so database-only edits would be undone on the next deploy.
+VCMC_WRITTEN_REQUIRED_EXPERIENCED = {
+    'jayoon.koo',
+    'chloe.xiao',
+    'karen.xiao',
+    'kevin.ou',
+    'matthew.zhu',
+    'connor.lam',
+    'michael.qi',
+    'zixuan.wang',
+    'woobin.jang',
+    'avaneesh.nangare',
+    'nishanth.duvedi',
+    'suvir.maniktala',
+}
+
+
+def requirement_rule(username, level, conference):
+    """The requirement for one member at one conference.
+
+    Same as EVENT_REQUIREMENTS, except an Experienced member not named in
+    VCMC_WRITTEN_REQUIRED_EXPERIENCED has no VCMC written requirement, which
+    leaves them with nothing to do for VCMC at all.
+    """
+    rule = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])[conference]
+    if (level == 'E'
+            and conference == 'VCMC'
+            and (username or '').lower() not in VCMC_WRITTEN_REQUIRED_EXPERIENCED):
+        rule = dict(rule, written=0)
+    return rule
+
+
 CONFERENCE_ORDER = ["VCMC", "SVCDC", "SCDC"]
 CONFERENCE_DEADLINES = {
-    "VCMC":  "2026-11-15",
+    "VCMC":  "2026-10-26",
     "SVCDC": "2027-01-08",
     "SCDC":  "2027-02-23",
 }
@@ -1988,7 +2024,8 @@ def ensure_commitments(member):
     level = pod.experience_level if pod else 'N'
     reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
     created = False
-    for conf, rule in reqs.items():
+    for conf in reqs:
+        rule = requirement_rule(member.username, level, conf)
         existing = Commitment.query.filter_by(member_name=member.username, event=conf).first()
         if not existing:
             com = Commitment(
@@ -2559,7 +2596,8 @@ with app.app_context():
         pod = MentorPod.query.filter_by(member_id=member.id).first()
         level = pod.experience_level if pod else 'N'
         reqs = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
-        for conf, rule in reqs.items():
+        for conf in reqs:
+            rule = requirement_rule(member.username, level, conf)
             com = Commitment.query.filter_by(member_name=member.username, event=conf).first()
             if com:
                 # Only update required counts; adjust remaining proportionally
@@ -2575,6 +2613,14 @@ with app.app_context():
                 com.remaining_roleplay = max(0, rule["roleplay"] - completed_rp)
                 com.remaining_written  = max(0, rule["written"]  - completed_wr)
                 com.remaining_exam     = max(0, rule["exam"]     - completed_ex)
+                # Keep the stored deadline in step with the matrix above;
+                # without this, changing a conference date only affects rows
+                # created afterwards.
+                try:
+                    com.deadline = datetime.strptime(
+                        rule["deadline"], "%Y-%m-%d").date()
+                except (ValueError, TypeError, KeyError):
+                    pass
                 db.session.add(com)
     try:
         db.session.commit()
