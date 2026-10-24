@@ -64,6 +64,16 @@
                 <div class="col-md-2">
                     <button type="submit" class="btn btn-success w-100">✓ Mark Complete</button>
                 </div>
+                <div class="col-md-2">
+                    {# Same three selectors, reverse action. formaction keeps
+                       this inside the existing form rather than duplicating it. #}
+                    <button type="submit"
+                            formaction="{{ url_for('undo_complete') }}"
+                            class="btn btn-outline-secondary w-100"
+                            onclick="return confirm('Undo one completed commitment for the selected member? This adds it back to their remaining count.');">
+                        &#8634; Undo
+                    </button>
+                </div>
             </form>
         </div>
     </div>
@@ -126,16 +136,55 @@
                             <span class="{{ 'text-success fw-semibold' if com.remaining_roleplay == 0 else ('text-danger' if conf == active_conf else '') }}">
                                 {{ rp_done }}/{{ com.required_roleplay }}
                             </span>
+                            {% if rp_done > 0 %}
+                            <form method="POST" action="{{ url_for('undo_complete') }}"
+                                  class="d-inline"
+                                  onsubmit="return confirm('Undo one completed Roleplay for {{ row.member.username }} ({{ conf }})? This adds it back to their remaining count.');">
+                                <input type="hidden" name="member_id" value="{{ row.member.id }}">
+                                <input type="hidden" name="conference" value="{{ conf }}">
+                                <input type="hidden" name="practice_type" value="In-Person Roleplay">
+                                <button type="submit" class="btn btn-link btn-sm p-0 ms-1 text-muted"
+                                        title="Undo one completed Roleplay"
+                                        aria-label="Undo one completed Roleplay"
+                                        style="line-height:1;text-decoration:none;">&#8634;</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td>
                             <span class="{{ 'text-success fw-semibold' if com.remaining_written == 0 else ('text-danger' if conf == active_conf else '') }}">
                                 {{ wr_done }}/{{ com.required_written }}
                             </span>
+                            {% if wr_done > 0 %}
+                            <form method="POST" action="{{ url_for('undo_complete') }}"
+                                  class="d-inline"
+                                  onsubmit="return confirm('Undo one completed Written for {{ row.member.username }} ({{ conf }})? This adds it back to their remaining count.');">
+                                <input type="hidden" name="member_id" value="{{ row.member.id }}">
+                                <input type="hidden" name="conference" value="{{ conf }}">
+                                <input type="hidden" name="practice_type" value="Written Presentation">
+                                <button type="submit" class="btn btn-link btn-sm p-0 ms-1 text-muted"
+                                        title="Undo one completed Written"
+                                        aria-label="Undo one completed Written"
+                                        style="line-height:1;text-decoration:none;">&#8634;</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td>
                             <span class="{{ 'text-success fw-semibold' if com.remaining_exam == 0 else ('text-danger' if conf == active_conf else '') }}">
                                 {{ ex_done }}/{{ com.required_exam }}
                             </span>
+                            {% if ex_done > 0 %}
+                            <form method="POST" action="{{ url_for('undo_complete') }}"
+                                  class="d-inline"
+                                  onsubmit="return confirm('Undo one completed Exam for {{ row.member.username }} ({{ conf }})? This adds it back to their remaining count.');">
+                                <input type="hidden" name="member_id" value="{{ row.member.id }}">
+                                <input type="hidden" name="conference" value="{{ conf }}">
+                                <input type="hidden" name="practice_type" value="Paper Exam">
+                                <button type="submit" class="btn btn-link btn-sm p-0 ms-1 text-muted"
+                                        title="Undo one completed Exam"
+                                        aria-label="Undo one completed Exam"
+                                        style="line-height:1;text-decoration:none;">&#8634;</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td style="min-width:120px;">
                             <div class="d-flex align-items-center gap-2">

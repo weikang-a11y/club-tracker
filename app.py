@@ -2018,6 +2018,39 @@ def _apply_completion(member, conference, practice_type):
     return named
 
 
+def resync_commitments(member, level):
+    """Rebuild a member's requirement counts for the given level.
+
+    Completed work is preserved: only the required totals change, and the
+    remaining counts are recalculated against what has already been done.
+    Called when an officer changes someone's experience level, so the change
+    shows up at once instead of waiting for the next restart.
+    """
+    changed = False
+    for conference in CONFERENCE_ORDER:
+        rule = requirement_rule(member.username, level, conference)
+        com = Commitment.query.filter_by(
+            member_name=member.username, event=conference).first()
+        if not com:
+            continue
+        done_rp = (com.required_roleplay or 0) - (com.remaining_roleplay or 0)
+        done_wr = (com.required_written or 0) - (com.remaining_written or 0)
+        done_ex = (com.required_exam or 0) - (com.remaining_exam or 0)
+        com.required_roleplay = rule['roleplay']
+        com.required_written = rule['written']
+        com.required_exam = rule['exam']
+        com.remaining_roleplay = max(0, rule['roleplay'] - done_rp)
+        com.remaining_written = max(0, rule['written'] - done_wr)
+        com.remaining_exam = max(0, rule['exam'] - done_ex)
+        try:
+            com.deadline = datetime.strptime(rule['deadline'], '%Y-%m-%d').date()
+        except (ValueError, TypeError, KeyError):
+            pass
+        db.session.add(com)
+        changed = True
+    return changed
+
+
 def ensure_commitments(member):
     """Auto-create commitment rows for all conferences if missing."""
     pod = MentorPod.query.filter_by(member_id=member.id).first()
@@ -3861,6 +3894,82 @@ def log_commitment(session_id):
     return redirect(request.referrer or url_for('practice_sessions'))
 
 
+@app.route('/undo_complete', methods=['POST'])
+@login_required
+def undo_complete():
+    """Reverse one commitment completion recorded by mistake.
+
+    Adds the credit back to the conference it was taken from, removes the
+    matching practice log, and records the reversal in the MDP audit log so
+    the correction is traceable.
+    """
+    if not (is_officer_view() or is_admin_view()):
+        flash('Only officers can undo commitments.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    member_id = request.form.get('member_id', '').strip()
+    practice_type = request.form.get('practice_type', '').strip()
+    conference = request.form.get('conference', get_active_conference())
+
+    member = db.session.get(User, int(member_id)) if member_id.isdigit() else None
+    if not member or member.role != 'member':
+        flash('Member not found.', 'danger')
+        return redirect(url_for('reports', tab='commitment'))
+
+    if practice_type in ROLEPLAY_TYPES:
+        field = 'remaining_roleplay'
+        required = 'required_roleplay'
+    elif practice_type in WRITTEN_TYPES:
+        field = 'remaining_written'
+        required = 'required_written'
+    elif practice_type in EXAM_TYPES:
+        field = 'remaining_exam'
+        required = 'required_exam'
+    else:
+        flash('Unknown practice type.', 'danger')
+        return redirect(url_for('reports', tab='commitment'))
+
+    commitment = Commitment.query.filter_by(
+        member_name=member.username, event=conference).first()
+    if not commitment:
+        flash(f'No {conference} commitment found for {member.username}.', 'warning')
+        return redirect(url_for('reports', tab='commitment'))
+
+    # Nothing was completed here, so there is nothing to give back.
+    if (getattr(commitment, field) or 0) >= (getattr(commitment, required) or 0):
+        flash(
+            f'{member.username} has no completed {practice_type} for '
+            f'{conference} to undo.', 'warning'
+        )
+        return redirect(url_for('reports', tab='commitment'))
+
+    setattr(commitment, field, (getattr(commitment, field) or 0) + 1)
+    db.session.add(commitment)
+
+    # Drop the most recent matching log entry, if one exists.
+    log = PracticeLog.query.filter_by(
+        member_id=member.id, conference=conference, practice_type=practice_type
+    ).order_by(PracticeLog.id.desc()).first()
+    if log:
+        db.session.delete(log)
+
+    log_mdp_action(
+        current_user.id, 'commitment_undo', 'commitment',
+        target_user_id=member.id,
+        details=f'Undid {practice_type} for {conference}',
+    )
+    create_notification(
+        member.id,
+        f'{current_user.username} undid a {practice_type} completion for {conference}.'
+    )
+    db.session.commit()
+    flash(
+        f'Undid {practice_type} for {conference} — {member.username} now needs '
+        f'{getattr(commitment, field)}.', 'success'
+    )
+    return redirect(request.referrer or url_for('reports', tab='commitment'))
+
+
 @app.route('/mark_complete', methods=['POST'])
 @login_required
 def mark_complete():
@@ -4669,8 +4778,10 @@ def assign_pod_member(member_id):
     if experience_level not in {'N', 'E'}:
         experience_level = 'N'
 
+    # EVENT_TABS holds (code, label) tuples, so comparing against it directly
+    # was always false and every assignment was forced to 'NA'.
     event = request.form.get('event', 'NA').strip().upper()
-    if event not in EVENT_TABS:
+    if event not in {code for code, _ in EVENT_TABS}:
         event = 'NA'
 
     existing_mentor_assignment = MentorPod.query.filter_by(
@@ -4757,7 +4868,12 @@ def edit_pod(pod_id):
         pod.experience_level,
     )
     if experience_level in {'N', 'E'}:
+        level_changed = experience_level != pod.experience_level
         pod.experience_level = experience_level
+        if level_changed and pod.member:
+            # Requirements differ by level, so rebuild them now.
+            ensure_commitments(pod.member)
+            resync_commitments(pod.member, experience_level)
 
     # EVENT_TABS is a list of (code, label) tuples, so testing membership
     # against it directly was always False and the event never changed.
