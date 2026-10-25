@@ -3935,7 +3935,9 @@ def log_commitment(session_id):
     # Visible in the admin MDP audit log, whether or not the mentee is in this
     # officer's own pod. credited_to names the conference the credit landed on,
     # which can differ from the one requested when excess rolls forward.
-    credited_to = commitment.event if commitment else conference
+    for member in members:
+        commitment = _apply_completion(member, conference, practice_type)
+        credited_to = commitment.event if commitment else conference
     log_mdp_action(
         current_user.id, 'commitment_complete', 'commitment',
         target_user_id=member.id,
