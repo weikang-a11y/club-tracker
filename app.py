@@ -2009,8 +2009,11 @@ def _apply_completion(member, conference, practice_type):
         start = 0
     for conf in CONFERENCE_ORDER[start:]:
         row = rows.get(conf)
-        if row is not None and getattr(row, field) > 0:
-            setattr(row, field, getattr(row, field) - 1)
+        if row is not None and (getattr(row, field) or 0) > 0:
+            # Clamp at zero. remaining_exam is a float and can hold a half
+            # credit, so subtracting a whole 1 from 0.5 would leave -0.5 and
+            # display as a negative commitment.
+            setattr(row, field, max(0, (getattr(row, field) or 0) - 1))
             db.session.add(row)
             return row
 
@@ -3915,6 +3918,15 @@ def undo_complete():
     practice_type = request.form.get('practice_type', '').strip()
     conference = request.form.get('conference', get_active_conference())
 
+    # Exam credit is stored as a float, so half of one can be given back.
+    # Roleplays and written presentations are whole credits only.
+    try:
+        amount = float(request.form.get('amount', '1') or 1)
+    except ValueError:
+        amount = 1.0
+    if amount not in (0.5, 1.0) or practice_type not in EXAM_TYPES:
+        amount = 1.0
+
     member = db.session.get(User, int(member_id)) if member_id.isdigit() else None
     if not member or member.role != 'member':
         flash('Member not found.', 'danger')
@@ -3933,43 +3945,75 @@ def undo_complete():
         flash('Unknown practice type.', 'danger')
         return redirect(url_for('reports', tab='commitment'))
 
-    commitment = Commitment.query.filter_by(
-        member_name=member.username, event=conference).first()
-    if not commitment:
+    rows = {
+        row.event: row
+        for row in Commitment.query.filter_by(member_name=member.username).all()
+    }
+    if conference not in rows:
         flash(f'No {conference} commitment found for {member.username}.', 'warning')
         return redirect(url_for('reports', tab='commitment'))
 
-    # Nothing was completed here, so there is nothing to give back.
-    if (getattr(commitment, field) or 0) >= (getattr(commitment, required) or 0):
+    # _apply_completion rolls a credit forward when the named conference is
+    # already satisfied, so the completion being undone may be sitting on a
+    # later conference. Walk forward and give the credit back to the furthest
+    # one that actually holds a completion; that reverses the most recent
+    # credit instead of inventing one on the named conference.
+    try:
+        start = CONFERENCE_ORDER.index(conference)
+    except ValueError:
+        start = 0
+
+    # Prefer the conference the officer actually chose, so clicking the undo
+    # on a VCMC cell changes VCMC. Only when that conference holds no
+    # completion does the credit come back from a later one, which is the
+    # case where _apply_completion rolled it forward.
+    named_row = rows.get(conference)
+    target = None
+    if named_row and (getattr(named_row, field) or 0) < (getattr(named_row, required) or 0):
+        target = named_row
+    else:
+        for name in CONFERENCE_ORDER[start:]:
+            row = rows.get(name)
+            if row and (getattr(row, field) or 0) < (getattr(row, required) or 0):
+                target = row
+    if target is None:
         flash(
             f'{member.username} has no completed {practice_type} for '
-            f'{conference} to undo.', 'warning'
+            f'{conference} or later to undo.', 'warning'
         )
         return redirect(url_for('reports', tab='commitment'))
 
-    setattr(commitment, field, (getattr(commitment, field) or 0) + 1)
+    commitment = target
+    conference = commitment.event
+
+    restored = min(
+        (getattr(commitment, required) or 0),
+        (getattr(commitment, field) or 0) + amount,
+    )
+    given_back = restored - (getattr(commitment, field) or 0)
+    setattr(commitment, field, restored)
     db.session.add(commitment)
 
     # Drop the most recent matching log entry, if one exists.
     log = PracticeLog.query.filter_by(
         member_id=member.id, conference=conference, practice_type=practice_type
     ).order_by(PracticeLog.id.desc()).first()
-    if log:
+    if log and given_back >= 1:
         db.session.delete(log)
 
     log_mdp_action(
         current_user.id, 'commitment_undo', 'commitment',
         target_user_id=member.id,
-        details=f'Undid {practice_type} for {conference}',
+        details=f'Undid {given_back:g} {practice_type} for {conference}',
     )
     create_notification(
         member.id,
-        f'{current_user.username} undid a {practice_type} completion for {conference}.'
+        f'{current_user.username} undid {given_back:g} {practice_type} for {conference}.'
     )
     db.session.commit()
     flash(
-        f'Undid {practice_type} for {conference} — {member.username} now needs '
-        f'{getattr(commitment, field)}.', 'success'
+        f'Undid {given_back:g} {practice_type} for {conference} — '
+        f'{member.username} now needs {getattr(commitment, field):g}.', 'success'
     )
     return redirect(request.referrer or url_for('reports', tab='commitment'))
 

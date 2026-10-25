@@ -170,7 +170,7 @@
                         </td>
                         <td>
                             <span class="{{ 'text-success fw-semibold' if com.remaining_exam == 0 else ('text-danger' if conf == active_conf else '') }}">
-                                {{ ex_done }}/{{ com.required_exam }}
+                                {{ "%g"|format(ex_done) }}/{{ "%g"|format(com.required_exam) }}
                             </span>
                             {% if ex_done > 0 %}
                             <form method="POST" action="{{ url_for('undo_complete') }}"
@@ -183,6 +183,19 @@
                                         title="Undo one completed Exam"
                                         aria-label="Undo one completed Exam"
                                         style="line-height:1;text-decoration:none;">&#8634;</button>
+                            </form>
+                            {# Exam credit is a float, so half can be returned. #}
+                            <form method="POST" action="{{ url_for('undo_complete') }}"
+                                  class="d-inline"
+                                  onsubmit="return confirm('Undo half an Exam credit for {{ row.member.username }} ({{ conf }})? This adds 0.5 back to their remaining count.');">
+                                <input type="hidden" name="member_id" value="{{ row.member.id }}">
+                                <input type="hidden" name="conference" value="{{ conf }}">
+                                <input type="hidden" name="practice_type" value="Paper Exam">
+                                <input type="hidden" name="amount" value="0.5">
+                                <button type="submit" class="btn btn-link btn-sm p-0 ms-1 text-muted"
+                                        title="Undo half an Exam credit"
+                                        aria-label="Undo half an Exam credit"
+                                        style="line-height:1;text-decoration:none;font-size:.8rem;">&#8634;&frac12;</button>
                             </form>
                             {% endif %}
                         </td>
