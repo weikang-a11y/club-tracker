@@ -4032,7 +4032,7 @@ def mark_complete():
     for member in members:
         commitment = _apply_completion(member, conference, practice_type)
 
-            credited_to = commitment.event if commitment else conference
+        credited_to = commitment.event if commitment else conference
         in_own_pod = MentorPod.query.filter_by(
             mentor_id=current_user.id, member_id=member.id
         ).first() is not None
