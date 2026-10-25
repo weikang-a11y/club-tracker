@@ -3996,51 +3996,93 @@ def mark_complete():
         flash('Only officers can mark commitments complete.', 'danger')
         return redirect(url_for('dashboard'))
 
-    member_id = request.form.get('member_id', '').strip()
-    practice_type = request.form.get('practice_type', '').strip()
+        practice_type = request.form.get('practice_type', '').strip()
     conference = request.form.get('conference', get_active_conference())
 
-    member = db.session.get(User, int(member_id)) if member_id.isdigit() else None
-    if not member or member.role != 'member':
+    # Collect up to three member IDs; only the first is required
+    raw_ids = [
+        request.form.get('member_id', '').strip(),
+        request.form.get('member_id_2', '').strip(),
+        request.form.get('member_id_3', '').strip(),
+    ]
+
+    # Resolve to User objects, de-duplicating while preserving order
+    members = []
+    seen_ids = set()
+    for raw in raw_ids:
+        if not raw or not raw.isdigit():
+            continue
+        uid = int(raw)
+        if uid in seen_ids:
+            continue
+        user = db.session.get(User, uid)
+        if user and user.role == 'member':
+            members.append(user)
+            seen_ids.add(uid)
+
+    if not members:
         flash('Member not found.', 'danger')
         return redirect(url_for('reports', tab='commitment'))
 
-    commitment = _apply_completion(member, conference, practice_type)
-
-    credited_to = commitment.event if commitment else conference
-    in_own_pod = MentorPod.query.filter_by(
-        mentor_id=current_user.id, member_id=member.id
-    ).first() is not None
-    log_mdp_action(
-        current_user.id, 'commitment_complete', 'commitment',
-        target_user_id=member.id,
-        details=(
-            f'{practice_type} for {conference} marked complete'
-            + ('' if in_own_pod else ' (outside own pod)')
-            + (f' (credited to {credited_to})' if credited_to != conference else '')
-        ),
-    )
-
-    log = PracticeLog(
-        officer_id=current_user.id,
-        member_id=member.id,
-        commitment_id=commitment.id if commitment else None,
-        practice_type=practice_type,
-        conference=conference,
-        session_date=datetime.utcnow().date(),
-    )
-    db.session.add(log)
-
-    # Notifications
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-    create_notification(member.id,
-        f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
-    mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
-    if mentor_pod and mentor_pod.mentor_id != current_user.id:
-        create_notification(mentor_pod.mentor_id,
-            f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+    marked_names = []
+
+    for member in members:
+        commitment = _apply_completion(member, conference, practice_type)
+
+            credited_to = commitment.event if commitment else conference
+        in_own_pod = MentorPod.query.filter_by(
+            mentor_id=current_user.id, member_id=member.id
+        ).first() is not None
+        log_mdp_action(
+            current_user.id, 'commitment_complete', 'commitment',
+            target_user_id=member.id,
+            details=(
+                f'{practice_type} for {conference} marked complete'
+                + ('' if in_own_pod else ' (outside own pod)')
+                + (f' (credited to {credited_to})' if credited_to != conference else '')
+            ),
+        )
+
+        log = PracticeLog(
+            officer_id=current_user.id,
+            member_id=member.id,
+            commitment_id=commitment.id if commitment else None,
+            practice_type=practice_type,
+            conference=conference,
+            session_date=datetime.utcnow().date(),
+        )
+        db.session.add(log)
+
+        # Notifications
+        create_notification(member.id,
+            f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
+        mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
+        if mentor_pod and mentor_pod.mentor_id != current_user.id:
+            create_notification(mentor_pod.mentor_id,
+                f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+
+        marked_names.append(member.username)
 
     db.session.commit()
+
+    # Emails
+    names_str = ', '.join(marked_names)
+    email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
+                  f'<strong>{conference}</strong> on {timestamp}.</p>'
+                  f'<p>Logged by: {current_user.username}</p>')
+    if current_user.email:
+        send_email(current_user.email,
+            f'[DECA] Commitment logged: {names_str} – {practice_type} ({conference})',
+            email_body)
+    for member in members:
+        if member.email:
+            send_email(member.email,
+                f'[DECA] Your {practice_type} for {conference} has been marked complete',
+                email_body)
+
+    flash(f'Marked {practice_type} complete for {names_str} ({conference}).', 'success')
+    return redirect(url_for('reports', tab='commitment'))
 
     # Emails
     email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
