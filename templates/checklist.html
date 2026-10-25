@@ -32,7 +32,7 @@
   {% endfor %}
 {% endwith %}
 
-{% if current_user.is_admin and mdp_upload_enabled and mdp_upload_form and written_view == 'legacy' %}
+{% if current_user.is_admin and mdp_upload_enabled and mdp_upload_form %}
 <div class="card border-warning shadow-sm mb-4">
 <div class="card-body">
 <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-center">

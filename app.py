@@ -229,7 +229,7 @@ OFFICER_ROSTER_2026_27 = [
     ("Philina Chen", "Officer, Admin"),
     ("Natalie Zhang", "Officer"),
     ("Melody Leong", "Officer"),
-    ("Aryahi Sharma", "Officer", "Admin"),
+    ("Aryahi Sharma", "Officer, Admin"),
     ("Olivia Kang", "Officer"),
     ("Zihan Liu", "Officer"),
     ("Aaron Vu", "Admin, Officer"),
@@ -308,6 +308,25 @@ REMOVED_ADMIN_ACCESS_KEY = "2026-27-remove-admin-access-aryahi-olivia-zihan-v1"
 
 GRANT_ARYAHI_ADMIN_KEY = "2026-27-grant-aryahi-admin-v1"
 
+GRANT_ZIHAN_ADMIN_KEY = "2026-27-grant-zihan-admin-v1"
+
+def grant_zihan_admin():
+    if db.session.get(DataMigration, GRANT_ZIHAN_ADMIN_KEY):
+        return
+    user = User.query.filter(
+        db.func.lower(User.username) == 'zihan.liu'
+    ).first()
+    if user:
+        user.is_admin = True
+        user.has_officer_access = True
+        user.role = 'officer'
+    db.session.add(DataMigration(
+        key=GRANT_ZIHAN_ADMIN_KEY,
+        details='Granted admin access to zihan.liu',
+    ))
+    db.session.commit()
+    print('[Admin Grant] zihan.liu granted admin access.')
+
 def grant_aryahi_admin():
     if db.session.get(DataMigration, GRANT_ARYAHI_ADMIN_KEY):
         return
@@ -324,6 +343,8 @@ def grant_aryahi_admin():
     ))
     db.session.commit()
     print('[Admin Grant] aryahi.sharma granted admin access.')
+
+
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -451,6 +472,7 @@ class MentorPod(db.Model):
     event = db.Column(db.String(50), nullable=True)
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
+    roleplay_event = db.Column(db.String(100), nullable=True)
 
 
 class PracticeSession(db.Model):
@@ -1110,6 +1132,23 @@ def _spreadsheet_text(value):
         value = int(value)
     return re.sub(r'\s+', ' ', str(value).replace('\n', ' ')).strip()
 
+def _roleplay_code(value):
+    text = _spreadsheet_text(value)
+    text = re.sub(r'^\s*RP\s*:\s*', '', text, flags=re.IGNORECASE)
+
+    # Match the extraction used on Mentor Pods:
+    # "Human Resources Management (HRM)" becomes "HRM".
+    if '(' in text:
+        return text.rsplit('(', 1)[-1].replace(')', '').strip()
+
+    return text
+
+
+
+@app.context_processor
+def inject_roleplay_code_helper():
+    return {'roleplay_code': _roleplay_code}
+
 
 def _spreadsheet_key(value):
     return _spreadsheet_text(value).lower()
@@ -1380,6 +1419,78 @@ def _format_spreadsheet_grade(value):
     formatted = f'{number:.3f}'.rstrip('0').rstrip('.')
     return f'{formatted}%'
 
+def import_roleplay_events_from_attendance_workbook(path):
+    sheets = _read_xlsx_sheets(path, {'AH Attendance'})
+    rows = sheets['AH Attendance']
+
+    if not rows:
+        raise RuntimeError('AH Attendance sheet is empty.')
+
+    headers = rows[0]
+    email_col = _header_index(headers, 'Email')
+    roleplay_col = _header_index(headers, 'Roleplay')
+
+    if email_col is None or roleplay_col is None:
+        raise RuntimeError(
+            'AH Attendance must contain Email and Roleplay columns.'
+        )
+
+    users = User.query.all()
+    users_by_username = {user.username.lower(): user for user in users}
+    users_by_email = {
+        _spreadsheet_key(user.email): user
+        for user in users
+        if user.email
+    }
+    pods_by_member = {
+        pod.member_id: pod
+        for pod in MentorPod.query.all()
+    }
+
+    stats = {
+        'matched': 0,
+        'updated': 0,
+        'unmatched': [],
+        'without_pod': [],
+        'blank': [],
+    }
+
+    for row in rows[1:]:
+        email = _spreadsheet_key(_row_value(row, email_col))
+        roleplay_event = _spreadsheet_text(
+            _row_value(row, roleplay_col)
+        )
+
+        if not email:
+            continue
+
+        member = _find_spreadsheet_user(
+            '',
+            email,
+            users_by_username,
+            users_by_email,
+        )
+
+        if not member:
+            stats['unmatched'].append(email)
+            continue
+
+        if not roleplay_event:
+            stats['blank'].append(member.username)
+            continue
+
+        pod = pods_by_member.get(member.id)
+        if not pod:
+            stats['without_pod'].append(member.username)
+            continue
+
+        stats['matched'] += 1
+        if pod.roleplay_event != roleplay_event:
+            pod.roleplay_event = roleplay_event
+            stats['updated'] += 1
+
+    return stats
+
 
 
 def normalize_stored_conference_grades():
@@ -1415,7 +1526,7 @@ def normalize_stored_conference_grades():
 
 def import_mdp_tracking_workbook(path, commitments_only=False):
     """Synchronize matched members from the MDP workbook transactionally."""
-    wanted_sheets = set(EVENT_TABS) | {
+    wanted_sheets = {tab for tab, _ in EVENT_TABS} | {
         'Pods (VIEW ONLY)',
         'Mentee Commitment TrackingMDP',
     }
@@ -1454,7 +1565,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
     completion_by_identity = {}
     written_requirements = {}
     written_completion = {}
-    for tab in EVENT_TABS:
+    for tab, _ in EVENT_TABS:
         rows = sheets[tab]
         if not rows:
             continue
@@ -1502,6 +1613,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
     status_col = _header_index(pod_headers, 'Status')
     years_col = _header_index(pod_headers, 'Years in DECA')
     pod_event_col = _header_index(pod_headers, 'Event')
+    pod_roleplay_event_col = _header_index(pod_headers, 'Roleplay')
     legal_name_col = _header_index(pod_headers, 'Legal name', 'Legal Name')
 
     all_users = User.query.all()
@@ -1586,6 +1698,12 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         status = _spreadsheet_text(_row_value(row, status_col))
         level = 'E' if status.lower() == 'experienced' else 'N'
         event = _spreadsheet_event_key(_row_value(row, pod_event_col))
+        raw = _spreadsheet_text(
+            _row_value(row, pod_roleplay_event_col)
+        )
+        roleplay_event = raw or None
+
+
         year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
         if not commitments_only:
             if email and not member.email:
@@ -1603,6 +1721,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                 pod.experience_level = level
                 pod.year_in_deca = year_in_deca
                 pod.event = event or None
+                pod.roleplay_event = roleplay_event
                 pod_number = _spreadsheet_number(_row_value(row, pod_number_col))
                 if pod_number:
                     pod.pod_number = pod_number
@@ -1704,6 +1823,15 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                     checklist_items_by_key[item_key] = item
                 item.completed = completed
                 checklist_items_updated += 1
+    return {
+        'matched_members': len(matched_user_ids),
+        'pods_updated': pods_updated,
+        'commitments_updated': commitments_updated,
+        'checklist_items_updated': checklist_items_updated,
+        'unmatched_members': unmatched_members,
+        'members_without_completion': members_without_completion,
+        'unmatched_mentors': unmatched_mentors,
+    }
 # ── Notification helper ──────────────────────────────────────────────────────
 
 def create_notification(user_id, message):
@@ -2289,10 +2417,28 @@ def _backfill_column(table, source, destination):
     except Exception:
         db.session.rollback()
 
+def add_roleplay_event_column():
+    with db.engine.connect() as conn:
+        conn.execute(sql_text(
+            'ALTER TABLE mentor_pod '
+            'ADD COLUMN IF NOT EXISTS roleplay_event VARCHAR(100)'
+        ))
+
+        if db.engine.dialect.name == 'postgresql':
+            conn.execute(sql_text(
+                'ALTER TABLE mentor_pod '
+                'ALTER COLUMN roleplay_event TYPE VARCHAR(100)'
+            ))
+
+        conn.commit()
+
+    print('[Migration] mentor_pod.roleplay_event column ensured.')
+
 
 with app.app_context():
     db.create_all()
 
+    add_roleplay_event_column()
     engine_name = db.engine.dialect.name
     cols = {c['name'] for c in db.inspect(db.engine).get_columns('workshop')}
     if 'creator_id' not in cols:
@@ -2405,7 +2551,7 @@ with app.app_context():
                 print('[Migration] rebuilt checklist_requirement with corrected columns.')
     except Exception as exc:
         db.session.rollback()
-        print(f'[Migration] checklist_requirement rebuild skipped: {exc}')
+        print(f'[Migration] checklist_requirement rebuild failed: {exc}')
 
     # Migrate: add is_competing to user
     _ensure_column('user', 'is_competing', 'BOOLEAN DEFAULT TRUE')
@@ -2602,6 +2748,7 @@ with app.app_context():
     try:
         if not SKIP_STARTUP_WORK:
             grant_aryahi_admin()
+            grant_zihan_admin()
     except Exception as exc:
         db.session.rollback()
         print(f'[Admin Grant] skipped: {exc}')
@@ -3298,6 +3445,12 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             'grades': conference['grades'],
             'conference': conference,
             'written': written,
+            'roleplay_event_code': (
+                _roleplay_code(pod.roleplay_event)
+                if pod and pod.roleplay_event else ''
+            ),
+
+
         })
     return rows
 
@@ -3419,6 +3572,11 @@ def _dashboard_page():
                 'ws_threshold_pct': stats['ws_threshold_pct'],
                 'at_risk': stats['at_risk'],
                 'risk_reasons': stats['risk_reasons'],
+                'roleplay_event_code': (
+                    _roleplay_code(pod.roleplay_event)
+                    if pod and pod.roleplay_event else ''
+                ),
+
             })
 
     else:
@@ -3476,6 +3634,16 @@ def _dashboard_page():
 
     signed_times = [(w.time, w.time + timedelta(minutes=20)) for w in my_signups] if current_user.role == 'member' else []
 
+    current_pod = MentorPod.query.filter_by(
+        member_id=current_user.id
+    ).first()
+    
+    current_roleplay_event_code = (
+        _roleplay_code(current_pod.roleplay_event)
+        if current_pod and current_pod.roleplay_event else ''
+    )
+    
+    
     active_conf = get_active_conference() if current_user.role == 'member' else None
     return render_template('dashboard.html',
         commitments=commitments,
@@ -3495,6 +3663,8 @@ def _dashboard_page():
         active_conf=active_conf,
         all_commitments=all_commitments if current_user.role == 'member' else [],
         conference_order=CONFERENCE_ORDER,
+        roleplay_event_code=current_roleplay_event_code,
+
     )
 
 # Public self-registration is closed. Every account is created either by the
@@ -3681,6 +3851,11 @@ def member_commitments():
         written_items=written_items,
         written_done=written_done,
         written_total=len(written_items),
+        roleplay_event_code=(
+            _roleplay_code(pod.roleplay_event)
+            if pod and pod.roleplay_event else ''
+        ),
+        
     )
 
 
@@ -3845,7 +4020,9 @@ def log_commitment(session_id):
     # Visible in the admin MDP audit log, whether or not the mentee is in this
     # officer's own pod. credited_to names the conference the credit landed on,
     # which can differ from the one requested when excess rolls forward.
-    credited_to = commitment.event if commitment else conference
+    for member in members:
+        commitment = _apply_completion(member, conference, practice_type)
+        credited_to = commitment.event if commitment else conference
     log_mdp_action(
         current_user.id, 'commitment_complete', 'commitment',
         target_user_id=member.id,
@@ -3982,51 +4159,93 @@ def mark_complete():
         flash('Only officers can mark commitments complete.', 'danger')
         return redirect(url_for('dashboard'))
 
-    member_id = request.form.get('member_id', '').strip()
-    practice_type = request.form.get('practice_type', '').strip()
+        practice_type = request.form.get('practice_type', '').strip()
     conference = request.form.get('conference', get_active_conference())
 
-    member = db.session.get(User, int(member_id)) if member_id.isdigit() else None
-    if not member or member.role != 'member':
+    # Collect up to three member IDs; only the first is required
+    raw_ids = [
+        request.form.get('member_id', '').strip(),
+        request.form.get('member_id_2', '').strip(),
+        request.form.get('member_id_3', '').strip(),
+    ]
+
+    # Resolve to User objects, de-duplicating while preserving order
+    members = []
+    seen_ids = set()
+    for raw in raw_ids:
+        if not raw or not raw.isdigit():
+            continue
+        uid = int(raw)
+        if uid in seen_ids:
+            continue
+        user = db.session.get(User, uid)
+        if user and user.role == 'member':
+            members.append(user)
+            seen_ids.add(uid)
+
+    if not members:
         flash('Member not found.', 'danger')
         return redirect(url_for('reports', tab='commitment'))
 
-    commitment = _apply_completion(member, conference, practice_type)
-
-    credited_to = commitment.event if commitment else conference
-    in_own_pod = MentorPod.query.filter_by(
-        mentor_id=current_user.id, member_id=member.id
-    ).first() is not None
-    log_mdp_action(
-        current_user.id, 'commitment_complete', 'commitment',
-        target_user_id=member.id,
-        details=(
-            f'{practice_type} for {conference} marked complete'
-            + ('' if in_own_pod else ' (outside own pod)')
-            + (f' (credited to {credited_to})' if credited_to != conference else '')
-        ),
-    )
-
-    log = PracticeLog(
-        officer_id=current_user.id,
-        member_id=member.id,
-        commitment_id=commitment.id if commitment else None,
-        practice_type=practice_type,
-        conference=conference,
-        session_date=datetime.utcnow().date(),
-    )
-    db.session.add(log)
-
-    # Notifications
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-    create_notification(member.id,
-        f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
-    mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
-    if mentor_pod and mentor_pod.mentor_id != current_user.id:
-        create_notification(mentor_pod.mentor_id,
-            f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+    marked_names = []
+
+    for member in members:
+        commitment = _apply_completion(member, conference, practice_type)
+
+        credited_to = commitment.event if commitment else conference
+        in_own_pod = MentorPod.query.filter_by(
+            mentor_id=current_user.id, member_id=member.id
+        ).first() is not None
+        log_mdp_action(
+            current_user.id, 'commitment_complete', 'commitment',
+            target_user_id=member.id,
+            details=(
+                f'{practice_type} for {conference} marked complete'
+                + ('' if in_own_pod else ' (outside own pod)')
+                + (f' (credited to {credited_to})' if credited_to != conference else '')
+            ),
+        )
+
+        log = PracticeLog(
+            officer_id=current_user.id,
+            member_id=member.id,
+            commitment_id=commitment.id if commitment else None,
+            practice_type=practice_type,
+            conference=conference,
+            session_date=datetime.utcnow().date(),
+        )
+        db.session.add(log)
+
+        # Notifications
+        create_notification(member.id,
+            f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
+        mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
+        if mentor_pod and mentor_pod.mentor_id != current_user.id:
+            create_notification(mentor_pod.mentor_id,
+                f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+
+        marked_names.append(member.username)
 
     db.session.commit()
+
+    # Emails
+    names_str = ', '.join(marked_names)
+    email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
+                  f'<strong>{conference}</strong> on {timestamp}.</p>'
+                  f'<p>Logged by: {current_user.username}</p>')
+    if current_user.email:
+        send_email(current_user.email,
+            f'[DECA] Commitment logged: {names_str} – {practice_type} ({conference})',
+            email_body)
+    for member in members:
+        if member.email:
+            send_email(member.email,
+                f'[DECA] Your {practice_type} for {conference} has been marked complete',
+                email_body)
+
+    flash(f'Marked {practice_type} complete for {names_str} ({conference}).', 'success')
+    return redirect(url_for('reports', tab='commitment'))
 
     # Emails
     email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
@@ -5090,13 +5309,73 @@ def admin_import_commitments():
 
     temporary_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temporary_file:
+        with tempfile.NamedTemporaryFile(
+            suffix='.xlsx',
+            delete=False,
+        ) as temporary_file:
             temporary_path = temporary_file.name
+
         form.workbook.data.save(temporary_path)
+
+        try:
+            _read_xlsx_sheets(temporary_path, {'AH Attendance'})
+            is_attendance_workbook = True
+        except RuntimeError as exc:
+            if 'missing sheet(s): AH Attendance' not in str(exc):
+                raise
+            is_attendance_workbook = False
+
+        if is_attendance_workbook:
+            stats = import_roleplay_events_from_attendance_workbook(
+                temporary_path
+            )
+            db.session.commit()
+
+            log_mdp_action(
+                current_user.id,
+                'workbook_import',
+                'roleplay_events',
+                details=(
+                    f"Matched {stats['matched']}; "
+                    f"updated {stats['updated']}; "
+                    f"unmatched {len(stats['unmatched'])}; "
+                    f"without pod {len(stats['without_pod'])}"
+                ),
+            )
+            db.session.commit()
+
+            flash(
+                f"Roleplay import complete: matched {stats['matched']} "
+                f"members and updated {stats['updated']} roleplay events.",
+                'success',
+            )
+
+            if stats['unmatched']:
+                flash(
+                    'Members not found by email: '
+                    + ', '.join(stats['unmatched']),
+                    'warning',
+                )
+
+            if stats['without_pod']:
+                flash(
+                    'Members without a mentor pod: '
+                    + ', '.join(stats['without_pod']),
+                    'warning',
+                )
+
+            if stats['blank']:
+                flash(
+                    'Members with a blank Roleplay cell: '
+                    + ', '.join(stats['blank']),
+                    'warning',
+                )
+
+            return redirect(url_for('checklist_completion'))
 
         stats = import_mdp_tracking_workbook(
             temporary_path,
-            commitments_only=True,
+            commitments_only=False,
         )
         log_mdp_action(
             current_user.id,
@@ -5106,15 +5385,23 @@ def admin_import_commitments():
                 f"Matched {stats['matched_members']}; "
                 f"commitments {stats['commitments_updated']}; "
                 f"unmatched {len(stats['unmatched_members'])}; "
-                f"missing completion {len(stats['members_without_completion'])}"
+                f"missing completion "
+                f"{len(stats['members_without_completion'])}"
             ),
         )
         db.session.commit()
+
     except Exception as exc:
+        import traceback
         db.session.rollback()
-        print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
-        flash('The import failed. Check the Railway deployment logs for details.', 'danger')
+        print(
+            f'[MDP Admin Import] failed: '
+            f'{type(exc).__name__}: {exc}'
+        )
+        traceback.print_exc()
+        flash(f'Import failed: {exc}', 'danger')
         return redirect(url_for('checklist_completion'))
+
     finally:
         if temporary_path:
             try:
@@ -5123,22 +5410,27 @@ def admin_import_commitments():
                 pass
 
     flash(
-        f"Import complete: matched {stats['matched_members']} members and updated "
-        f"{stats['commitments_updated']} commitment rows.",
+        f"Import complete: matched {stats['matched_members']} members "
+        f"and updated {stats['commitments_updated']} commitment rows.",
         'success',
     )
+
     if stats['unmatched_members']:
         flash(
-            'Unmatched workbook members: ' + ', '.join(stats['unmatched_members']),
+            'Unmatched workbook members: '
+            + ', '.join(stats['unmatched_members']),
             'warning',
         )
+
     if stats['members_without_completion']:
         flash(
             'Members without completion rows: '
             + ', '.join(stats['members_without_completion']),
             'warning',
         )
+
     return redirect(url_for('checklist_completion'))
+
 
 
 @app.route('/member_commitments')
@@ -5268,6 +5560,12 @@ def admin_member_commitments():
             'conferences': conferences,
             'overall_pct': overall_pct,
             'commitments_incomplete': incomplete,
+            'roleplay_event_code': (
+                _roleplay_code(pod.roleplay_event)
+                if pod and pod.roleplay_event else ''
+            ),
+
+
         })
     total_members = len(rows)
     stats = {
@@ -5616,8 +5914,8 @@ QUIZ_PASS_THRESHOLD = 80.0
 @app.route('/workshop_quiz')
 @login_required
 def workshop_quiz():
-    if not (is_officer_view() or is_admin_view()):
-        flash('Only officers/admins can view quiz results.', 'danger')
+    if not is_admin_view():
+        flash('Only admins can view quiz results.', 'danger')
         return redirect(url_for('dashboard'))
 
     quiz_dates = {
@@ -5690,8 +5988,8 @@ def workshop_quiz():
 @app.route('/workshop_quiz/upload', methods=['POST'])
 @login_required
 def workshop_quiz_upload():
-    if not (is_officer_view() or is_admin_view()):
-        flash('Only officers/admins can upload quiz results.', 'danger')
+    if not is_admin_view():
+        flash('Only admins can upload quiz results.', 'danger')
         return redirect(url_for('workshop_quiz'))
 
     session_date_str = request.form.get('session_date', '').strip()

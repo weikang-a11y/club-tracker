@@ -38,10 +38,31 @@
         </div>
         <div class="card-body p-4 pt-2">
             <form method="POST" action="{{ url_for('mark_complete') }}" class="row g-3 align-items-end">
+                <div class="col-12">
+                    <p class="text-muted small mb-1">Select up to three members to mark the same commitment complete at once. Only the first is required.</p>
+                </div>
                 <div class="col-md-4">
-                    <label class="form-label fw-semibold">Member</label>
-                    <select name="member_id" class="form-select" id="memberSearchSelect" required>
+                    <label class="form-label fw-semibold">Member 1 <span class="text-danger">*</span></label>
+                    <select name="member_id" class="form-select member-search-select" required>
                         <option value="">Search member...</option>
+                        {% for m in all_members %}
+                        <option value="{{ m.id }}">{{ m.username }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Member 2 <span class="text-muted fw-normal">(optional)</span></label>
+                    <select name="member_id_2" class="form-select member-search-select">
+                        <option value="">None</option>
+                        {% for m in all_members %}
+                        <option value="{{ m.id }}">{{ m.username }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Member 3 <span class="text-muted fw-normal">(optional)</span></label>
+                    <select name="member_id_3" class="form-select member-search-select">
+                        <option value="">None</option>
                         {% for m in all_members %}
                         <option value="{{ m.id }}">{{ m.username }}</option>
                         {% endfor %}
@@ -56,12 +77,12 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="col-md-2">
+                <div class="col-md-4">
                     <label class="form-label fw-semibold">Conference</label>
                     <input type="text" class="form-control bg-light" value="{{ active_conf }}" readonly>
                     <input type="hidden" name="conference" value="{{ active_conf }}">
                 </div>
-                <div class="col-md-2">
+                <div class="col-md-4 d-flex align-items-end">
                     <button type="submit" class="btn btn-success w-100">✓ Mark Complete</button>
                 </div>
                 <div class="col-md-2">
@@ -225,14 +246,14 @@ function switchSubtab(tab) {
     document.getElementById('tab-pod').classList.toggle('active', tab === 'pod');
     document.getElementById('tab-mark').classList.toggle('active', tab === 'mark');
 }
-// Make member select searchable
+// Make all member selects searchable
 document.addEventListener('DOMContentLoaded', function() {
-    const sel = document.getElementById('memberSearchSelect');
-    if (!sel) return;
-    sel.addEventListener('keyup', function(e) {
-        const q = e.target.value.toLowerCase();
-        Array.from(sel.options).forEach(opt => {
-            opt.style.display = opt.value === '' || opt.text.toLowerCase().includes(q) ? '' : 'none';
+    document.querySelectorAll('.member-search-select').forEach(function(sel) {
+        sel.addEventListener('keyup', function(e) {
+            const q = e.target.value.toLowerCase();
+            Array.from(sel.options).forEach(opt => {
+                opt.style.display = opt.value === '' || opt.text.toLowerCase().includes(q) ? '' : 'none';
+            });
         });
     });
 });
