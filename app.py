@@ -2129,6 +2129,10 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
         risk_reasons.append(f"WS attendance {ws_rate}% < {ws_threshold_pct:.0f}% required")
 
     return {
+        # Templates read member_stats.is_competing. Without it Jinja
+        # renders Undefined, and `not Undefined` is True — which showed
+        # the Non-Compete banner to every member regardless of status.
+        'is_competing':     user.is_competing is not False,
         'ah_total':         total_ah,
         'ah_present':       ah_present,
         'ah_excused':       ah_excused,
