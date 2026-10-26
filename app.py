@@ -4247,22 +4247,6 @@ def mark_complete():
     flash(f'Marked {practice_type} complete for {names_str} ({conference}).', 'success')
     return redirect(url_for('reports', tab='commitment'))
 
-    # Emails
-    email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
-                  f'<strong>{conference}</strong> on {timestamp}.</p>'
-                  f'<p>Logged by: {current_user.username}</p>')
-    if current_user.email:
-        send_email(current_user.email,
-            f'[DECA] Commitment logged: {member.username} – {practice_type} ({conference})',
-            email_body)
-    if member.email:
-        send_email(member.email,
-            f'[DECA] Your {practice_type} for {conference} has been marked complete',
-            email_body)
-
-    flash(f'Marked {practice_type} complete for {member.username} ({conference}).', 'success')
-    return redirect(url_for('reports', tab='commitment'))
-
 
 @app.route('/notifications/mark_read', methods=['POST'])
 @login_required
