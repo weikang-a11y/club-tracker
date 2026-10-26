@@ -4159,7 +4159,7 @@ def mark_complete():
         flash('Only officers can mark commitments complete.', 'danger')
         return redirect(url_for('dashboard'))
 
-        practice_type = request.form.get('practice_type', '').strip()
+    practice_type = request.form.get('practice_type', '').strip()
     conference = request.form.get('conference', get_active_conference())
 
     # Collect up to three member IDs; only the first is required
