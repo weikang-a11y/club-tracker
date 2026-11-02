@@ -6316,6 +6316,100 @@ def workshop_quiz_upload():
     return redirect(url_for('workshop_quiz', date=session_date_str))
 
 
+
+@app.route('/workshop_quiz/sync_from_attendance', methods=['POST'])
+@login_required
+def workshop_quiz_sync_attendance():
+    """Sync WeeklyQuizResult.attended from WSAttendance for a given date."""
+    if not is_admin_view():
+        flash('Only admins can sync attendance.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    date_str = request.form.get('session_date', '').strip()
+    try:
+        session_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    ws_records = WSAttendance.query.filter_by(session_date=session_date).all()
+    updated = created = 0
+    for ws in ws_records:
+        attended = (float(ws.value) == 1.0)
+        excused  = (float(ws.value) == 0.5)
+        existing = WeeklyQuizResult.query.filter_by(
+            user_id=ws.user_id, session_date=session_date
+        ).first()
+        if existing:
+            changed = False
+            if attended and not existing.attended:
+                existing.attended = True
+                changed = True
+            if excused and not existing.excused:
+                existing.excused = True
+                changed = True
+            if changed:
+                updated += 1
+        else:
+            db.session.add(WeeklyQuizResult(
+                user_id=ws.user_id,
+                session_date=session_date,
+                attended=attended,
+                excused=excused,
+                score=None,
+                uploaded_by=current_user.id,
+            ))
+            created += 1
+    db.session.commit()
+    flash(f'Synced from WS attendance: {updated} updated, {created} new.', 'success')
+    return redirect(url_for('workshop_quiz', date=date_str))
+
+
+@app.route('/workshop_quiz/toggle_excused', methods=['POST'])
+@login_required
+def workshop_quiz_toggle_excused():
+    """Toggle excused status for one member on a given date."""
+    if not is_admin_view():
+        flash('Only admins can change excused status.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    user_id  = request.form.get('user_id', type=int)
+    date_str = request.form.get('session_date', '').strip()
+    try:
+        session_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    # Determine current state
+    ws = WSAttendance.query.filter_by(user_id=user_id, session_date=session_date).first()
+    currently_excused = ws is not None and float(ws.value) == 0.5
+    new_excused = not currently_excused
+    # Update WSAttendance
+    if ws:
+        ws.value = 0.5 if new_excused else 0.0
+    elif new_excused:
+        db.session.add(WSAttendance(
+            user_id=user_id, session_date=session_date, value=0.5
+        ))
+    # Update WeeklyQuizResult
+    qr = WeeklyQuizResult.query.filter_by(
+        user_id=user_id, session_date=session_date
+    ).first()
+    if qr:
+        qr.excused = new_excused
+        if new_excused:
+            qr.attended = False  # excused means not present for quiz purposes
+    else:
+        db.session.add(WeeklyQuizResult(
+            user_id=user_id,
+            session_date=session_date,
+            attended=False,
+            excused=new_excused,
+            score=None,
+            uploaded_by=current_user.id,
+        ))
+    db.session.commit()
+    flash(f'Member marked {"excused" if new_excused else "not excused"}.', 'success')
+    return redirect(url_for('workshop_quiz', date=date_str))
+
+
 @app.route('/workshop_quiz/delete_session', methods=['POST'])
 @login_required
 @admin_required
