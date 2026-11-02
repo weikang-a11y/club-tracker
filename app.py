@@ -1745,8 +1745,8 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         )
         requirements = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
         active_conf = get_active_conference()
-        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
-        for conference in CONFERENCE_ORDER[:active_idx + 1]:
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
             rule = requirements[conference]
             done = completion.get(conference)
             required = {
@@ -2158,8 +2158,8 @@ def resync_commitments(member, level):
     """
     changed = False
     active_conf = get_active_conference()
-        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
-        for conference in CONFERENCE_ORDER[:active_idx + 1]:
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         rule = requirement_rule(member.username, level, conference)
         com = Commitment.query.filter_by(
             member_name=member.username, event=conference).first()
@@ -3273,8 +3273,8 @@ def _conference_summary_for_user(user, today=None, commitments=None):
     low_grade_reasons = []
     conferences = {}
     active_conf = get_active_conference()
-        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
-        for conference in CONFERENCE_ORDER[:active_idx + 1]:
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         commitment = commitments_by_event.get(conference)
         if not commitment:
             grades[conference] = None
@@ -5473,8 +5473,8 @@ def admin_member_commitments():
         conferences = {}
         total_done = total_required = 0
         active_conf = get_active_conference()
-        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
-        for conference in CONFERENCE_ORDER[:active_idx + 1]:
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
             commitment = commitments_by_conf.get(conference)
             if not commitment:
                 conferences[conference] = None
@@ -5819,8 +5819,8 @@ def mentee_detail(member_id):
 
     conferences = []
     active_conf = get_active_conference()
-        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
-        for conference in CONFERENCE_ORDER[:active_idx + 1]:
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         commitment = commitments_by_conf.get(conference)
         if not commitment:
             conferences.append({'name': conference, 'commitment': None})
