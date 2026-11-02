@@ -3584,14 +3584,12 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             pod=pod,
         )
         attendance_reasons = []
-        ah_denom = attendance["ah_total"] - attendance["ah_excused"]
-        if ah_denom > 0 and attendance["ah_rate"] < AH_THRESHOLD * 100:
+        if attendance["ah_total"] > 0 and attendance["ah_rate"] < AH_THRESHOLD * 100:
             attendance_reasons.append(
                 f"AH attendance {attendance['ah_rate']}% "
                 f"(requires {AH_DISPLAY_THRESHOLD * 100:.0f}%)"
             )
-        ws_denom = attendance["ws_total"] - attendance["ws_excused"]
-        if ws_denom > 0 and attendance["ws_rate"] < attendance["ws_threshold_pct"]:
+        if attendance["ws_total"] > 0 and attendance["ws_rate"] < attendance["ws_threshold_pct"]:
             attendance_reasons.append(
                 f"WS attendance {attendance['ws_rate']}% (requires {attendance['ws_threshold_pct']:.0f}%)"
             )
