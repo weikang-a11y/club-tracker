@@ -3648,7 +3648,7 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             status, status_label = 'non_compete', 'Non-Compete'
             hard_risk_reasons = []
             attention_reasons = []
-        elif hard_risk_reasons or attention_reasons:
+        elif hard_risk_reasons:
             status, status_label = 'at_risk', 'At Risk'
         else:
             status, status_label = 'on_track', 'On Track'
