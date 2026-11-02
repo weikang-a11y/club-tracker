@@ -1134,6 +1134,8 @@ def _spreadsheet_text(value):
 
 def _roleplay_code(value):
     text = _spreadsheet_text(value)
+    if text.strip('-').strip() == '':
+        return ''
     text = re.sub(r'^\s*RP\s*:\s*', '', text, flags=re.IGNORECASE)
 
     # Match the extraction used on Mentor Pods:
