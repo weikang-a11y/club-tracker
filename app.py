@@ -2638,7 +2638,7 @@ def backfill_roleplay_events_2026_27():
         if not user:
             skipped += 1
             continue
-        pod = MentorPod.query.filter_by(mentee_id=user.id).first()
+        pod = MentorPod.query.filter_by(member_id=user.id).first()
         if not pod:
             skipped += 1
             continue
