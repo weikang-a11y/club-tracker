@@ -2441,6 +2441,216 @@ def add_roleplay_event_column():
     print('[Migration] mentor_pod.roleplay_event column ensured.')
 
 
+
+# ---------------------------------------------------------------------------
+# One-time backfill: 2026-27 roleplay event assignments from AH Attendance
+# ---------------------------------------------------------------------------
+ROLEPLAY_EVENTS_2026_27_KEY = "2026-27-roleplay-events-v1"
+
+_ROLEPLAY_EVENTS_2026_27 = {
+    "shua.cheon@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "charlotte.fann@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "eric.jia@warriorlife.net": "Hospitality Services (HTDM)",
+    "sierra.lukez@warriorlife.net": "Principles of Finance (PFN)",
+    "kavya.ravulaparti@warriorlife.net": "Principles of Finance (PFN)",
+    "elaine.choi@warriorlife.net": "Marketing Communications (MCS)",
+    "jaden.park@warriorlife.net": "Hospitality Services (HTDM)",
+    "sk.satagopan@warriorlife.net": "Hospitality Services (HTDM)",
+    "sonmachi.amobi@warriorlife.net": "Apparel & Accesories Marketing (AAM)",
+    "aisha.chadha@warriorlife.net": "Hospitality Services (HTDM)",
+    "myra.chadha@warriorlife.net": "Hospitality Services (HTDM)",
+    "timothy.feng@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "andrew.huang@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "julia.li@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "dana.sun@warriorlife.net": "Marketing Management (MTDM)",
+    "hailey.taylor@warriorlife.net": "Food Marketing (FMS)",
+    "amanda.li@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "panash.chandwani@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "anvi.vohra@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "aadya.yadlapati@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "isabella.yu@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "sophie.croswhite@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "anni.wu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "marisol.chou@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "priscilla.concepcion@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "allison.cung@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "veer.sandhu@warriorlife.net": "Principles of Finance (PFN)",
+    "aidenj.lee@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "elia.zhang@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "preston.dinh@warriorlife.net": "Principles of Finance (PFN)",
+    "fateh.gill@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "rehat.gill@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "roy.shin@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "mridini.parui@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "jocelyn.kwok@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "gordon.li@warriorlife.net": "Business Finance (BFS)",
+    "rihan.sharma@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "yicheng.hsieh@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "taehwan.lee@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "micah.moon@warriorlife.net": "Principles of Finance (PFN)",
+    "v.subramanian@warriorlife.net": "Travel & Tourism (TTDM)",
+    "julia.zhou@warriorlife.net": "Travel & Tourism (TTDM)",
+    "damon.focaracci@warriorlife.net": "Principles of Finance (PFN)",
+    "trevor.smith@warriorlife.net": "Principles of Finance (PFN)",
+    "dean.jaffari@warriorlife.net": "Principles of Finance (PFN)",
+    "saisha.vibhute@warriorlife.net": "Retail Merchandising (RMS)",
+    "kate.borba@warriorlife.net": "Human Resources Management (HRM)",
+    "hillary.bui@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "ahaana.kandadai@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "shyla.singh@warriorlife.net": "Principles of Marketing (PMK)",
+    "jayden.wong@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "lasya.anumandla@warriorlife.net": "Principles of Marketing (PMK)",
+    "lauren.diep@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "alyssa.nguyen@warriorlife.net": "Principles of Finance (PFN)",
+    "n.anumolu@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "nathan.pham@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "nathan.cung@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "christopher.har@warriorlife.net": "Principles of Marketing (PMK)",
+    "eva.allen@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "ambery.chang@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "ruby.han@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "brooke.harvey@warriorlife.net": "Travel & Tourism (TTDM)",
+    "elaine.li@warriorlife.net": "Principles of Finance (PFN)",
+    "audrey.truong@warriorlife.net": "Marketing Communications (MCS)",
+    "hailey.wong@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "an.bach@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "abigail.bendemire@warriorlife.net": "Principles of Marketing (PMK)",
+    "isabella.chen@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "elize.kaldani@warriorlife.net": "Entrepreneurship (ENT)",
+    "bethany.dohn@warriorlife.net": "Hospitality Services (HTDM)",
+    "ashley.park@warriorlife.net": "Hospitality Services (HTDM)",
+    "zeqi.an@warriorlife.net": "Marketing Communications (MCS)",
+    "joshwyn.hong@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "sherry.liang@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "kinshuk.pandey@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "lukshman.senthil@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "victoria.su@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "nishanth.duvedi@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "aman.kochar@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "avni.kumar@warriorlife.net": "Retail Merchandising (RMS)",
+    "kashvi.lath@warriorlife.net": "Human Resources Management (HRM)",
+    "saranya.malladi@warriorlife.net": "Human Resources Management (HRM)",
+    "armaan.vidhani@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "jayoon.koo@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "suvir.maniktala@warriorlife.net": "Travel & Tourism (TTDM)",
+    "jeffrey.mu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "sumedh.seetharaman@warriorlife.net": "Principles of Finance (PFN)",
+    "viraaj.vatte@warriorlife.net": "Travel & Tourism (TTDM)",
+    "joey.zhu@warriorlife.net": "Human Resources Management (HRM)",
+    "ranbir.bhardwaj@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "riyana.baldua@warriorlife.net": "Hospitality Services (HTDM)",
+    "aa.adhiwiyogo@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "benjamin.luk@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "aubrey.santos@warriorlife.net": "Hospitality Services (HTDM)",
+    "aiden.shankar@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "anoop.gathala@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "yongqi.liu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "lincolnjacob.tran@warriorlife.net": "Entrepreneurship (ENT)",
+    "matthew.zhu@warriorlife.net": "Entrepreneurship (ETDM)",
+    "haochien.wang@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "srihari.thiagarajan@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "jordan.kim@warriorlife.net": "Retail Merchandising (RMS)",
+    "gordon.lee@warriorlife.net": "Entrepreneurship (ETDM)",
+    "jesse.alabi@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "s.balakrishnan@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "alisha.raman@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "neha.sunil@warriorlife.net": "Principles of Marketing (PMK)",
+    "shanzhi.weng@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "victor.cristobal@warriorlife.net": "Principles of Finance (PFN)",
+    "naomi.shaffer@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "owen.smith@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "laura.zhang@warriorlife.net": "Principles of Finance (PFN)",
+    "avah.thompson@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "yuettung.lam@warriorlife.net": "Human Resources Management (HRM)",
+    "kevin.ou@warriorlife.net": "Financial Services (FTDM)",
+    "michael.qi@warriorlife.net": "Retail Merchandising (RMS)",
+    "william.qu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "zixuan.wang@warriorlife.net": "Financial Services (FTDM)",
+    "darren.yu@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "kevin.zhao@warriorlife.net": "Entrepreneurship (ENT)",
+    "rounak.bhatia@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "andrew.castaneda@warriorlife.net": "Travel & Tourism (TTDM)",
+    "jayden.cha@warriorlife.net": "Travel & Tourism (TTDM)",
+    "ethan.chen@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "darren.zhong@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "zayd.bashadi@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "isabella.moon@warriorlife.net": "Principles of Finance (PFN)",
+    "fiona.qiao@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "logan.gilbert@warriorlife.net": "Hospitality Services (HTDM)",
+    "connor.lam@warriorlife.net": "Hospitality Services (HTDM)",
+    "elin.loscalzo@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "samuel.xiao@warriorlife.net": "Food Marketing (FMS)",
+    "jaden.jia@warriorlife.net": "Principles of Marketing (PMK)",
+    "enduo.jiang@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "tristan.tran@warriorlife.net": "Principles of Marketing (PMK)",
+    "yuna.han@warriorlife.net": "Principles of Marketing (PMK)",
+    "jennaly.fangonilo@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "isobel.kwong@warriorlife.net": "Financial Services (FTDM)",
+    "ashley.lai@warriorlife.net": "Travel & Tourism (TTDM)",
+    "mikah.pryor@warriorlife.net": "Principles of Marketing (PMK)",
+    "sofia.yiu@warriorlife.net": "Marketing Communications (MCS)",
+    "sradha.namala@warriorlife.net": "Apparel & Accesories Marketing (AAM)",
+    "tomas.santos@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "forrest.su@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "nathan.tran@warriorlife.net": "Marketing Communications (MCS)",
+    "maahir.satwani@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "woobin.jang@warriorlife.net": "Business Services Marketing (BSM)",
+    "colin.chandra@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "nathan.liu@warriorlife.net": "Principles of Marketing (PMK)",
+    "ava.smith@warriorlife.net": "Principles of Marketing (PMK)",
+    "yifan.chen@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "avaneesh.nangare@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "barak.yang@warriorlife.net": "Human Resources Management (HRM)",
+    "antonio.muthalaly@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "advaith.veligeti@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "sofia.gass@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "valencia.su@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "caelin.hu@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "ziqing.wang@warriorlife.net": "Human Resources Management (HRM)",
+    "nina.ling@warriorlife.net": "Travel & Tourism (TTDM)",
+    "jenny.lee@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "nathaniel.kommu@warriorlife.net": "Personal Financial Literacy (PFL)",
+    "r.parandekar@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "alyssa.ho@warriorlife.net": "Entrepreneurship (ENT)",
+    "geralyn.loo@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "anneka.prusty@warriorlife.net": "Personal Financial Literacy (PFL)",
+    "yamilet.quintana@warriorlife.net": "Personal Financial Literacy (PFL)",
+    "arkopriya.aich@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "saira.bhatia@warriorlife.net": "Marketing Communications (MCS)",
+    "riday.appannagari@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "arnav.mani@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "purvi.muriki@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "chloe.xiao@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "karen.xiao@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+}
+
+
+def backfill_roleplay_events_2026_27():
+    """One-time migration: set mentor_pod.roleplay_event from AH Attendance data."""
+    if db.session.get(DataMigration, ROLEPLAY_EVENTS_2026_27_KEY):
+        return  # already ran
+    updated = 0
+    skipped = 0
+    for email, event in _ROLEPLAY_EVENTS_2026_27.items():
+        user = User.query.filter(
+            db.func.lower(User.email) == email.lower()
+        ).first()
+        if not user:
+            skipped += 1
+            continue
+        pod = MentorPod.query.filter_by(mentee_id=user.id).first()
+        if not pod:
+            skipped += 1
+            continue
+        pod.roleplay_event = event
+        updated += 1
+    db.session.add(DataMigration(
+        key=ROLEPLAY_EVENTS_2026_27_KEY,
+        details=f"updated={updated} skipped={skipped}",
+    ))
+    db.session.commit()
+    print(f"[Roleplay Backfill] done: updated={updated}, skipped={skipped}")
+
 with app.app_context():
     if not os.environ.get("SKIP_DB_INIT"): db.create_all()
 
@@ -2833,6 +3043,13 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Written Deadlines] synchronization skipped: {exc}')
+
+    try:
+        if not SKIP_STARTUP_WORK:
+            backfill_roleplay_events_2026_27()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Roleplay Backfill] skipped: {exc}')
 
 
 
