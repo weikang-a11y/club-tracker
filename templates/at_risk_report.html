@@ -115,7 +115,7 @@
         </thead>
         <tbody>
           {% for row in rows %}
-          <tr class="report-data-row {{ 'table-danger' if row.status == 'at_risk' else 'table-warning' }}"
+          <tr class="report-data-row table-danger"
               data-status="{{ row.status }}"
               data-events="{{ row.event_keys|join('|') }}"
               data-mentor="{{ row.mentor_name }}"
@@ -138,13 +138,15 @@
             
             <td><span class="badge bg-danger">At Risk</span></td>
             <td>
-              {% if row.hard_risk_reasons %}
-                <div class="fw-semibold text-danger">Immediate:</div>
+              {% set extra = row.attention_reasons | reject('in', row.hard_risk_reasons) | list %}
+              {% set all_reasons = row.hard_risk_reasons + extra %}
+              {% if all_reasons %}
                 <ul class="reason-list">
-                  {% for reason in row.hard_risk_reasons %}<li>{{ reason }}</li>{% endfor %}
+                  {% for reason in all_reasons %}<li>{{ reason }}</li>{% endfor %}
                 </ul>
+              {% else %}
+                —
               {% endif %}
-
             </td>
             <td class="text-nowrap">
               {%- set ah_denom = row.attendance.ah_total - row.attendance.ah_excused %}
