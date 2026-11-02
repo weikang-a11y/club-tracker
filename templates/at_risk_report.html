@@ -170,8 +170,10 @@
               {% endif %}
             </td>
             <td class="text-nowrap">
-              <div>AH: {{ row.attendance.ah_rate ~ '%' if row.attendance.ah_total > 0 else 'No data' }}</div>
-              <div>WS: {{ row.attendance.ws_rate ~ '%' if row.attendance.ws_total > 0 else 'No data' }}</div>
+              {%- set ah_denom = row.attendance.ah_total - row.attendance.ah_excused %}
+              <div>AH: {% if ah_denom > 0 and row.attendance.ah_rate < 80 %}{{ row.attendance.ah_rate }}%{% else %}—{% endif %}</div>
+              {%- set ws_denom = row.attendance.ws_total - row.attendance.ws_excused %}
+              <div>WS: {% if ws_denom > 0 and row.attendance.ws_rate < row.attendance.ws_threshold_pct %}{{ row.attendance.ws_rate }}%{% else %}—{% endif %}</div>
             </td>
             <td class="text-center">{{ row.grades.get('VCMC') or '—' }}</td>
             <td class="text-center">{{ row.grades.get('SVCDC') or '—' }}</td>
