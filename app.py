@@ -3419,7 +3419,7 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             + (f" ({item['deadline_text']})" if item['deadline_text'] else '')
             for item in written['overdue_items']
         )
-        attention_reasons = list(conference['incomplete_reasons'])
+        attention_reasons = list(conference['overdue_reasons'])
         attention_reasons.extend(conference['low_grade_reasons'])
         attention_reasons.extend(
             'Written incomplete: ' + item['name']
