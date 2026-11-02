@@ -6306,6 +6306,25 @@ def workshop_quiz_upload():
         if not User.query.filter(db.func.lower(User.username) == username).first():
             not_found += 1
 
+    # ws_upsert_from_quiz: mirror quiz attendance into WSAttendance so WS % updates
+    for member in all_members:
+        attended = (member.username or '').strip().lower() in attended_map
+        excused_ws = not attended and (member.id in ws_excused_ids)
+        ws_value = 1.0 if attended else (0.5 if excused_ws else 0.0)
+        ws_rec = WSAttendance.query.filter_by(
+            user_id=member.id, session_date=session_date
+        ).first()
+        if ws_rec:
+            # Only update if we're not overwriting a manually-set excused flag
+            if not (ws_rec.value == 0.5 and not attended):
+                ws_rec.value = ws_value
+        else:
+            db.session.add(WSAttendance(
+                user_id=member.id,
+                session_date=session_date,
+                value=ws_value,
+            ))
+
     db.session.commit()
     flash(
         f'Uploaded results for {saved} member(s) on {session_date_str} '
