@@ -2237,22 +2237,20 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     ah_present = sum(1 for r in ah_records if float(r.value or 0) >= 1.0)
     ah_excused = sum(1 for r in ah_records if 0.0 < float(r.value or 0) < 1.0)
     ah_absent  = total_ah - ah_present - ah_excused
-    ah_denom   = total_ah - ah_excused
-    ah_rate    = round((ah_present / ah_denom) * 100, 1) if ah_denom > 0 else 0.0
+    ah_rate    = round(((ah_present + 0.5 * ah_excused) / total_ah) * 100, 1) if total_ah > 0 else 0.0
 
     ws_present = sum(1 for r in ws_records if float(r.value or 0) >= 1.0)
     ws_excused = sum(1 for r in ws_records if 0.0 < float(r.value or 0) < 1.0)
     ws_absent  = total_ws - ws_present - ws_excused
-    ws_denom   = total_ws - ws_excused
-    ws_rate    = round((ws_present / ws_denom) * 100, 1) if ws_denom > 0 else 0.0
+    ws_rate    = round(((ws_present + 0.5 * ws_excused) / total_ws) * 100, 1) if total_ws > 0 else 0.0
 
     if pod is _UNSET:
         pod = MentorPod.query.filter_by(member_id=user.id).first()
     level = pod.experience_level if pod else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
-    ah_ok = ah_denom == 0 or ah_rate >= (AH_THRESHOLD * 100)
-    ws_ok = ws_denom == 0 or ws_rate >= ws_threshold_pct
+    ah_ok = total_ah == 0 or ah_rate >= (AH_THRESHOLD * 100)
+    ws_ok = total_ws == 0 or ws_rate >= ws_threshold_pct
 
     at_risk = not ah_ok or not ws_ok
     risk_reasons = []
