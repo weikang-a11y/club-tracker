@@ -30,33 +30,6 @@
   </div>
 </div>
 
-<div class="row g-3 mb-4">
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">Members Reviewed</div>
-      <div class="summary-number">{{ summary.total_members }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">At Risk</div>
-      <div class="summary-number text-danger">{{ summary.at_risk_count }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">On Track</div>
-      <div class="summary-number text-success">{{ summary.on_track_count }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">Shown Below</div>
-      <div class="summary-number" id="reportShownCount">{{ summary.actionable_count }}</div>
-    </div></div>
-  </div>
-</div>
-
 <div class="alert alert-secondary small mb-4">
   <strong>At Risk</strong> indicates an attendance threshold failure with recorded attendance, an overdue conference requirement, or an overdue written item. Members with no recorded attendance are not automatically marked at risk for a 0% rate.
 </div>
