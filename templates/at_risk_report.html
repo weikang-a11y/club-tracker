@@ -45,12 +45,6 @@
   </div>
   <div class="col-6 col-lg">
     <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">Needs Attention</div>
-      <div class="summary-number text-warning">{{ summary.needs_attention_count }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
       <div class="text-muted small">On Track</div>
       <div class="summary-number text-success">{{ summary.on_track_count }}</div>
     </div></div>
@@ -142,13 +136,7 @@
             </td>
 
             
-            <td>
-              {% if row.status == 'at_risk' %}
-                <span class="badge bg-danger">At Risk</span>
-              {% else %}
-                <span class="badge bg-warning text-dark">Needs Attention</span>
-              {% endif %}
-            </td>
+            <td><span class="badge bg-danger">At Risk</span></td>
             <td>
               {% if row.hard_risk_reasons %}
                 <div class="fw-semibold text-danger">Immediate:</div>
@@ -156,18 +144,7 @@
                   {% for reason in row.hard_risk_reasons %}<li>{{ reason }}</li>{% endfor %}
                 </ul>
               {% endif %}
-              {% set future_reasons = [] %}
-              {% for reason in row.attention_reasons %}
-                {% if reason not in row.hard_risk_reasons %}
-                  {% set _ = future_reasons.append(reason) %}
-                {% endif %}
-              {% endfor %}
-              {% if future_reasons %}
-                <div class="fw-semibold mt-1">Incomplete:</div>
-                <ul class="reason-list">
-                  {% for reason in future_reasons %}<li>{{ reason }}</li>{% endfor %}
-                </ul>
-              {% endif %}
+
             </td>
             <td class="text-nowrap">
               {%- set ah_denom = row.attendance.ah_total - row.attendance.ah_excused %}
@@ -224,7 +201,6 @@ function updateRiskFilterOptions() {
   if (filterType === 'status') {
     options = [
       ['at_risk', 'At Risk'],
-      ['needs_attention', 'Needs Attention']
     ];
   } else if (filterType === 'grade') {
     options = [
