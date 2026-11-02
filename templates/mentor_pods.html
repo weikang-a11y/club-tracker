@@ -205,7 +205,7 @@
                             {{ pod.event or 'No Event' }}
                         </span>
                         <span class="badge bg-secondary">
-                            RP: {{ pod.roleplay_event.split('(')[-1].replace(')', '').strip() if pod.roleplay_event else '—' }}
+                            {% set rp = roleplay_code(pod.roleplay_event) %}{% if rp %}RP: {{ rp }}{% else %}—{% endif %}
                         </span>
                         <span class="badge {{ 'bg-warning text-dark' if pod.member.is_competing else 'bg-secondary' }}">
                             {{ 'Competing' if pod.member.is_competing else 'Non-Compete' }}
