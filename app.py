@@ -1744,7 +1744,9 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
             {},
         )
         requirements = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
-        for conference in CONFERENCE_ORDER:
+        active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
             rule = requirements[conference]
             done = completion.get(conference)
             required = {
@@ -2155,7 +2157,9 @@ def resync_commitments(member, level):
     shows up at once instead of waiting for the next restart.
     """
     changed = False
-    for conference in CONFERENCE_ORDER:
+    active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         rule = requirement_rule(member.username, level, conference)
         com = Commitment.query.filter_by(
             member_name=member.username, event=conference).first()
@@ -2436,7 +2440,7 @@ def add_roleplay_event_column():
 
 
 with app.app_context():
-    db.create_all()
+    if not os.environ.get("SKIP_DB_INIT"): db.create_all()
 
     add_roleplay_event_column()
     engine_name = db.engine.dialect.name
@@ -3268,7 +3272,9 @@ def _conference_summary_for_user(user, today=None, commitments=None):
     overdue_reasons = []
     low_grade_reasons = []
     conferences = {}
-    for conference in CONFERENCE_ORDER:
+    active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         commitment = commitments_by_event.get(conference)
         if not commitment:
             grades[conference] = None
@@ -3361,12 +3367,14 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             pod=pod,
         )
         attendance_reasons = []
-        if attendance['ah_total'] > 0 and attendance['ah_rate'] < AH_THRESHOLD * 100:
+        ah_denom = attendance["ah_total"] - attendance["ah_excused"]
+        if ah_denom > 0 and attendance["ah_rate"] < AH_THRESHOLD * 100:
             attendance_reasons.append(
                 f"AH attendance {attendance['ah_rate']}% "
                 f"(requires {AH_DISPLAY_THRESHOLD * 100:.0f}%)"
             )
-        if attendance['ws_total'] > 0 and attendance['ws_rate'] < attendance['ws_threshold_pct']:
+        ws_denom = attendance["ws_total"] - attendance["ws_excused"]
+        if ws_denom > 0 and attendance["ws_rate"] < attendance["ws_threshold_pct"]:
             attendance_reasons.append(
                 f"WS attendance {attendance['ws_rate']}% (requires {attendance['ws_threshold_pct']:.0f}%)"
             )
@@ -5464,7 +5472,9 @@ def admin_member_commitments():
         commitments_by_conf = {row.event: row for row in commitments}
         conferences = {}
         total_done = total_required = 0
-        for conference in CONFERENCE_ORDER:
+        active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
             commitment = commitments_by_conf.get(conference)
             if not commitment:
                 conferences[conference] = None
@@ -5808,7 +5818,9 @@ def mentee_detail(member_id):
     commitments_by_conf = {row.event: row for row in commitments}
 
     conferences = []
-    for conference in CONFERENCE_ORDER:
+    active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         commitment = commitments_by_conf.get(conference)
         if not commitment:
             conferences.append({'name': conference, 'commitment': None})
