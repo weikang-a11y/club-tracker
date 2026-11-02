@@ -5910,7 +5910,7 @@ def at_risk_report():
         today=today,
     )
 
-    status_filter = request.args.get('status', 'all').strip().lower()
+    status_filter = request.args.get('status', 'at_risk').strip().lower()
     if status_filter in {'at_risk', 'on_track', 'non_compete'}:
         if status_filter == 'at_risk':
             rows = [r for r in rows if r['status'] in {'at_risk', 'needs_attention'}]
