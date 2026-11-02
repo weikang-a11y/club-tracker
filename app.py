@@ -1745,8 +1745,8 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         )
         requirements = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
         active_conf = get_active_conference()
-    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
-    for conference in CONFERENCE_ORDER[:active_idx + 1]:
+        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+        for conference in CONFERENCE_ORDER[:active_idx + 1]:
             rule = requirements[conference]
             done = completion.get(conference)
             required = {
@@ -5473,8 +5473,8 @@ def admin_member_commitments():
         conferences = {}
         total_done = total_required = 0
         active_conf = get_active_conference()
-    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
-    for conference in CONFERENCE_ORDER[:active_idx + 1]:
+        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+        for conference in CONFERENCE_ORDER[:active_idx + 1]:
             commitment = commitments_by_conf.get(conference)
             if not commitment:
                 conferences[conference] = None
