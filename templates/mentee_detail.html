@@ -80,6 +80,71 @@
   </div>
 </div>
 
+{# ── Attendance records ─────────────────────────────────────────
+   Meeting-by-meeting figures. The analytics subteam can correct an
+   existing record here; everyone else sees it read-only. No control
+   creates a meeting date, so the set of meetings still comes from
+   the import. #}
+<div class="card border-0 shadow-sm rounded-4 mb-4">
+  <div class="card-body p-4">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+      <h5 class="mb-0">Attendance Records</h5>
+      {% if can_edit_attendance %}
+      <span class="badge bg-success-subtle text-success rounded-pill px-3">Editable</span>
+      {% else %}
+      <span class="text-muted small">Only the analytics subteam can change these.</span>
+      {% endif %}
+    </div>
+
+    <div class="row g-4">
+      {% for label, kind, records in [
+          ('All-Hands', 'ah', ah_records), ('Workshop', 'ws', ws_records)] %}
+      <div class="col-12 col-lg-6">
+        <div class="fw-semibold mb-2">{{ label }}</div>
+        {% if records %}
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead class="table-light">
+              <tr><th>Date</th><th class="text-end">Status</th></tr>
+            </thead>
+            <tbody>
+              {% for rec in records %}
+              {% set v = rec.value | float %}
+              <tr>
+                <td>{{ rec.session_date }}</td>
+                <td class="text-end">
+                  {% if can_edit_attendance %}
+                  <form method="POST" action="{{ url_for('update_attendance') }}" class="d-inline">
+                    <input type="hidden" name="kind" value="{{ kind }}">
+                    <input type="hidden" name="record_id" value="{{ rec.id }}">
+                    <select name="value" class="form-select form-select-sm d-inline-block w-auto"
+                            onchange="this.form.submit()"
+                            aria-label="Attendance for {{ rec.session_date }}">
+                      <option value="1" {% if v >= 1 %}selected{% endif %}>Present</option>
+                      <option value="0.5" {% if v > 0 and v < 1 %}selected{% endif %}>Excused</option>
+                      <option value="0" {% if v <= 0 %}selected{% endif %}>Absent</option>
+                    </select>
+                  </form>
+                  {% else %}
+                    {% if v >= 1 %}<span class="badge bg-success">Present</span>
+                    {% elif v > 0 %}<span class="badge bg-warning text-dark">Excused</span>
+                    {% else %}<span class="badge bg-danger">Absent</span>{% endif %}
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-muted small mb-0">No {{ label }} meetings recorded yet.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
 {% if attendance.risk_reasons %}
 <div class="alert alert-warning">
   <strong>Attendance concerns:</strong>

@@ -102,12 +102,12 @@ WRITTEN_TYPES  = {'Written Presentation'}
 EVENT_REQUIREMENTS = {
     "N": {  # Novice
         "VCMC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-10-26"},
-        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2027-01-08"},
+        "SVCDC": {"roleplay": 1, "written": 1, "exam": 2, "deadline": "2026-11-30"},
         "SCDC":  {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-02-23"},
     },
     "E": {  # Experienced
         "VCMC":  {"roleplay": 0, "written": 1, "exam": 0, "deadline": "2026-10-26"},
-        "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2027-01-08"},
+        "SVCDC": {"roleplay": 2, "written": 1, "exam": 2, "deadline": "2026-11-30"},
         "SCDC":  {"roleplay": 1, "written": 1, "exam": 1, "deadline": "2027-02-23"},
     },
 }
@@ -117,6 +117,27 @@ EVENT_REQUIREMENTS = {
 # every other conference. Listing the exceptions in code rather than editing
 # rows directly matters: the startup sync rebuilds commitments from the matrix
 # on every boot, so database-only edits would be undone on the next deploy.
+# Only the analytics subteam may correct attendance from inside the app.
+# Everyone else still sees the figures; they just cannot change them. Being
+# an admin is not enough on its own — attendance is the one thing that has to
+# reconcile with the spreadsheet, so the list is explicit.
+ATTENDANCE_EDITORS = {
+    'philina.chen',
+    'olivia.kang',
+    'zihan.liu',
+    'aryahi.sharma',
+}
+
+
+def can_edit_attendance(user=None):
+    """True when this account is on the analytics subteam."""
+    user = user or current_user
+    return (
+        getattr(user, 'is_authenticated', False)
+        and (user.username or '').lower() in ATTENDANCE_EDITORS
+    )
+
+
 VCMC_WRITTEN_REQUIRED_EXPERIENCED = {
     'jayoon.koo',
     'chloe.xiao',
@@ -151,7 +172,7 @@ def requirement_rule(username, level, conference):
 CONFERENCE_ORDER = ["VCMC", "SVCDC", "SCDC"]
 CONFERENCE_DEADLINES = {
     "VCMC":  "2026-10-26",
-    "SVCDC": "2027-01-08",
+    "SVCDC": "2026-11-30",
     "SCDC":  "2027-02-23",
 }
 
@@ -2425,19 +2446,23 @@ def _backfill_column(table, source, destination):
         db.session.rollback()
 
 def add_roleplay_event_column():
-    with db.engine.connect() as conn:
-        conn.execute(sql_text(
-            'ALTER TABLE mentor_pod '
-            'ADD COLUMN IF NOT EXISTS roleplay_event VARCHAR(100)'
-        ))
+    """Add mentor_pod.roleplay_event if it is missing.
 
-        if db.engine.dialect.name == 'postgresql':
-            conn.execute(sql_text(
+    ADD COLUMN IF NOT EXISTS is Postgres-only. SQLite rejects it outright,
+    which stopped the app from starting on a local machine, so this goes
+    through the portable helper instead.
+    """
+    _ensure_column('mentor_pod', 'roleplay_event', 'VARCHAR(100)')
+
+    if db.engine.dialect.name == 'postgresql':
+        try:
+            db.session.execute(sql_text(
                 'ALTER TABLE mentor_pod '
                 'ALTER COLUMN roleplay_event TYPE VARCHAR(100)'
             ))
-
-        conn.commit()
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
     print('[Migration] mentor_pod.roleplay_event column ensured.')
 
@@ -6150,6 +6175,11 @@ def mentee_detail(member_id):
         event=event,
         mentor_name=pod.mentor.username if pod and pod.mentor else 'Unassigned',
         attendance=get_attendance_stats(member),
+        ah_records=AHAttendance.query.filter_by(user_id=member.id)
+                   .order_by(AHAttendance.session_date).all(),
+        ws_records=WSAttendance.query.filter_by(user_id=member.id)
+                   .order_by(WSAttendance.session_date).all(),
+        can_edit_attendance=can_edit_attendance(),
         conferences=conferences,
         written=written,
         written_items=written_items,
@@ -6159,6 +6189,66 @@ def mentee_detail(member_id):
         exam_uploads=exam_uploads,
         report_date=today,
     )
+
+@app.route('/attendance/update', methods=['POST'])
+@login_required
+def update_attendance():
+    """Correct one existing attendance record.
+
+    Restricted to the analytics subteam. Only existing meeting dates can be
+    changed — nothing here creates a new one, so the set of meetings still
+    comes from the import and cannot drift away from the spreadsheet.
+    """
+    if not can_edit_attendance():
+        flash('Only the analytics subteam can change attendance.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    kind = (request.form.get('kind') or '').strip().lower()
+    record_id = (request.form.get('record_id') or '').strip()
+    raw_value = (request.form.get('value') or '').strip()
+
+    model = AHAttendance if kind == 'ah' else WSAttendance if kind == 'ws' else None
+    if model is None or not record_id.isdigit():
+        flash('That attendance record could not be identified.', 'danger')
+        return redirect(request.referrer or url_for('dashboard'))
+
+    try:
+        value = float(raw_value)
+    except ValueError:
+        value = None
+    if value not in (0.0, 0.5, 1.0):
+        flash('Attendance must be Present, Excused or Absent.', 'danger')
+        return redirect(request.referrer or url_for('dashboard'))
+
+    record = db.session.get(model, int(record_id))
+    if not record:
+        flash('That attendance record no longer exists.', 'warning')
+        return redirect(request.referrer or url_for('dashboard'))
+
+    old_value = float(record.value or 0)
+    if old_value == value:
+        return redirect(request.referrer or url_for('dashboard'))
+
+    labels = {1.0: 'Present', 0.5: 'Excused', 0.0: 'Absent'}
+    record.value = value
+
+    member = db.session.get(User, record.user_id)
+    log_mdp_action(
+        current_user.id,
+        'attendance_edit',
+        'attendance',
+        target_user_id=record.user_id,
+        details=(f'{kind.upper()} {record.session_date}: '
+                 f'{labels.get(old_value, old_value)} -> {labels[value]}'),
+    )
+    db.session.commit()
+    flash(
+        f'{kind.upper()} {record.session_date} for '
+        f'{member.username if member else "member"} set to {labels[value]}.',
+        'success'
+    )
+    return redirect(request.referrer or url_for('mentee_detail', member_id=record.user_id))
+
 
 # ── Weekly Quiz routes ────────────────────────────────────────────────────────
 
