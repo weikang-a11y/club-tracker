@@ -30,43 +30,8 @@
   </div>
 </div>
 
-<div class="row g-3 mb-4">
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">Members Reviewed</div>
-      <div class="summary-number">{{ summary.total_members }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">At Risk</div>
-      <div class="summary-number text-danger">{{ summary.at_risk_count }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">Needs Attention</div>
-      <div class="summary-number text-warning">{{ summary.needs_attention_count }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">On Track</div>
-      <div class="summary-number text-success">{{ summary.on_track_count }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-lg">
-    <div class="card border-0 shadow-sm h-100"><div class="card-body">
-      <div class="text-muted small">Shown Below</div>
-      <div class="summary-number" id="reportShownCount">{{ summary.actionable_count }}</div>
-    </div></div>
-  </div>
-</div>
-
 <div class="alert alert-secondary small mb-4">
-  <strong>At Risk</strong> indicates an attendance threshold failure with recorded attendance, an overdue conference requirement, or an overdue written item.
-  <strong>Needs Attention</strong> indicates incomplete future conference/written work, or a recorded conference grade below 100%.
-  Members with no recorded attendance are not automatically marked at risk for a 0% rate.
+  <strong>At Risk</strong> indicates an attendance threshold failure with recorded attendance, an overdue conference requirement, or an overdue written item. Members with no recorded attendance are not automatically marked at risk for a 0% rate.
 </div>
 
 <div class="card border-0 shadow-sm mb-4 no-print">
@@ -97,7 +62,7 @@
              onkeyup="applyRiskFilters()">
     </div>
 
-    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetRiskFilters()">Clear</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetRiskFilters()">Clear</button>
   </div>
 </div>
 
@@ -110,7 +75,7 @@
           <tr>
             <th>Member</th>
             <th>Mentor</th>
-            <th>Event / Level</th>
+            <th>Written / Level</th>
             <th>Status</th>
             <th>Reasons</th>
             <th>Attendance</th>
@@ -121,7 +86,7 @@
         </thead>
         <tbody>
           {% for row in rows %}
-          <tr class="report-data-row {{ 'table-danger' if row.status == 'at_risk' else 'table-warning' }}"
+          <tr class="report-data-row table-danger"
               data-status="{{ row.status }}"
               data-events="{{ row.event_keys|join('|') }}"
               data-mentor="{{ row.mentor_name }}"
@@ -135,37 +100,30 @@
             <td>
               <div>{{ row.event }}</div>
               <small class="text-muted">{{ 'Novice' if row.level == 'N' else 'Experienced' }}</small>
+              {% if row.roleplay_event_code %}
+                <div><small class="text-muted">{{ row.roleplay_event_code }}</small></div>
+              {% endif %}
+
             </td>
+
+            
+            <td><span class="badge bg-danger">At Risk</span></td>
             <td>
-              {% if row.status == 'at_risk' %}
-                <span class="badge bg-danger">At Risk</span>
+              {% set extra = row.attention_reasons | reject('in', row.hard_risk_reasons) | list %}
+              {% set all_reasons = row.hard_risk_reasons + extra %}
+              {% if all_reasons %}
+                <ul class="reason-list">
+                  {% for reason in all_reasons %}<li>{{ reason }}</li>{% endfor %}
+                </ul>
               {% else %}
-                <span class="badge bg-warning text-dark">Needs Attention</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if row.hard_risk_reasons %}
-                <div class="fw-semibold text-danger">Immediate:</div>
-                <ul class="reason-list">
-                  {% for reason in row.hard_risk_reasons %}<li>{{ reason }}</li>{% endfor %}
-                </ul>
-              {% endif %}
-              {% set future_reasons = [] %}
-              {% for reason in row.attention_reasons %}
-                {% if reason not in row.hard_risk_reasons %}
-                  {% set _ = future_reasons.append(reason) %}
-                {% endif %}
-              {% endfor %}
-              {% if future_reasons %}
-                <div class="fw-semibold mt-1">Incomplete:</div>
-                <ul class="reason-list">
-                  {% for reason in future_reasons %}<li>{{ reason }}</li>{% endfor %}
-                </ul>
+                —
               {% endif %}
             </td>
             <td class="text-nowrap">
-              <div>AH: {{ row.attendance.ah_rate ~ '%' if row.attendance.ah_total > 0 else 'No data' }}</div>
-              <div>WS: {{ row.attendance.ws_rate ~ '%' if row.attendance.ws_total > 0 else 'No data' }}</div>
+              {%- set ah_denom = row.attendance.ah_total - row.attendance.ah_excused %}
+              <div>AH: {% if ah_denom > 0 and row.attendance.ah_rate < 80 %}{{ row.attendance.ah_rate }}%{% else %}—{% endif %}</div>
+              {%- set ws_denom = row.attendance.ws_total - row.attendance.ws_excused %}
+              <div>WS: {% if ws_denom > 0 and row.attendance.ws_rate < row.attendance.ws_threshold_pct %}{{ row.attendance.ws_rate }}%{% else %}—{% endif %}</div>
             </td>
             <td class="text-center">{{ row.grades.get('VCMC') or '—' }}</td>
             <td class="text-center">{{ row.grades.get('SVCDC') or '—' }}</td>
@@ -216,7 +174,6 @@ function updateRiskFilterOptions() {
   if (filterType === 'status') {
     options = [
       ['at_risk', 'At Risk'],
-      ['needs_attention', 'Needs Attention']
     ];
   } else if (filterType === 'grade') {
     options = [

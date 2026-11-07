@@ -229,7 +229,7 @@ OFFICER_ROSTER_2026_27 = [
     ("Philina Chen", "Officer, Admin"),
     ("Natalie Zhang", "Officer"),
     ("Melody Leong", "Officer"),
-    ("Aryahi Sharma", "Officer", "Admin"),
+    ("Aryahi Sharma", "Officer, Admin"),
     ("Olivia Kang", "Officer"),
     ("Zihan Liu", "Officer"),
     ("Aaron Vu", "Admin, Officer"),
@@ -308,6 +308,25 @@ REMOVED_ADMIN_ACCESS_KEY = "2026-27-remove-admin-access-aryahi-olivia-zihan-v1"
 
 GRANT_ARYAHI_ADMIN_KEY = "2026-27-grant-aryahi-admin-v1"
 
+GRANT_ZIHAN_ADMIN_KEY = "2026-27-grant-zihan-admin-v1"
+
+def grant_zihan_admin():
+    if db.session.get(DataMigration, GRANT_ZIHAN_ADMIN_KEY):
+        return
+    user = User.query.filter(
+        db.func.lower(User.username) == 'zihan.liu'
+    ).first()
+    if user:
+        user.is_admin = True
+        user.has_officer_access = True
+        user.role = 'officer'
+    db.session.add(DataMigration(
+        key=GRANT_ZIHAN_ADMIN_KEY,
+        details='Granted admin access to zihan.liu',
+    ))
+    db.session.commit()
+    print('[Admin Grant] zihan.liu granted admin access.')
+
 def grant_aryahi_admin():
     if db.session.get(DataMigration, GRANT_ARYAHI_ADMIN_KEY):
         return
@@ -324,6 +343,8 @@ def grant_aryahi_admin():
     ))
     db.session.commit()
     print('[Admin Grant] aryahi.sharma granted admin access.')
+
+
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -451,6 +472,7 @@ class MentorPod(db.Model):
     event = db.Column(db.String(50), nullable=True)
     mentor = db.relationship('User', foreign_keys=[mentor_id], backref='pod_members')
     member = db.relationship('User', foreign_keys=[member_id], backref='pod')
+    roleplay_event = db.Column(db.String(100), nullable=True)
 
 
 class PracticeSession(db.Model):
@@ -1110,6 +1132,25 @@ def _spreadsheet_text(value):
         value = int(value)
     return re.sub(r'\s+', ' ', str(value).replace('\n', ' ')).strip()
 
+def _roleplay_code(value):
+    text = _spreadsheet_text(value)
+    if text.strip('-').strip() == '':
+        return ''
+    text = re.sub(r'^\s*RP\s*:\s*', '', text, flags=re.IGNORECASE)
+
+    # Match the extraction used on Mentor Pods:
+    # "Human Resources Management (HRM)" becomes "HRM".
+    if '(' in text:
+        return text.rsplit('(', 1)[-1].replace(')', '').strip()
+
+    return text
+
+
+
+@app.context_processor
+def inject_roleplay_code_helper():
+    return {'roleplay_code': _roleplay_code}
+
 
 def _spreadsheet_key(value):
     return _spreadsheet_text(value).lower()
@@ -1380,6 +1421,78 @@ def _format_spreadsheet_grade(value):
     formatted = f'{number:.3f}'.rstrip('0').rstrip('.')
     return f'{formatted}%'
 
+def import_roleplay_events_from_attendance_workbook(path):
+    sheets = _read_xlsx_sheets(path, {'AH Attendance'})
+    rows = sheets['AH Attendance']
+
+    if not rows:
+        raise RuntimeError('AH Attendance sheet is empty.')
+
+    headers = rows[0]
+    email_col = _header_index(headers, 'Email')
+    roleplay_col = _header_index(headers, 'Roleplay')
+
+    if email_col is None or roleplay_col is None:
+        raise RuntimeError(
+            'AH Attendance must contain Email and Roleplay columns.'
+        )
+
+    users = User.query.all()
+    users_by_username = {user.username.lower(): user for user in users}
+    users_by_email = {
+        _spreadsheet_key(user.email): user
+        for user in users
+        if user.email
+    }
+    pods_by_member = {
+        pod.member_id: pod
+        for pod in MentorPod.query.all()
+    }
+
+    stats = {
+        'matched': 0,
+        'updated': 0,
+        'unmatched': [],
+        'without_pod': [],
+        'blank': [],
+    }
+
+    for row in rows[1:]:
+        email = _spreadsheet_key(_row_value(row, email_col))
+        roleplay_event = _spreadsheet_text(
+            _row_value(row, roleplay_col)
+        )
+
+        if not email:
+            continue
+
+        member = _find_spreadsheet_user(
+            '',
+            email,
+            users_by_username,
+            users_by_email,
+        )
+
+        if not member:
+            stats['unmatched'].append(email)
+            continue
+
+        if not roleplay_event:
+            stats['blank'].append(member.username)
+            continue
+
+        pod = pods_by_member.get(member.id)
+        if not pod:
+            stats['without_pod'].append(member.username)
+            continue
+
+        stats['matched'] += 1
+        if pod.roleplay_event != roleplay_event:
+            pod.roleplay_event = roleplay_event
+            stats['updated'] += 1
+
+    return stats
+
 
 
 def normalize_stored_conference_grades():
@@ -1415,7 +1528,7 @@ def normalize_stored_conference_grades():
 
 def import_mdp_tracking_workbook(path, commitments_only=False):
     """Synchronize matched members from the MDP workbook transactionally."""
-    wanted_sheets = set(EVENT_TABS) | {
+    wanted_sheets = {tab for tab, _ in EVENT_TABS} | {
         'Pods (VIEW ONLY)',
         'Mentee Commitment TrackingMDP',
     }
@@ -1454,7 +1567,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
     completion_by_identity = {}
     written_requirements = {}
     written_completion = {}
-    for tab in EVENT_TABS:
+    for tab, _ in EVENT_TABS:
         rows = sheets[tab]
         if not rows:
             continue
@@ -1502,6 +1615,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
     status_col = _header_index(pod_headers, 'Status')
     years_col = _header_index(pod_headers, 'Years in DECA')
     pod_event_col = _header_index(pod_headers, 'Event')
+    pod_roleplay_event_col = _header_index(pod_headers, 'Roleplay')
     legal_name_col = _header_index(pod_headers, 'Legal name', 'Legal Name')
 
     all_users = User.query.all()
@@ -1586,6 +1700,12 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
         status = _spreadsheet_text(_row_value(row, status_col))
         level = 'E' if status.lower() == 'experienced' else 'N'
         event = _spreadsheet_event_key(_row_value(row, pod_event_col))
+        raw = _spreadsheet_text(
+            _row_value(row, pod_roleplay_event_col)
+        )
+        roleplay_event = raw or None
+
+
         year_in_deca = _spreadsheet_text(_row_value(row, years_col)) or None
         if not commitments_only:
             if email and not member.email:
@@ -1603,6 +1723,7 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                 pod.experience_level = level
                 pod.year_in_deca = year_in_deca
                 pod.event = event or None
+                pod.roleplay_event = roleplay_event
                 pod_number = _spreadsheet_number(_row_value(row, pod_number_col))
                 if pod_number:
                     pod.pod_number = pod_number
@@ -1625,7 +1746,9 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
             {},
         )
         requirements = EVENT_REQUIREMENTS.get(level, EVENT_REQUIREMENTS['N'])
-        for conference in CONFERENCE_ORDER:
+        active_conf = get_active_conference()
+        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+        for conference in CONFERENCE_ORDER[:active_idx + 1]:
             rule = requirements[conference]
             done = completion.get(conference)
             required = {
@@ -1704,6 +1827,15 @@ def import_mdp_tracking_workbook(path, commitments_only=False):
                     checklist_items_by_key[item_key] = item
                 item.completed = completed
                 checklist_items_updated += 1
+    return {
+        'matched_members': len(matched_user_ids),
+        'pods_updated': pods_updated,
+        'commitments_updated': commitments_updated,
+        'checklist_items_updated': checklist_items_updated,
+        'unmatched_members': unmatched_members,
+        'members_without_completion': members_without_completion,
+        'unmatched_mentors': unmatched_mentors,
+    }
 # ── Notification helper ──────────────────────────────────────────────────────
 
 def create_notification(user_id, message):
@@ -2030,7 +2162,9 @@ def resync_commitments(member, level):
     shows up at once instead of waiting for the next restart.
     """
     changed = False
-    for conference in CONFERENCE_ORDER:
+    active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         rule = requirement_rule(member.username, level, conference)
         com = Commitment.query.filter_by(
             member_name=member.username, event=conference).first()
@@ -2106,22 +2240,20 @@ def get_attendance_stats(user, ah_records=None, ws_records=None, pod=_UNSET):
     ah_present = sum(1 for r in ah_records if float(r.value or 0) >= 1.0)
     ah_excused = sum(1 for r in ah_records if 0.0 < float(r.value or 0) < 1.0)
     ah_absent  = total_ah - ah_present - ah_excused
-    ah_denom   = total_ah - ah_excused
-    ah_rate    = round((ah_present / ah_denom) * 100, 1) if ah_denom > 0 else 0.0
+    ah_rate    = round(((ah_present + 0.5 * ah_excused) / total_ah) * 100, 1) if total_ah > 0 else 0.0
 
     ws_present = sum(1 for r in ws_records if float(r.value or 0) >= 1.0)
     ws_excused = sum(1 for r in ws_records if 0.0 < float(r.value or 0) < 1.0)
     ws_absent  = total_ws - ws_present - ws_excused
-    ws_denom   = total_ws - ws_excused
-    ws_rate    = round((ws_present / ws_denom) * 100, 1) if ws_denom > 0 else 0.0
+    ws_rate    = round(((ws_present + 0.5 * ws_excused) / total_ws) * 100, 1) if total_ws > 0 else 0.0
 
     if pod is _UNSET:
         pod = MentorPod.query.filter_by(member_id=user.id).first()
     level = pod.experience_level if pod else 'N'
     ws_threshold_pct = WS_THRESHOLD.get(level, WS_THRESHOLD['N']) * 100
 
-    ah_ok = ah_denom == 0 or ah_rate >= (AH_THRESHOLD * 100)
-    ws_ok = ws_denom == 0 or ws_rate >= ws_threshold_pct
+    ah_ok = total_ah == 0 or ah_rate >= (AH_THRESHOLD * 100)
+    ws_ok = total_ws == 0 or ws_rate >= ws_threshold_pct
 
     at_risk = not ah_ok or not ws_ok
     risk_reasons = []
@@ -2292,10 +2424,238 @@ def _backfill_column(table, source, destination):
     except Exception:
         db.session.rollback()
 
+def add_roleplay_event_column():
+    with db.engine.connect() as conn:
+        conn.execute(sql_text(
+            'ALTER TABLE mentor_pod '
+            'ADD COLUMN IF NOT EXISTS roleplay_event VARCHAR(100)'
+        ))
+
+        if db.engine.dialect.name == 'postgresql':
+            conn.execute(sql_text(
+                'ALTER TABLE mentor_pod '
+                'ALTER COLUMN roleplay_event TYPE VARCHAR(100)'
+            ))
+
+        conn.commit()
+
+    print('[Migration] mentor_pod.roleplay_event column ensured.')
+
+
+
+# ---------------------------------------------------------------------------
+# One-time backfill: 2026-27 roleplay event assignments from AH Attendance
+# ---------------------------------------------------------------------------
+ROLEPLAY_EVENTS_2026_27_KEY = "2026-27-roleplay-events-v1"
+
+_ROLEPLAY_EVENTS_2026_27 = {
+    "shua.cheon@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "charlotte.fann@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "eric.jia@warriorlife.net": "Hospitality Services (HTDM)",
+    "sierra.lukez@warriorlife.net": "Principles of Finance (PFN)",
+    "kavya.ravulaparti@warriorlife.net": "Principles of Finance (PFN)",
+    "elaine.choi@warriorlife.net": "Marketing Communications (MCS)",
+    "jaden.park@warriorlife.net": "Hospitality Services (HTDM)",
+    "sk.satagopan@warriorlife.net": "Hospitality Services (HTDM)",
+    "sonmachi.amobi@warriorlife.net": "Apparel & Accesories Marketing (AAM)",
+    "aisha.chadha@warriorlife.net": "Hospitality Services (HTDM)",
+    "myra.chadha@warriorlife.net": "Hospitality Services (HTDM)",
+    "timothy.feng@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "andrew.huang@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "julia.li@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "dana.sun@warriorlife.net": "Marketing Management (MTDM)",
+    "hailey.taylor@warriorlife.net": "Food Marketing (FMS)",
+    "amanda.li@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "panash.chandwani@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "anvi.vohra@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "aadya.yadlapati@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "isabella.yu@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "sophie.croswhite@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "anni.wu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "marisol.chou@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "priscilla.concepcion@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "allison.cung@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "veer.sandhu@warriorlife.net": "Principles of Finance (PFN)",
+    "aidenj.lee@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "elia.zhang@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "preston.dinh@warriorlife.net": "Principles of Finance (PFN)",
+    "fateh.gill@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "rehat.gill@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "roy.shin@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "mridini.parui@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "jocelyn.kwok@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "gordon.li@warriorlife.net": "Business Finance (BFS)",
+    "rihan.sharma@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "yicheng.hsieh@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "taehwan.lee@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "micah.moon@warriorlife.net": "Principles of Finance (PFN)",
+    "v.subramanian@warriorlife.net": "Travel & Tourism (TTDM)",
+    "julia.zhou@warriorlife.net": "Travel & Tourism (TTDM)",
+    "damon.focaracci@warriorlife.net": "Principles of Finance (PFN)",
+    "trevor.smith@warriorlife.net": "Principles of Finance (PFN)",
+    "dean.jaffari@warriorlife.net": "Principles of Finance (PFN)",
+    "saisha.vibhute@warriorlife.net": "Retail Merchandising (RMS)",
+    "kate.borba@warriorlife.net": "Human Resources Management (HRM)",
+    "hillary.bui@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "ahaana.kandadai@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "shyla.singh@warriorlife.net": "Principles of Marketing (PMK)",
+    "jayden.wong@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "lasya.anumandla@warriorlife.net": "Principles of Marketing (PMK)",
+    "lauren.diep@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "alyssa.nguyen@warriorlife.net": "Principles of Finance (PFN)",
+    "n.anumolu@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "nathan.pham@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "nathan.cung@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "christopher.har@warriorlife.net": "Principles of Marketing (PMK)",
+    "eva.allen@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "ambery.chang@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "ruby.han@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "brooke.harvey@warriorlife.net": "Travel & Tourism (TTDM)",
+    "elaine.li@warriorlife.net": "Principles of Finance (PFN)",
+    "audrey.truong@warriorlife.net": "Marketing Communications (MCS)",
+    "hailey.wong@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "an.bach@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "abigail.bendemire@warriorlife.net": "Principles of Marketing (PMK)",
+    "isabella.chen@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "elize.kaldani@warriorlife.net": "Entrepreneurship (ENT)",
+    "bethany.dohn@warriorlife.net": "Hospitality Services (HTDM)",
+    "ashley.park@warriorlife.net": "Hospitality Services (HTDM)",
+    "zeqi.an@warriorlife.net": "Marketing Communications (MCS)",
+    "joshwyn.hong@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "sherry.liang@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "kinshuk.pandey@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "lukshman.senthil@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "victoria.su@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "nishanth.duvedi@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "aman.kochar@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "avni.kumar@warriorlife.net": "Retail Merchandising (RMS)",
+    "kashvi.lath@warriorlife.net": "Human Resources Management (HRM)",
+    "saranya.malladi@warriorlife.net": "Human Resources Management (HRM)",
+    "armaan.vidhani@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "jayoon.koo@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "suvir.maniktala@warriorlife.net": "Travel & Tourism (TTDM)",
+    "jeffrey.mu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "sumedh.seetharaman@warriorlife.net": "Principles of Finance (PFN)",
+    "viraaj.vatte@warriorlife.net": "Travel & Tourism (TTDM)",
+    "joey.zhu@warriorlife.net": "Human Resources Management (HRM)",
+    "ranbir.bhardwaj@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "riyana.baldua@warriorlife.net": "Hospitality Services (HTDM)",
+    "aa.adhiwiyogo@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "benjamin.luk@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "aubrey.santos@warriorlife.net": "Hospitality Services (HTDM)",
+    "aiden.shankar@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "anoop.gathala@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "yongqi.liu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "lincolnjacob.tran@warriorlife.net": "Entrepreneurship (ENT)",
+    "matthew.zhu@warriorlife.net": "Entrepreneurship (ETDM)",
+    "haochien.wang@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "srihari.thiagarajan@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "jordan.kim@warriorlife.net": "Retail Merchandising (RMS)",
+    "gordon.lee@warriorlife.net": "Entrepreneurship (ETDM)",
+    "jesse.alabi@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "s.balakrishnan@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "alisha.raman@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "neha.sunil@warriorlife.net": "Principles of Marketing (PMK)",
+    "shanzhi.weng@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "victor.cristobal@warriorlife.net": "Principles of Finance (PFN)",
+    "naomi.shaffer@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "owen.smith@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "laura.zhang@warriorlife.net": "Principles of Finance (PFN)",
+    "avah.thompson@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "yuettung.lam@warriorlife.net": "Human Resources Management (HRM)",
+    "kevin.ou@warriorlife.net": "Financial Services (FTDM)",
+    "michael.qi@warriorlife.net": "Retail Merchandising (RMS)",
+    "william.qu@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "zixuan.wang@warriorlife.net": "Financial Services (FTDM)",
+    "darren.yu@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "kevin.zhao@warriorlife.net": "Entrepreneurship (ENT)",
+    "rounak.bhatia@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "andrew.castaneda@warriorlife.net": "Travel & Tourism (TTDM)",
+    "jayden.cha@warriorlife.net": "Travel & Tourism (TTDM)",
+    "ethan.chen@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "darren.zhong@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "zayd.bashadi@warriorlife.net": "Sports & Entertainment Marketing (SEM)",
+    "isabella.moon@warriorlife.net": "Principles of Finance (PFN)",
+    "fiona.qiao@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "logan.gilbert@warriorlife.net": "Hospitality Services (HTDM)",
+    "connor.lam@warriorlife.net": "Hospitality Services (HTDM)",
+    "elin.loscalzo@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "samuel.xiao@warriorlife.net": "Food Marketing (FMS)",
+    "jaden.jia@warriorlife.net": "Principles of Marketing (PMK)",
+    "enduo.jiang@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "tristan.tran@warriorlife.net": "Principles of Marketing (PMK)",
+    "yuna.han@warriorlife.net": "Principles of Marketing (PMK)",
+    "jennaly.fangonilo@warriorlife.net": "Hotel & Lodging Management (HLM)",
+    "isobel.kwong@warriorlife.net": "Financial Services (FTDM)",
+    "ashley.lai@warriorlife.net": "Travel & Tourism (TTDM)",
+    "mikah.pryor@warriorlife.net": "Principles of Marketing (PMK)",
+    "sofia.yiu@warriorlife.net": "Marketing Communications (MCS)",
+    "sradha.namala@warriorlife.net": "Apparel & Accesories Marketing (AAM)",
+    "tomas.santos@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "forrest.su@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "nathan.tran@warriorlife.net": "Marketing Communications (MCS)",
+    "maahir.satwani@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "woobin.jang@warriorlife.net": "Business Services Marketing (BSM)",
+    "colin.chandra@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "nathan.liu@warriorlife.net": "Principles of Marketing (PMK)",
+    "ava.smith@warriorlife.net": "Principles of Marketing (PMK)",
+    "yifan.chen@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "avaneesh.nangare@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "barak.yang@warriorlife.net": "Human Resources Management (HRM)",
+    "antonio.muthalaly@warriorlife.net": "Principles of Entrepreneurship (PET)",
+    "advaith.veligeti@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "sofia.gass@warriorlife.net": "Principles of Business Management and Administration (PBM)",
+    "valencia.su@warriorlife.net": "Principles of Hospitality and Tourism (PHT)",
+    "caelin.hu@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "ziqing.wang@warriorlife.net": "Human Resources Management (HRM)",
+    "nina.ling@warriorlife.net": "Travel & Tourism (TTDM)",
+    "jenny.lee@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "nathaniel.kommu@warriorlife.net": "Personal Financial Literacy (PFL)",
+    "r.parandekar@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "alyssa.ho@warriorlife.net": "Entrepreneurship (ENT)",
+    "geralyn.loo@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "anneka.prusty@warriorlife.net": "Personal Financial Literacy (PFL)",
+    "yamilet.quintana@warriorlife.net": "Personal Financial Literacy (PFL)",
+    "arkopriya.aich@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "saira.bhatia@warriorlife.net": "Marketing Communications (MCS)",
+    "riday.appannagari@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+    "arnav.mani@warriorlife.net": "Sports & Entertainment Marketing (STDM)",
+    "purvi.muriki@warriorlife.net": "Buying & Merchandising (BTDM)",
+    "chloe.xiao@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
+    "karen.xiao@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
+}
+
+
+def backfill_roleplay_events_2026_27():
+    """One-time migration: set mentor_pod.roleplay_event from AH Attendance data."""
+    if db.session.get(DataMigration, ROLEPLAY_EVENTS_2026_27_KEY):
+        return  # already ran
+    updated = 0
+    skipped = 0
+    for email, event in _ROLEPLAY_EVENTS_2026_27.items():
+        user = User.query.filter(
+            db.func.lower(User.email) == email.lower()
+        ).first()
+        if not user:
+            skipped += 1
+            continue
+        pod = MentorPod.query.filter_by(member_id=user.id).first()
+        if not pod:
+            skipped += 1
+            continue
+        pod.roleplay_event = event
+        updated += 1
+    db.session.add(DataMigration(
+        key=ROLEPLAY_EVENTS_2026_27_KEY,
+        details=f"updated={updated} skipped={skipped}",
+    ))
+    db.session.commit()
+    print(f"[Roleplay Backfill] done: updated={updated}, skipped={skipped}")
 
 with app.app_context():
-    db.create_all()
+    if not os.environ.get("SKIP_DB_INIT"): db.create_all()
 
+    add_roleplay_event_column()
     engine_name = db.engine.dialect.name
     cols = {c['name'] for c in db.inspect(db.engine).get_columns('workshop')}
     if 'creator_id' not in cols:
@@ -2408,7 +2768,7 @@ with app.app_context():
                 print('[Migration] rebuilt checklist_requirement with corrected columns.')
     except Exception as exc:
         db.session.rollback()
-        print(f'[Migration] checklist_requirement rebuild skipped: {exc}')
+        print(f'[Migration] checklist_requirement rebuild failed: {exc}')
 
     # Migrate: add is_competing to user
     _ensure_column('user', 'is_competing', 'BOOLEAN DEFAULT TRUE')
@@ -2605,6 +2965,7 @@ with app.app_context():
     try:
         if not SKIP_STARTUP_WORK:
             grant_aryahi_admin()
+            grant_zihan_admin()
     except Exception as exc:
         db.session.rollback()
         print(f'[Admin Grant] skipped: {exc}')
@@ -2683,6 +3044,13 @@ with app.app_context():
     except Exception as exc:
         db.session.rollback()
         print(f'[Written Deadlines] synchronization skipped: {exc}')
+
+    try:
+        if not SKIP_STARTUP_WORK:
+            backfill_roleplay_events_2026_27()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'[Roleplay Backfill] skipped: {exc}')
 
 
 
@@ -3124,7 +3492,9 @@ def _conference_summary_for_user(user, today=None, commitments=None):
     overdue_reasons = []
     low_grade_reasons = []
     conferences = {}
-    for conference in CONFERENCE_ORDER:
+    active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         commitment = commitments_by_event.get(conference)
         if not commitment:
             grades[conference] = None
@@ -3217,12 +3587,12 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             pod=pod,
         )
         attendance_reasons = []
-        if attendance['ah_total'] > 0 and attendance['ah_rate'] < AH_THRESHOLD * 100:
+        if attendance["ah_total"] > 0 and attendance["ah_rate"] < AH_THRESHOLD * 100:
             attendance_reasons.append(
                 f"AH attendance {attendance['ah_rate']}% "
                 f"(requires {AH_DISPLAY_THRESHOLD * 100:.0f}%)"
             )
-        if attendance['ws_total'] > 0 and attendance['ws_rate'] < attendance['ws_threshold_pct']:
+        if attendance["ws_total"] > 0 and attendance["ws_rate"] < attendance["ws_threshold_pct"]:
             attendance_reasons.append(
                 f"WS attendance {attendance['ws_rate']}% (requires {attendance['ws_threshold_pct']:.0f}%)"
             )
@@ -3267,7 +3637,7 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             + (f" ({item['deadline_text']})" if item['deadline_text'] else '')
             for item in written['overdue_items']
         )
-        attention_reasons = list(conference['incomplete_reasons'])
+        attention_reasons = list(conference['overdue_reasons'])
         attention_reasons.extend(conference['low_grade_reasons'])
         attention_reasons.extend(
             'Written incomplete: ' + item['name']
@@ -3281,8 +3651,6 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             attention_reasons = []
         elif hard_risk_reasons:
             status, status_label = 'at_risk', 'At Risk'
-        elif attention_reasons:
-            status, status_label = 'needs_attention', 'Needs Attention'
         else:
             status, status_label = 'on_track', 'On Track'
         event_label = event or 'Unassigned'
@@ -3301,6 +3669,12 @@ def build_mentee_risk_report(members, event_items, event_deadlines, today=None):
             'grades': conference['grades'],
             'conference': conference,
             'written': written,
+            'roleplay_event_code': (
+                _roleplay_code(pod.roleplay_event)
+                if pod and pod.roleplay_event else ''
+            ),
+
+
         })
     return rows
 
@@ -3422,6 +3796,11 @@ def _dashboard_page():
                 'ws_threshold_pct': stats['ws_threshold_pct'],
                 'at_risk': stats['at_risk'],
                 'risk_reasons': stats['risk_reasons'],
+                'roleplay_event_code': (
+                    _roleplay_code(pod.roleplay_event)
+                    if pod and pod.roleplay_event else ''
+                ),
+
             })
 
     else:
@@ -3479,6 +3858,16 @@ def _dashboard_page():
 
     signed_times = [(w.time, w.time + timedelta(minutes=20)) for w in my_signups] if current_user.role == 'member' else []
 
+    current_pod = MentorPod.query.filter_by(
+        member_id=current_user.id
+    ).first()
+    
+    current_roleplay_event_code = (
+        _roleplay_code(current_pod.roleplay_event)
+        if current_pod and current_pod.roleplay_event else ''
+    )
+    
+    
     active_conf = get_active_conference() if current_user.role == 'member' else None
     return render_template('dashboard.html',
         commitments=commitments,
@@ -3498,6 +3887,8 @@ def _dashboard_page():
         active_conf=active_conf,
         all_commitments=all_commitments if current_user.role == 'member' else [],
         conference_order=CONFERENCE_ORDER,
+        roleplay_event_code=current_roleplay_event_code,
+
     )
 
 # Public self-registration is closed. Every account is created either by the
@@ -3684,6 +4075,11 @@ def member_commitments():
         written_items=written_items,
         written_done=written_done,
         written_total=len(written_items),
+        roleplay_event_code=(
+            _roleplay_code(pod.roleplay_event)
+            if pod and pod.roleplay_event else ''
+        ),
+        
     )
 
 
@@ -3848,7 +4244,9 @@ def log_commitment(session_id):
     # Visible in the admin MDP audit log, whether or not the mentee is in this
     # officer's own pod. credited_to names the conference the credit landed on,
     # which can differ from the one requested when excess rolls forward.
-    credited_to = commitment.event if commitment else conference
+    for member in members:
+        commitment = _apply_completion(member, conference, practice_type)
+        credited_to = commitment.event if commitment else conference
     log_mdp_action(
         current_user.id, 'commitment_complete', 'commitment',
         target_user_id=member.id,
@@ -4026,66 +4424,92 @@ def mark_complete():
         flash('Only officers can mark commitments complete.', 'danger')
         return redirect(url_for('dashboard'))
 
-    member_id = request.form.get('member_id', '').strip()
     practice_type = request.form.get('practice_type', '').strip()
     conference = request.form.get('conference', get_active_conference())
 
-    member = db.session.get(User, int(member_id)) if member_id.isdigit() else None
-    if not member or member.role != 'member':
+    # Collect up to three member IDs; only the first is required
+    raw_ids = [
+        request.form.get('member_id', '').strip(),
+        request.form.get('member_id_2', '').strip(),
+        request.form.get('member_id_3', '').strip(),
+    ]
+
+    # Resolve to User objects, de-duplicating while preserving order
+    members = []
+    seen_ids = set()
+    for raw in raw_ids:
+        if not raw or not raw.isdigit():
+            continue
+        uid = int(raw)
+        if uid in seen_ids:
+            continue
+        user = db.session.get(User, uid)
+        if user and user.role == 'member':
+            members.append(user)
+            seen_ids.add(uid)
+
+    if not members:
         flash('Member not found.', 'danger')
         return redirect(url_for('reports', tab='commitment'))
 
-    commitment = _apply_completion(member, conference, practice_type)
-
-    credited_to = commitment.event if commitment else conference
-    in_own_pod = MentorPod.query.filter_by(
-        mentor_id=current_user.id, member_id=member.id
-    ).first() is not None
-    log_mdp_action(
-        current_user.id, 'commitment_complete', 'commitment',
-        target_user_id=member.id,
-        details=(
-            f'{practice_type} for {conference} marked complete'
-            + ('' if in_own_pod else ' (outside own pod)')
-            + (f' (credited to {credited_to})' if credited_to != conference else '')
-        ),
-    )
-
-    log = PracticeLog(
-        officer_id=current_user.id,
-        member_id=member.id,
-        commitment_id=commitment.id if commitment else None,
-        practice_type=practice_type,
-        conference=conference,
-        session_date=datetime.utcnow().date(),
-    )
-    db.session.add(log)
-
-    # Notifications
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-    create_notification(member.id,
-        f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
-    mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
-    if mentor_pod and mentor_pod.mentor_id != current_user.id:
-        create_notification(mentor_pod.mentor_id,
-            f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+    marked_names = []
+
+    for member in members:
+        commitment = _apply_completion(member, conference, practice_type)
+
+        credited_to = commitment.event if commitment else conference
+        in_own_pod = MentorPod.query.filter_by(
+            mentor_id=current_user.id, member_id=member.id
+        ).first() is not None
+        log_mdp_action(
+            current_user.id, 'commitment_complete', 'commitment',
+            target_user_id=member.id,
+            details=(
+                f'{practice_type} for {conference} marked complete'
+                + ('' if in_own_pod else ' (outside own pod)')
+                + (f' (credited to {credited_to})' if credited_to != conference else '')
+            ),
+        )
+
+        log = PracticeLog(
+            officer_id=current_user.id,
+            member_id=member.id,
+            commitment_id=commitment.id if commitment else None,
+            practice_type=practice_type,
+            conference=conference,
+            session_date=datetime.utcnow().date(),
+        )
+        db.session.add(log)
+
+        # Notifications
+        create_notification(member.id,
+            f'{current_user.username} marked your {practice_type} complete for {conference} on {timestamp}.')
+        mentor_pod = MentorPod.query.filter_by(member_id=member.id).first()
+        if mentor_pod and mentor_pod.mentor_id != current_user.id:
+            create_notification(mentor_pod.mentor_id,
+                f"{current_user.username} marked {member.username}'s {practice_type} complete for {conference}.")
+
+        marked_names.append(member.username)
 
     db.session.commit()
 
     # Emails
+    names_str = ', '.join(marked_names)
     email_body = (f'<p><strong>{practice_type}</strong> marked complete for '
                   f'<strong>{conference}</strong> on {timestamp}.</p>'
                   f'<p>Logged by: {current_user.username}</p>')
     if current_user.email:
         send_email(current_user.email,
-            f'[DECA] Commitment logged: {member.username} – {practice_type} ({conference})',
+            f'[DECA] Commitment logged: {names_str} – {practice_type} ({conference})',
             email_body)
-    if member.email:
-        send_email(member.email,
-            f'[DECA] Your {practice_type} for {conference} has been marked complete',
-            email_body)
+    for member in members:
+        if member.email:
+            send_email(member.email,
+                f'[DECA] Your {practice_type} for {conference} has been marked complete',
+                email_body)
 
-    flash(f'Marked {practice_type} complete for {member.username} ({conference}).', 'success')
+    flash(f'Marked {practice_type} complete for {names_str} ({conference}).', 'success')
     return redirect(url_for('reports', tab='commitment'))
 
 
@@ -5134,13 +5558,73 @@ def admin_import_commitments():
 
     temporary_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temporary_file:
+        with tempfile.NamedTemporaryFile(
+            suffix='.xlsx',
+            delete=False,
+        ) as temporary_file:
             temporary_path = temporary_file.name
+
         form.workbook.data.save(temporary_path)
+
+        try:
+            _read_xlsx_sheets(temporary_path, {'AH Attendance'})
+            is_attendance_workbook = True
+        except RuntimeError as exc:
+            if 'missing sheet(s): AH Attendance' not in str(exc):
+                raise
+            is_attendance_workbook = False
+
+        if is_attendance_workbook:
+            stats = import_roleplay_events_from_attendance_workbook(
+                temporary_path
+            )
+            db.session.commit()
+
+            log_mdp_action(
+                current_user.id,
+                'workbook_import',
+                'roleplay_events',
+                details=(
+                    f"Matched {stats['matched']}; "
+                    f"updated {stats['updated']}; "
+                    f"unmatched {len(stats['unmatched'])}; "
+                    f"without pod {len(stats['without_pod'])}"
+                ),
+            )
+            db.session.commit()
+
+            flash(
+                f"Roleplay import complete: matched {stats['matched']} "
+                f"members and updated {stats['updated']} roleplay events.",
+                'success',
+            )
+
+            if stats['unmatched']:
+                flash(
+                    'Members not found by email: '
+                    + ', '.join(stats['unmatched']),
+                    'warning',
+                )
+
+            if stats['without_pod']:
+                flash(
+                    'Members without a mentor pod: '
+                    + ', '.join(stats['without_pod']),
+                    'warning',
+                )
+
+            if stats['blank']:
+                flash(
+                    'Members with a blank Roleplay cell: '
+                    + ', '.join(stats['blank']),
+                    'warning',
+                )
+
+            return redirect(url_for('checklist_completion'))
 
         stats = import_mdp_tracking_workbook(
             temporary_path,
-            commitments_only=True,
+            commitments_only=False,
         )
         log_mdp_action(
             current_user.id,
@@ -5150,15 +5634,23 @@ def admin_import_commitments():
                 f"Matched {stats['matched_members']}; "
                 f"commitments {stats['commitments_updated']}; "
                 f"unmatched {len(stats['unmatched_members'])}; "
-                f"missing completion {len(stats['members_without_completion'])}"
+                f"missing completion "
+                f"{len(stats['members_without_completion'])}"
             ),
         )
         db.session.commit()
+
     except Exception as exc:
+        import traceback
         db.session.rollback()
-        print(f'[MDP Admin Import] failed: {type(exc).__name__}: {exc}')
-        flash('The import failed. Check the Railway deployment logs for details.', 'danger')
+        print(
+            f'[MDP Admin Import] failed: '
+            f'{type(exc).__name__}: {exc}'
+        )
+        traceback.print_exc()
+        flash(f'Import failed: {exc}', 'danger')
         return redirect(url_for('checklist_completion'))
+
     finally:
         if temporary_path:
             try:
@@ -5167,22 +5659,27 @@ def admin_import_commitments():
                 pass
 
     flash(
-        f"Import complete: matched {stats['matched_members']} members and updated "
-        f"{stats['commitments_updated']} commitment rows.",
+        f"Import complete: matched {stats['matched_members']} members "
+        f"and updated {stats['commitments_updated']} commitment rows.",
         'success',
     )
+
     if stats['unmatched_members']:
         flash(
-            'Unmatched workbook members: ' + ', '.join(stats['unmatched_members']),
+            'Unmatched workbook members: '
+            + ', '.join(stats['unmatched_members']),
             'warning',
         )
+
     if stats['members_without_completion']:
         flash(
             'Members without completion rows: '
             + ', '.join(stats['members_without_completion']),
             'warning',
         )
+
     return redirect(url_for('checklist_completion'))
+
 
 
 @app.route('/member_commitments')
@@ -5232,7 +5729,9 @@ def admin_member_commitments():
         commitments_by_conf = {row.event: row for row in commitments}
         conferences = {}
         total_done = total_required = 0
-        for conference in CONFERENCE_ORDER:
+        active_conf = get_active_conference()
+        active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+        for conference in CONFERENCE_ORDER[:active_idx + 1]:
             commitment = commitments_by_conf.get(conference)
             if not commitment:
                 conferences[conference] = None
@@ -5312,6 +5811,12 @@ def admin_member_commitments():
             'conferences': conferences,
             'overall_pct': overall_pct,
             'commitments_incomplete': incomplete,
+            'roleplay_event_code': (
+                _roleplay_code(pod.roleplay_event)
+                if pod and pod.roleplay_event else ''
+            ),
+
+
         })
     total_members = len(rows)
     stats = {
@@ -5449,7 +5954,7 @@ def at_risk_report():
         today=today,
     )
 
-    status_filter = request.args.get('status', 'all').strip().lower()
+    status_filter = request.args.get('status', 'at_risk').strip().lower()
     if status_filter in {'at_risk', 'on_track', 'non_compete'}:
         if status_filter == 'at_risk':
             rows = [r for r in rows if r['status'] in {'at_risk', 'needs_attention'}]
@@ -5570,7 +6075,9 @@ def mentee_detail(member_id):
     commitments_by_conf = {row.event: row for row in commitments}
 
     conferences = []
-    for conference in CONFERENCE_ORDER:
+    active_conf = get_active_conference()
+    active_idx = CONFERENCE_ORDER.index(active_conf) if active_conf in CONFERENCE_ORDER else len(CONFERENCE_ORDER) - 1
+    for conference in CONFERENCE_ORDER[:active_idx + 1]:
         commitment = commitments_by_conf.get(conference)
         if not commitment:
             conferences.append({'name': conference, 'commitment': None})
@@ -5660,8 +6167,8 @@ QUIZ_PASS_THRESHOLD = 80.0
 @app.route('/workshop_quiz')
 @login_required
 def workshop_quiz():
-    if not (is_officer_view() or is_admin_view()):
-        flash('Only officers/admins can view quiz results.', 'danger')
+    if not is_admin_view():
+        flash('Only admins can view quiz results.', 'danger')
         return redirect(url_for('dashboard'))
 
     quiz_dates = {
@@ -5734,8 +6241,8 @@ def workshop_quiz():
 @app.route('/workshop_quiz/upload', methods=['POST'])
 @login_required
 def workshop_quiz_upload():
-    if not (is_officer_view() or is_admin_view()):
-        flash('Only officers/admins can upload quiz results.', 'danger')
+    if not is_admin_view():
+        flash('Only admins can upload quiz results.', 'danger')
         return redirect(url_for('workshop_quiz'))
 
     session_date_str = request.form.get('session_date', '').strip()
@@ -5839,6 +6346,25 @@ def workshop_quiz_upload():
         if not User.query.filter(db.func.lower(User.username) == username).first():
             not_found += 1
 
+    # ws_upsert_from_quiz: mirror quiz attendance into WSAttendance so WS % updates
+    for member in all_members:
+        attended = (member.username or '').strip().lower() in attended_map
+        excused_ws = not attended and (member.id in ws_excused_ids)
+        ws_value = 1.0 if attended else (0.5 if excused_ws else 0.0)
+        ws_rec = WSAttendance.query.filter_by(
+            user_id=member.id, session_date=session_date
+        ).first()
+        if ws_rec:
+            # Only update if we're not overwriting a manually-set excused flag
+            if not (ws_rec.value == 0.5 and not attended):
+                ws_rec.value = ws_value
+        else:
+            db.session.add(WSAttendance(
+                user_id=member.id,
+                session_date=session_date,
+                value=ws_value,
+            ))
+
     db.session.commit()
     flash(
         f'Uploaded results for {saved} member(s) on {session_date_str} '
@@ -5847,6 +6373,100 @@ def workshop_quiz_upload():
         'success' if not not_found else 'warning',
     )
     return redirect(url_for('workshop_quiz', date=session_date_str))
+
+
+
+@app.route('/workshop_quiz/sync_from_attendance', methods=['POST'])
+@login_required
+def workshop_quiz_sync_attendance():
+    """Sync WeeklyQuizResult.attended from WSAttendance for a given date."""
+    if not is_admin_view():
+        flash('Only admins can sync attendance.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    date_str = request.form.get('session_date', '').strip()
+    try:
+        session_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    ws_records = WSAttendance.query.filter_by(session_date=session_date).all()
+    updated = created = 0
+    for ws in ws_records:
+        attended = (float(ws.value) == 1.0)
+        excused  = (float(ws.value) == 0.5)
+        existing = WeeklyQuizResult.query.filter_by(
+            user_id=ws.user_id, session_date=session_date
+        ).first()
+        if existing:
+            changed = False
+            if attended and not existing.attended:
+                existing.attended = True
+                changed = True
+            if excused and not existing.excused:
+                existing.excused = True
+                changed = True
+            if changed:
+                updated += 1
+        else:
+            db.session.add(WeeklyQuizResult(
+                user_id=ws.user_id,
+                session_date=session_date,
+                attended=attended,
+                excused=excused,
+                score=None,
+                uploaded_by=current_user.id,
+            ))
+            created += 1
+    db.session.commit()
+    flash(f'Synced from WS attendance: {updated} updated, {created} new.', 'success')
+    return redirect(url_for('workshop_quiz', date=date_str))
+
+
+@app.route('/workshop_quiz/toggle_excused', methods=['POST'])
+@login_required
+def workshop_quiz_toggle_excused():
+    """Toggle excused status for one member on a given date."""
+    if not is_admin_view():
+        flash('Only admins can change excused status.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    user_id  = request.form.get('user_id', type=int)
+    date_str = request.form.get('session_date', '').strip()
+    try:
+        session_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date.', 'danger')
+        return redirect(url_for('workshop_quiz'))
+    # Determine current state
+    ws = WSAttendance.query.filter_by(user_id=user_id, session_date=session_date).first()
+    currently_excused = ws is not None and float(ws.value) == 0.5
+    new_excused = not currently_excused
+    # Update WSAttendance
+    if ws:
+        ws.value = 0.5 if new_excused else 0.0
+    elif new_excused:
+        db.session.add(WSAttendance(
+            user_id=user_id, session_date=session_date, value=0.5
+        ))
+    # Update WeeklyQuizResult
+    qr = WeeklyQuizResult.query.filter_by(
+        user_id=user_id, session_date=session_date
+    ).first()
+    if qr:
+        qr.excused = new_excused
+        if new_excused:
+            qr.attended = False  # excused means not present for quiz purposes
+    else:
+        db.session.add(WeeklyQuizResult(
+            user_id=user_id,
+            session_date=session_date,
+            attended=False,
+            excused=new_excused,
+            score=None,
+            uploaded_by=current_user.id,
+        ))
+    db.session.commit()
+    flash(f'Member marked {"excused" if new_excused else "not excused"}.', 'success')
+    return redirect(url_for('workshop_quiz', date=date_str))
 
 
 @app.route('/workshop_quiz/delete_session', methods=['POST'])

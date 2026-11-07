@@ -184,6 +184,7 @@
                         <th>Attended</th>
                         <th>Score</th>
                         <th>Status</th>
+                        {% if active_view == 'admin' %}<th></th>{% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -222,6 +223,17 @@
                                 <span class="badge bg-danger">Incomplete</span>
                             {% endif %}
                         </td>
+                        {% if active_view == 'admin' %}
+                        <td>
+                            <form method="POST" action="{{ url_for('workshop_quiz_toggle_excused') }}">
+                                <input type="hidden" name="user_id" value="{{ r.user_id }}">
+                                <input type="hidden" name="session_date" value="{{ selected_date.strftime('%Y-%m-%d') }}">
+                                <button type="submit" class="btn btn-xs btn-sm {% if is_excused %}btn-warning{% else %}btn-outline-secondary{% endif %}" style="font-size:0.75rem;padding:2px 8px">
+                                    {% if is_excused %}✓ Excused{% else %}Mark Excused{% endif %}
+                                </button>
+                            </form>
+                        </td>
+                        {% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>
