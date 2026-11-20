@@ -118,9 +118,7 @@ EVENT_REQUIREMENTS = {
 # rows directly matters: the startup sync rebuilds commitments from the matrix
 # on every boot, so database-only edits would be undone on the next deploy.
 # Only the analytics subteam may correct attendance from inside the app.
-# Everyone else still sees the figures; they just cannot change them. Being
-# an admin is not enough on its own — attendance is the one thing that has to
-# reconcile with the spreadsheet, so the list is explicit.
+# Everyone else still sees the figures; they just cannot change them.
 ATTENDANCE_EDITORS = {
     'philina.chen',
     'olivia.kang',
@@ -2446,11 +2444,10 @@ def _backfill_column(table, source, destination):
         db.session.rollback()
 
 def add_roleplay_event_column():
-    """Add mentor_pod.roleplay_event if it is missing.
+    """Add mentor_pod.roleplay_event if missing.
 
-    ADD COLUMN IF NOT EXISTS is Postgres-only. SQLite rejects it outright,
-    which stopped the app from starting on a local machine, so this goes
-    through the portable helper instead.
+    ADD COLUMN IF NOT EXISTS is Postgres-only; SQLite rejects it, which
+    stopped the app from starting locally. The portable helper handles both.
     """
     _ensure_column('mentor_pod', 'roleplay_event', 'VARCHAR(100)')
 
@@ -2649,6 +2646,33 @@ _ROLEPLAY_EVENTS_2026_27 = {
     "chloe.xiao@warriorlife.net": "Restaurant & Food Service Management (RFSM)",
     "karen.xiao@warriorlife.net": "Quick Serve Restaurant Management (QSRM)",
 }
+
+
+def roleplay_event_options():
+    """The roleplay events offered in the Edit Assignments dropdown.
+
+    Two sources, merged so nothing can quietly disappear from the list:
+      * the 2026-27 roster above, which is the canonical set of events the
+        chapter actually competes in, and
+      * whatever is already stored on a pod, so a pod whose event predates
+        that roster still shows its own value as the selected option instead
+        of silently falling back to blank.
+
+    Strings must match what is stored exactly — a pod's saved value is
+    compared against these to decide which option is selected — so they are
+    not tidied up here, typos included.
+    """
+    names = {v.strip() for v in _ROLEPLAY_EVENTS_2026_27.values() if v.strip()}
+    try:
+        names |= {
+            p.roleplay_event.strip() for p in MentorPod.query.all()
+            if (p.roleplay_event or '').strip()
+        }
+    except Exception:
+        # A dropdown built from the roster alone is still usable; never let a
+        # database hiccup take the whole Mentor Pods page down.
+        db.session.rollback()
+    return sorted(names, key=str.lower)
 
 
 def backfill_roleplay_events_2026_27():
@@ -4269,9 +4293,7 @@ def log_commitment(session_id):
     # Visible in the admin MDP audit log, whether or not the mentee is in this
     # officer's own pod. credited_to names the conference the credit landed on,
     # which can differ from the one requested when excess rolls forward.
-    for member in members:
-        commitment = _apply_completion(member, conference, practice_type)
-        credited_to = commitment.event if commitment else conference
+    credited_to = commitment.event if commitment else conference
     log_mdp_action(
         current_user.id, 'commitment_complete', 'commitment',
         target_user_id=member.id,
@@ -5197,6 +5219,7 @@ def mentor_pods():
         pods=pods,
         grouped_pods=dict(grouped_pods),
         event_choices=EVENT_TABS,
+        roleplay_event_choices=roleplay_event_options(),
         active_pod_view=active_pod_view,
         unassigned_members=unassigned_members,
     )
@@ -5380,6 +5403,23 @@ def edit_pod(pod_id):
     elif event == '':
         pod.event = None
 
+    # Roleplay event, picked from the dropdown. Blank clears it. Only touched
+    # when the form actually submits the field, so other forms cannot wipe it.
+    # The value is checked against the dropdown's own options: a hand-crafted
+    # POST cannot put an event on a pod that the list does not offer.
+    if 'roleplay_event' in request.form:
+        roleplay_event = (request.form.get('roleplay_event') or '').strip()
+        if not roleplay_event:
+            pod.roleplay_event = None
+        elif roleplay_event in roleplay_event_options():
+            pod.roleplay_event = roleplay_event
+        else:
+            flash(
+                f'"{roleplay_event}" is not one of the roleplay events; '
+                'the roleplay event was left unchanged.',
+                'warning',
+            )
+
     if pod.member and 'is_competing' in request.form:
         pod.member.is_competing = (
             request.form.get('is_competing') == 'yes'
@@ -5393,6 +5433,7 @@ def edit_pod(pod_id):
         details=(
             f'Updated mentor from {old_mentor_name} to '
             f'{new_mentor.username}; event={pod.event}; '
+            f'roleplay={pod.roleplay_event or "none"}; '
             f'experience={pod.experience_level}; '
             f'competing={pod.member.is_competing if pod.member else "unknown"}'
         ),
@@ -6088,8 +6129,12 @@ def mentee_detail(member_id):
         member_id=member.id
     ).first()
 
-    # Officers see only their own pod; admins see everyone.
-    if not is_admin_view() and (not pod or pod.mentor_id != current_user.id):
+    # Officers see only their own pod; admins see everyone. The analytics
+    # subteam is the exception: they correct attendance for the whole club, so
+    # they need to open any mentee's page. This widens read access to this one
+    # page and the attendance form on it — no other admin power comes with it.
+    if not (is_admin_view() or can_edit_attendance()) and (
+            not pod or pod.mentor_id != current_user.id):
         flash('You can only view members in your own pod.', 'danger')
         return redirect(url_for('reports', tab='commitment'))
 
@@ -6196,8 +6241,7 @@ def update_attendance():
     """Correct one existing attendance record.
 
     Restricted to the analytics subteam. Only existing meeting dates can be
-    changed — nothing here creates a new one, so the set of meetings still
-    comes from the import and cannot drift away from the spreadsheet.
+    changed, so the set of meetings still comes from the import.
     """
     if not can_edit_attendance():
         flash('Only the analytics subteam can change attendance.', 'danger')
@@ -6231,12 +6275,9 @@ def update_attendance():
 
     labels = {1.0: 'Present', 0.5: 'Excused', 0.0: 'Absent'}
     record.value = value
-
     member = db.session.get(User, record.user_id)
     log_mdp_action(
-        current_user.id,
-        'attendance_edit',
-        'attendance',
+        current_user.id, 'attendance_edit', 'attendance',
         target_user_id=record.user_id,
         details=(f'{kind.upper()} {record.session_date}: '
                  f'{labels.get(old_value, old_value)} -> {labels[value]}'),

@@ -260,7 +260,7 @@
     <div class="mb-3">
         <h3 class="mb-1">Edit Assignments</h3>
         <p class="text-muted mb-0">
-            Change a mentee’s mentor, experience, event, or competing status.
+            Change a mentee’s mentor, experience, written event, roleplay event, or competing status.
         </p>
     </div>
     <section class="card border-0 shadow-sm rounded-4 mb-4">
@@ -359,6 +359,29 @@
                             </option>
                             {% endfor %}
                         </select>
+                    </div>
+                </div>
+
+                {# Roleplay event. Picked from the chapter's event list;
+                   "No roleplay event" clears it. #}
+                <div class="compact-field">
+                    <label>Roleplay event</label>
+                    <select name="roleplay_event"
+                            class="form-select form-select-sm">
+                        <option value=""
+                                {% if not pod.roleplay_event %}selected{% endif %}>
+                            No roleplay event
+                        </option>
+                        {% for rp_name in roleplay_event_choices %}
+                        <option value="{{ rp_name }}"
+                                {% if pod.roleplay_event == rp_name %}selected{% endif %}>
+                            {{ rp_name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text">
+                        Current: {% set rp = roleplay_code(pod.roleplay_event) %}
+                        {% if rp %}{{ rp }}{% else %}none{% endif %}
                     </div>
                 </div>
                 <div class="compact-field">
@@ -648,5 +671,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updatePodFilterControl();
 });
 </script>
+
 {% endblock %}
 
